@@ -15,9 +15,10 @@
 .dict_paths <- function() {
   dir <- "dictionary"
   list(
-    seed    = file.path(dir, "seed_terms.txt"),
-    project = file.path(dir, "custom_terms.txt"),
-    user    = file.path(dir, "user_terms.txt")
+    seed         = file.path(dir, "seed_terms.txt"),
+    project      = file.path(dir, "custom_terms.txt"),
+    user         = file.path(dir, "user_terms.txt"),
+    disciplines  = file.path(dir, "disciplines")
   )
 }
 
@@ -29,13 +30,29 @@
   unique(x[nzchar(x)])
 }
 
-#' Build a Hunspell dictionary loaded with all three supplementary tiers.
-.build_hunspell <- function() {
+#' Discipline dictionaries bundled in dictionary/disciplines/.
+#'
+#' @return named character vector: display-name -> file path. Empty if none.
+list_discipline_dicts <- function() {
+  dir <- .dict_paths()$disciplines
+  if (!dir.exists(dir)) return(character(0))
+  files <- list.files(dir, pattern = "\\.txt$", full.names = TRUE)
+  if (length(files) == 0) return(character(0))
+  names(files) <- tools::file_path_sans_ext(basename(files))
+  files[order(names(files))]
+}
+
+#' Build a Hunspell dictionary from the three base tiers plus any selected
+#' discipline dictionaries.
+#'
+#' @param discipline_paths Character vector of discipline file paths to include.
+.build_hunspell <- function(discipline_paths = character(0)) {
   paths <- .dict_paths()
   extra_words <- unique(c(
     .read_dict_terms(paths$seed),
     .read_dict_terms(paths$project),
-    .read_dict_terms(paths$user)
+    .read_dict_terms(paths$user),
+    unlist(lapply(discipline_paths, .read_dict_terms), use.names = FALSE)
   ))
   hunspell::dictionary(lang = "en_US", add_words = extra_words)
 }
@@ -52,6 +69,24 @@ mod_spellcheck_view_ui <- function(id) {
       shiny::tags$small(shiny::tags$em(
         "Click any blue suggestion to recode. Type into the 'Other' box for your own correction. '+ Dict' adds the flagged token to the chosen dictionary tier."
       )),
+      shiny::fluidRow(
+        shiny::column(6,
+          shiny::selectizeInput(
+            ns("disciplines"),
+            "Discipline dictionaries (reduce false positives):",
+            choices  = NULL,
+            multiple = TRUE,
+            options  = list(placeholder = "none selected")
+          )
+        ),
+        shiny::column(6,
+          shiny::fileInput(
+            ns("import_discipline"),
+            "Import a discipline dictionary (.txt, one word per line):",
+            accept = c(".txt")
+          )
+        )
+      ),
       shiny::div(
         style = "margin: 1em 0;",
         shiny::radioButtons(
@@ -134,9 +169,49 @@ mod_spellcheck_view_server <- function(id, shared_state,
 
     dict_version <- shiny::reactiveVal(0L)
 
+    # Populate / refresh the discipline selector. Bumping dict_version after
+    # an import re-scans the folder so the new file appears immediately.
+    shiny::observe({
+      dict_version()
+      choices <- list_discipline_dicts()  # name -> path
+      shiny::updateSelectizeInput(
+        session, "disciplines",
+        choices  = choices,
+        selected = shiny::isolate(input$disciplines)
+      )
+    })
+
+    # Import a discipline dictionary: copy the uploaded .txt into
+    # dictionary/disciplines/, then refresh + auto-select it.
+    shiny::observeEvent(input$import_discipline, {
+      f <- input$import_discipline
+      if (is.null(f)) return()
+      dir <- .dict_paths()$disciplines
+      dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+      base <- tools::file_path_sans_ext(basename(f$name))
+      base <- gsub("[^A-Za-z0-9_-]+", "_", base)
+      dest <- file.path(dir, paste0(base, ".txt"))
+      ok <- tryCatch({
+        file.copy(f$datapath, dest, overwrite = TRUE); TRUE
+      }, error = function(e) FALSE)
+      if (!ok) {
+        shiny::showNotification("Import failed.", type = "error")
+        return()
+      }
+      dict_version(dict_version() + 1L)
+      shiny::updateSelectizeInput(
+        session, "disciplines",
+        choices  = list_discipline_dicts(),
+        selected = unique(c(input$disciplines, dest))
+      )
+      n_terms <- length(.read_dict_terms(dest))
+      shiny::showNotification(
+        sprintf("Imported '%s' (%d terms).", base, n_terms), type = "message")
+    })
+
     hun_r <- shiny::reactive({
       dict_version()
-      .build_hunspell()
+      .build_hunspell(discipline_paths = input$disciplines %||% character(0))
     })
 
     flagged_r <- shiny::reactive({

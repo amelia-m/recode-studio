@@ -11,3 +11,20 @@ dictionary.
 | `user_terms.txt`   | 3 | Per-user additions. App "Add to dictionary -> User" writes here. | No (gitignored) |
 
 All entries are lowercase, one word per line. Lines starting with `#` are ignored.
+
+## Discipline dictionaries
+
+`dictionary/disciplines/` holds optional, domain-specific word lists (e.g.
+`medical.txt`). On the Spellcheck tab you can select one or more to add their
+terms to the active spellchecker — useful for jargon-heavy data where the
+generic `en_US` dictionary flags everything.
+
+- **Select**: multi-select box on the Spellcheck tab. Selection is per-session.
+- **Import**: the "Import a discipline dictionary" file picker copies an
+  uploaded `.txt` (one word per line) into this folder and selects it. Imported
+  files are committed (shareable) — re-run by anyone who pulls the repo.
+- **Bundled**: `medical.txt` — drug / clinical / cause-of-death terms.
+
+To add a discipline by hand, drop a `<name>.txt` (one lowercase word per line,
+`#` comments allowed) into `dictionary/disciplines/` and it appears in the
+selector on next app start.
