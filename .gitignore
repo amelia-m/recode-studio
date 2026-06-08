@@ -1,0 +1,23 @@
+# Per-user dictionary additions (project-shared tier IS committed)
+dictionary/user_terms.txt
+
+# R session artifacts
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+
+# renv library (if added later)
+renv/library/
+renv/staging/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.tmp
+tmp_*
+
+# Exported outputs the user generates locally
+recodes_master.csv
+recode_*.R

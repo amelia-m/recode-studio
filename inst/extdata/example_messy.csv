@@ -1,0 +1,31 @@
+id,cause1,cause2,city,status,count,visit_date
+1,asphyxiation,asphyxiation,Omaha,Yes,3,2026-01-04
+2,ascphyxiation,gunshot wound,Omaha,No,5,2026-01-05
+3,ashphxiation,gunshot wond,Linclon,Yes,2,2026-01-06
+4,asphyxation,blunt force trauma,Lincoln,No,7,2026-01-07
+5,asphyzia,blunt force truama,Lincon,Yes,1,2026-01-08
+6,asphyziation,drug toxicity,Bellevue,No,4,2026-01-09
+7,gunshot wound,drug toxicty,Belleview,Yes,6,2026-01-10
+8,gunshot wond,drowning,Kearney,No,2,2026-01-11
+9,gunshto wound,drowining,Kerney,Yes,8,2026-01-12
+10,blunt force trauma,hanging,Grand Island,No,3,2026-01-13
+11,blunt force truama,smoke inhalation,Grand Isl,Yes,5,2026-01-14
+12,drug toxicity,smoke inhalaton,Fremont,No,1,2026-01-15
+13,drug toxicty,cardiac arrest,Freemont,Yes,2,2026-01-16
+14,drowning,cardaic arrest,Norfolk,No,4,2026-01-17
+15,drowining,asphyxiation,Norfolk,Yes,7,2026-01-18
+16,hanging,ascphyxiation,Columbus,No,3,2026-01-19
+17,smoke inhalation,gunshot wound,Columbas,Yes,2,2026-01-20
+18,cardiac arrest,blunt force trauma,Hastings,No,5,2026-01-21
+19,cardaic arrest,drug toxicity,Hastngs,Yes,1,2026-01-22
+20,overdose,drowning,North Platte,No,6,2026-01-23
+21,over dose,hanging,North Platt,Yes,3,2026-01-24
+22,overdoze,smoke inhalation,Papillion,No,2,2026-01-25
+23,blunt trauma,cardiac arrest,Papilion,Yes,4,2026-01-26
+24,asphyxiation,overdose,La Vista,No,8,2026-01-27
+25,gunshot wound,overdoze,LaVista,Yes,3,2026-01-28
+26,drowning,blunt trauma,Scottsbluff,No,5,2026-01-29
+27,hanging,asphyxiation,Scotsbluff,Yes,1,2026-01-30
+28,drug toxicity,gunshot wound,South Sioux City,No,2,2026-01-31
+29,asphyziation,drowning,Beatrice,Yes,4,2026-02-01
+30,gunshto wound,overdose,Beatreace,No,6,2026-02-02

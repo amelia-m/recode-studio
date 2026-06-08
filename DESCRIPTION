@@ -1,0 +1,35 @@
+Package: recodeStudio
+Title: Interactive String-Variable Recoding Studio (Shiny)
+Version: 0.1.0
+Authors@R:
+    person("Amelia", "Miramonti", role = c("aut", "cre"),
+           email = "amelia.miramonti@gmail.com")
+Description: A dataset-agnostic Shiny application for cleaning messy string
+    variables. Load any CSV or Excel file, browse unique values alphabetically
+    or as string-similarity clusters, spellcheck with Hunspell, build recode
+    rules with optional sibling-column propagation, and export a canonical
+    recode CSV plus a runnable dplyr script. The app never modifies the source
+    data.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Imports:
+    shiny,
+    bslib,
+    DT,
+    dplyr,
+    stringr,
+    readr,
+    tibble,
+    purrr,
+    tidyr,
+    stringdist,
+    igraph,
+    hunspell,
+    readxl,
+    clipr,
+    jsonlite,
+    rlang
+Suggests:
+    writexl,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

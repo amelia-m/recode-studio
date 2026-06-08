@@ -1,0 +1,7 @@
+# Recode Studio seed dictionary (tier 1, committed).
+# One word per line, lowercase. Lines starting with # are ignored.
+#
+# This file ships EMPTY by design: Recode Studio is dataset-agnostic, so
+# there is no domain vocabulary to assume. Add terms specific to your data
+# here (or, more easily, via the app's "Add to dictionary -> Project" button,
+# which writes to custom_terms.txt).

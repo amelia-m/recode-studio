@@ -1,0 +1,3 @@
+# Project-shared dictionary additions (tier 2, committed).
+# Reviewers append here via the app's "Add to dictionary -> Project" button.
+# One word per line, lowercase.
