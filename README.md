@@ -21,15 +21,22 @@ script that you run yourself.
 
 ## Quick start
 
+This project uses [`renv`](https://rstudio.github.io/renv/) for reproducible
+dependencies. On a fresh clone:
+
 ```r
-# install dependencies (once)
+renv::restore()   # installs the pinned package versions from renv.lock
+shiny::runApp()   # run from the repo root
+```
+
+Without `renv`, install the direct dependencies manually:
+
+```r
 install.packages(c(
   "shiny", "bslib", "DT", "dplyr", "stringr", "readr", "tibble", "purrr",
-  "tidyr", "stringdist", "igraph", "hunspell", "readxl", "writexl",
+  "tidyr", "stringdist", "igraph", "hunspell", "readxl",
   "clipr", "jsonlite", "rlang"
 ))
-
-# run from the repo root
 shiny::runApp()
 ```
 

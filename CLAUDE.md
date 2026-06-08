@@ -149,30 +149,22 @@ testthat::test_dir("tests/testthat")
 Covers the pure-R core only (schema, normalize, cluster, CSV round-trip,
 validate, apply, codegen). 31 assertions.
 
-**Dependency note:** this repo has NO `renv` yet, so a bare `Rscript` uses the
-system library, which on this machine is missing `stringdist`/`igraph`/
-`hunspell`/etc. For verification, point `R_LIBS` at the upstream project's renv
-library:
-
-```powershell
-$env:R_LIBS = "renv/library"
-& "C:\Program Files\R\R-4.5.2\bin\Rscript.exe" -e "testthat::test_dir('tests/testthat')"
-```
-
-A real fix is `renv::init()` here (TODO, not done yet). Dependencies are listed
-in `DESCRIPTION` (Imports) and the README install line.
+**Dependencies:** this repo uses `renv` (initialized 2026-06; `renv.lock` pins
+101 packages on R 4.5.2). `.Rprofile` activates renv on session start, so a
+bare `Rscript` from the repo root uses the project library — no `R_LIBS`
+workaround. On a fresh clone, run `renv::restore()` first. `DESCRIPTION`
+(Imports) and the README install line list the direct deps. `writexl` is NOT a
+dependency — exports are CSV + R script only.
 
 ## Environment
 
 - Windows. R 4.5.2 at `C:\Program Files\R\R-4.5.2\bin\Rscript.exe`.
 - IDE: Positron (restart R with Ctrl+Shift+0, NOT the VS Code "R: Restart R").
-- Git default branch: `main`. Two commits so far (initial + discipline dicts).
-- No GitHub remote yet — push/visibility is the user's decision (name decided:
-  "recode-studio").
+- Git default branch: `main`.
+- GitHub remote: https://github.com/amelia-m/recode_studio (public, pushed 2026-06-08).
 
 ## Open / TODO
 
-- `renv::init()` for reproducible deps.
-- GitHub remote + push (needs `gh` auth + visibility decision).
+- On a fresh clone, run `renv::restore()` before first launch.
 - Optional: expand the free-text heuristic to let the user override a column's
   candidate flag manually.
