@@ -125,6 +125,50 @@ recode-studio/
 testthat::test_dir("tests/testthat")
 ```
 
+## Dictionary system
+
+Recode Studio uses [Hunspell](https://hunspell.github.io/) (`en_US`) plus
+layered supplementary word lists. A token is accepted if **any** layer
+recognises it.
+
+### Tiers (always active)
+
+| File | Scope | Git |
+|---|---|---|
+| `dictionary/seed_terms.txt` | Domain-neutral seed terms (ships empty) | committed |
+| `dictionary/custom_terms.txt` | Project-shared additions | committed |
+| `dictionary/user_terms.txt` | Personal additions | **gitignored** |
+
+To add a word permanently for the whole team, append it to `custom_terms.txt`
+and commit. To add a word just for yourself, use `user_terms.txt` (never
+committed).
+
+### Discipline dictionaries (optional)
+
+`dictionary/disciplines/` holds domain-specific word lists. `medical.txt`
+ships bundled. Any `.txt` file dropped in that folder appears as a selectable
+option on the Spellcheck tab.
+
+To add a new discipline via the UI: use the **Import discipline dictionary**
+button on the Spellcheck tab — the file is copied into `dictionary/disciplines/`
+and auto-selected. To share it with the team, `git add` and commit it.
+
+To add one manually, create `dictionary/disciplines/<name>.txt` — one
+lowercase term per line, `#` for comments — then restart the app.
+
+## Contributing
+
+1. Fork the repo and create a feature branch off `main`.
+2. Run `renv::restore()` to get the pinned dependencies.
+3. Make your changes. The pure-R core (`R/string_helpers.R`,
+   `R/data_loader.R`) must stay Shiny-free so it remains unit-testable.
+4. Run `testthat::test_dir("tests/testthat")` — all tests must pass.
+5. Open a pull request against `main` with a short description of what changed
+   and why.
+
+Conventions: R + tidyverse, native pipe `|>`, 2-space indent. See
+[`CLAUDE.md`](CLAUDE.md) for architecture details and gotchas.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
