@@ -161,7 +161,7 @@ dependency — exports are CSV + R script only.
 - Windows. R 4.5.2 at `C:\Program Files\R\R-4.5.2\bin\Rscript.exe`.
 - IDE: Positron (restart R with Ctrl+Shift+0, NOT the VS Code "R: Restart R").
 - Git default branch: `main`.
-- GitHub remote: https://github.com/amelia-m/recode_studio (public, pushed 2026-06-08).
+- GitHub remote: https://github.com/amelia-m/recode-studio (public, pushed 2026-06-08).
 
 ## Open / TODO
 
