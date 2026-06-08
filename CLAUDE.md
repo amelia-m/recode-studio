@@ -111,9 +111,11 @@ set with `.default = <col>` so unmatched values pass through.
 
 - **`case_when`, not `case_match`.** `dplyr::case_match()` is deprecated as of
   dplyr 1.2.0 and prints a warning at runtime. The generator uses `case_when`.
-- **`isTRUE()` is NOT vectorised.** In `generate_recode_R()` / `apply_recodes()`
-  guard `apply_to_siblings` with `!is.na(x) & x` over a vector, not `isTRUE(x)`,
-  or sibling expansion silently breaks for multi-row rule sets.
+- **`isTRUE()` is NOT vectorised.** In `generate_recode_R()` guard
+  `apply_to_siblings` with `!is.na(x) & x` over a vector, not `isTRUE(x)`.
+  In `apply_recodes()` / `validate_recodes()` the loop is row-at-a-time so
+  `isTRUE()` is technically safe, but use `!is.na(x) && x` there too to
+  match the documented pattern and survive future vectorization.
 - **Sibling regex escaping uses stringr (ICU), not base `gsub` (TRE).** An
   earlier base-`gsub` char class with `{}` threw "Invalid contents of {}" in the
   TRE engine and broke the clusters tab. `suggest_sibling_pattern()` now escapes
@@ -136,8 +138,8 @@ set with `.default = <col>` so unmatched values pass through.
 Hunspell `en_US` + three supplementary tiers (seed/custom/user) + any selected
 **discipline** dictionaries from `dictionary/disciplines/*.txt`. A word is OK if
 any source accepts it. The Spellcheck tab can select multiple disciplines and
-import a new one (uploaded `.txt` is copied into the folder, committed,
-auto-selected). `medical.txt` ships bundled. `seed_terms.txt` is intentionally
+import a new one (uploaded `.txt` is copied into the folder and auto-selected;
+the user must `git add`/commit it to share with the team). `medical.txt` ships bundled. `seed_terms.txt` is intentionally
 empty — this is a general tool, no assumed vocabulary.
 
 ## Testing
@@ -165,6 +167,5 @@ dependency — exports are CSV + R script only.
 
 ## Open / TODO
 
-- On a fresh clone, run `renv::restore()` before first launch.
 - Optional: expand the free-text heuristic to let the user override a column's
   candidate flag manually.

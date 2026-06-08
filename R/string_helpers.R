@@ -135,7 +135,7 @@ read_recodes <- function(path) {
   if (!file.exists(path)) return(empty_recodes_tibble())
   readr::read_csv(
     path,
-    na = c("<NA>", "NA"),
+    na = "<NA>",
     show_col_types = FALSE,
     col_types = readr::cols(
       rule_id           = readr::col_character(),
@@ -215,7 +215,7 @@ validate_recodes <- function(rules, data = NULL) {
   if (!is.null(data) && nrow(rules) > 0) {
     stale_flags <- vapply(seq_len(nrow(rules)), function(i) {
       r <- rules[i, ]
-      cols <- if (isTRUE(r$apply_to_siblings) && !is.na(r$sibling_pattern)) {
+      cols <- if (!is.na(r$apply_to_siblings) && r$apply_to_siblings && !is.na(r$sibling_pattern)) {
         grep(r$sibling_pattern, names(data), value = TRUE)
       } else {
         r$variable
@@ -258,7 +258,7 @@ apply_recodes <- function(df, rules) {
   for (i in seq_len(nrow(rules))) {
     r <- rules[i, ]
 
-    cols <- if (isTRUE(r$apply_to_siblings) && !is.na(r$sibling_pattern)) {
+    cols <- if (!is.na(r$apply_to_siblings) && r$apply_to_siblings && !is.na(r$sibling_pattern)) {
       grep(r$sibling_pattern, names(df), value = TRUE)
     } else {
       r$variable
@@ -355,10 +355,10 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
       for (i in seq_len(nrow(g))) {
         r <- g[i, ]
         rhs <- if (r$action == "delete") "NA_character_"
-               else shQuote(r$new_value, type = "cmd")
-        lhs <- shQuote(r$old_value, type = "cmd")
+               else deparse(as.character(r$new_value))
+        lhs <- deparse(as.character(r$old_value))
         cmt <- if (!is.na(r$notes) && nzchar(r$notes))
-                 paste0("  # ", r$notes) else ""
+                 paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
         arms <- c(arms,
           sprintf("    %s == %s ~ %s,%s", lhs_expr_f, lhs, rhs, cmt))
       }
@@ -379,7 +379,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
       block <- c(
         "df <- df |>",
         sprintf("  mutate(across(matches(%s), function(.x) {",
-                shQuote(pattern, type = "cmd")),
+                deparse(as.character(pattern))),
         "    case_when(",
         make_arms(".x"),
         "      .default = .x",

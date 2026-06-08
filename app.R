@@ -50,7 +50,7 @@ ui <- bslib::page_navbar(
   ),
   bslib::nav_spacer(),
   bslib::nav_item(
-    tags$a("GitHub", href = "https://github.com/", target = "_blank",
+    tags$a("GitHub", href = "https://github.com/amelia-m/recode-studio", target = "_blank",
            style = "color:#fff;")
   )
 )

@@ -139,6 +139,19 @@ test_that("generate_recode_R parses and contains case_when", {
   expect_true(grepl("NA_character_", code))
 })
 
+test_that("generate_recode_R handles values with quotes and backslashes", {
+  rules <- tibble::tibble(
+    rule_id = "r1", variable = "x",
+    apply_to_siblings = FALSE, sibling_pattern = NA_character_,
+    match_type = "trimmed_ci",
+    old_value = 'it\'s "quoted"', new_value = "clean\\value",
+    action = "recode", notes = "multi\nline note", author = "t",
+    created_at = "", updated_at = "", source_dataset = "d"
+  )
+  code <- generate_recode_R(rules, "test_dataset")
+  expect_silent(parse(text = code))
+})
+
 test_that("generate_recode_R sibling rule uses across()", {
   rules <- tibble::tibble(
     rule_id = "r1", variable = "cause1",

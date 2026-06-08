@@ -119,11 +119,11 @@ mod_cluster_view_server <- function(id, shared_state,
           bslib::card_body(
             fillable = FALSE,
             shiny::tags$ul(member_lines),
-            shiny::actionButton(
-              session$ns(paste0("recode_", cid)),
-              sprintf("Recode all to: %s", modal),
-              class = "btn btn-sm btn-primary"
-            )
+            shiny::HTML(sprintf(
+              '<button class="btn btn-sm btn-primary" onclick="Shiny.setInputValue(\'%s\', {cid:%d, nonce:Math.random()}, {priority:\'event\'});">Recode all to: %s</button>',
+              session$ns("recode_cluster_clicked"), cid,
+              htmltools::htmlEscape(modal)
+            ))
           )
         )
       })
@@ -131,57 +131,46 @@ mod_cluster_view_server <- function(id, shared_state,
       do.call(shiny::tagList, cards)
     })
 
-    # Generic observer that listens for every cluster's recode button.
-    shiny::observe({
-      cl <- clusters_r()
+    # Single handler for all cluster recode buttons (avoids observer accumulation
+    # from the old observe+loop pattern that grew unbounded on threshold changes).
+    shiny::observeEvent(input$recode_cluster_clicked, ignoreNULL = TRUE, {
+      payload <- input$recode_cluster_clicked
+      .cid <- payload$cid
       v  <- selected_var_r()
+      cl <- clusters_r()
       if (is.null(cl) || is.null(v)) return()
-      cluster_ids <- unique(cl$cluster_id)
-      for (cid in cluster_ids) {
-        local({
-          .cid <- cid
-          shiny::observeEvent(input[[paste0("recode_", .cid)]],
-                              ignoreInit = TRUE, once = FALSE, {
-            members <- cl[cl$cluster_id == .cid, ] |>
-              dplyr::arrange(dplyr::desc(n))
-            modal <- members$value[1]
-            to_recode <- members$value[members$value != modal]
-            if (length(to_recode) == 0) {
-              shiny::showNotification("Nothing to recode in this cluster.",
-                                      type = "warning")
-              return()
-            }
-            sib_on <- isTRUE(input$apply_siblings)
-            sib_pat <- if (sib_on) {
-              suggest_sibling_pattern(v, names(shared_state$data))
-            } else NA_character_
-            if (sib_on && is.na(sib_pat)) sib_on <- FALSE
-
-            now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
-            new_rules <- tibble::tibble(
-              rule_id           = recode_rule_id(v, "trimmed_ci", to_recode),
-              variable          = v,
-              apply_to_siblings = sib_on,
-              sibling_pattern   = if (sib_on) sib_pat else NA_character_,
-              match_type        = "trimmed_ci",
-              old_value         = to_recode,
-              new_value         = modal,
-              action            = "recode",
-              notes             = sprintf("From cluster %d", .cid),
-              author            = Sys.info()[["user"]],
-              created_at        = now,
-              updated_at        = now,
-              source_dataset    = shared_state$dataset_name %||% NA_character_
-            )
-            rules_proxy$add(new_rules)
-            shiny::showNotification(
-              sprintf("Added %d rules from cluster %d. Edit on Recodes tab.",
-                      nrow(new_rules), .cid),
-              type = "message"
-            )
-          })
-        })
+      members   <- cl[cl$cluster_id == .cid, ] |> dplyr::arrange(dplyr::desc(n))
+      modal     <- members$value[1]
+      to_recode <- members$value[members$value != modal]
+      if (length(to_recode) == 0) {
+        shiny::showNotification("Nothing to recode in this cluster.", type = "warning")
+        return()
       }
+      sib_on  <- isTRUE(input$apply_siblings)
+      sib_pat <- if (sib_on) suggest_sibling_pattern(v, names(shared_state$data)) else NA_character_
+      if (sib_on && is.na(sib_pat)) sib_on <- FALSE
+
+      now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
+      new_rules <- tibble::tibble(
+        rule_id           = recode_rule_id(v, "trimmed_ci", to_recode),
+        variable          = v,
+        apply_to_siblings = sib_on,
+        sibling_pattern   = if (sib_on) sib_pat else NA_character_,
+        match_type        = "trimmed_ci",
+        old_value         = to_recode,
+        new_value         = modal,
+        action            = "recode",
+        notes             = sprintf("From cluster %d", .cid),
+        author            = Sys.info()[["user"]],
+        created_at        = now,
+        updated_at        = now,
+        source_dataset    = shared_state$dataset_name %||% NA_character_
+      )
+      rules_proxy$add(new_rules)
+      shiny::showNotification(
+        sprintf("Added %d rules from cluster %d. Edit on Recodes tab.", nrow(new_rules), .cid),
+        type = "message"
+      )
     })
   })
 }
