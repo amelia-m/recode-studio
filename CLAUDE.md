@@ -178,5 +178,14 @@ dependency — exports are CSV + R script only.
 
 ## Open / TODO
 
+- No CI yet — a GitHub Actions workflow (renv restore + `testthat`) would lock
+  in the suite on every push.
+- `data_loader.R` (`build_meta`, `suggest_sibling_pattern`, `column_group`,
+  classifiers) has no unit tests — only smoke coverage.
 - Optional: expand the free-text heuristic to let the user override a column's
   candidate flag manually.
+
+Note: `match_type` / `action` are constrained — single-sourced in
+`RECODE_MATCH_TYPES` / `RECODE_ACTIONS` (string_helpers.R). The editor rejects
+out-of-range edits live; `validate_recodes()$invalid_enum` catches bad enums in
+imported CSVs.

@@ -17,7 +17,9 @@ mod_recode_editor_ui <- function(id) {
       shiny::fluidRow(
         shiny::column(8,
           shiny::tags$small(shiny::tags$em(
-            "Edit any cell directly. Use the delete buttons to remove rules. 'Validate' surfaces conflicts."
+            "Edit any cell directly. Use the delete buttons to remove rules. 'Validate' surfaces conflicts. ",
+            shiny::tags$br(),
+            "match_type ∈ {exact, exact_ci, trimmed_ci, regex}; action ∈ {recode, delete} — invalid entries are rejected."
           ))
         ),
         shiny::column(4, align = "right",
@@ -74,6 +76,25 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
       row <- info$row
       val <- info$value
       if (col %in% c("delete", "rule_id", "variable")) return()  # locked
+
+      # Reject out-of-range enum edits; force a redraw so the cell reverts.
+      if (col == "match_type" && !(val %in% RECODE_MATCH_TYPES)) {
+        shiny::showNotification(
+          sprintf("Invalid match_type '%s'. Allowed: %s.",
+                  val, paste(RECODE_MATCH_TYPES, collapse = ", ")),
+          type = "error")
+        rules_proxy$set(r)   # re-assign unchanged rules -> renderDT redraws
+        return()
+      }
+      if (col == "action" && !(val %in% RECODE_ACTIONS)) {
+        shiny::showNotification(
+          sprintf("Invalid action '%s'. Allowed: %s.",
+                  val, paste(RECODE_ACTIONS, collapse = ", ")),
+          type = "error")
+        rules_proxy$set(r)
+        return()
+      }
+
       if (col == "apply_to_siblings") {
         val <- val %in% c("TRUE", "true", "T", "1", TRUE)
       }
@@ -129,6 +150,12 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
           shiny::h5(badge("Blank new_value with action=recode", "yellow")),
           shiny::pre(paste(capture.output(print(
             issues$blank_new_value[, c("variable", "old_value", "action")])), collapse = "\n"))
+        ))
+      }
+      if (nrow(issues$invalid_enum) > 0) {
+        msg <- shiny::tagAppendChild(msg, shiny::tagList(
+          shiny::h5(badge("Invalid match_type / action", "red")),
+          shiny::pre(paste(capture.output(print(issues$invalid_enum)), collapse = "\n"))
         ))
       }
       if (nrow(issues$invalid_regex) > 0) {

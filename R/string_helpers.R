@@ -19,6 +19,10 @@
 
 # --- Schema ------------------------------------------------------------------
 
+# Allowed enum values, single-sourced for the editor + the validator.
+RECODE_MATCH_TYPES <- c("exact", "exact_ci", "trimmed_ci", "regex")
+RECODE_ACTIONS     <- c("recode", "delete")
+
 #' Empty tibble matching the recodes_master.csv schema.
 empty_recodes_tibble <- function() {
   tibble::tibble(
@@ -203,6 +207,7 @@ recode_rule_id <- function(variable, match_type, old_value) {
 #'   duplicate_keys     : (variable, match_type, old_value) appearing >1x
 #'   blank_new_value    : action == "recode" but new_value is NA or ""
 #'   rule_chains        : per variable, values that appear as both old and new
+#'   invalid_enum       : match_type or action outside the allowed set
 #'   invalid_regex      : match_type == "regex" but old_value won't compile
 #'   stale              : rule whose old_value is no longer in any target column
 #'                       (computed only if `data` is provided)
@@ -212,6 +217,12 @@ validate_recodes <- function(rules, data = NULL) {
   issues$duplicate_keys <- rules |>
     dplyr::count(variable, match_type, old_value, name = "n") |>
     dplyr::filter(n > 1)
+
+  # Enum columns outside the allowed set (catches hand-edited / imported junk).
+  issues$invalid_enum <- rules |>
+    dplyr::filter(!(match_type %in% RECODE_MATCH_TYPES) |
+                  !(action %in% RECODE_ACTIONS)) |>
+    dplyr::select(rule_id, variable, match_type, action)
 
   # Regex rules whose pattern fails to compile.
   rx <- rules[!is.na(rules$match_type) & rules$match_type == "regex", ]

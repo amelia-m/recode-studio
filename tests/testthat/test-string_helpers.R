@@ -152,6 +152,26 @@ test_that("generate_recode_R handles values with quotes and backslashes", {
   expect_silent(parse(text = code))
 })
 
+test_that("validate_recodes flags invalid match_type / action enums", {
+  rules <- tibble::tibble(
+    rule_id = c("r1","r2","r3"), variable = rep("x", 3),
+    apply_to_siblings = rep(FALSE, 3), sibling_pattern = rep(NA_character_, 3),
+    match_type = c("trimmed_ci", "regx", "exact"),   # r2 bad
+    old_value = c("a","b","c"), new_value = c("A","B","C"),
+    action = c("recode", "recode", "destroy"),       # r3 bad
+    notes = rep(NA_character_, 3), author = rep("t", 3),
+    created_at = rep("", 3), updated_at = rep("", 3), source_dataset = rep("d", 3)
+  )
+  issues <- validate_recodes(rules)
+  expect_equal(nrow(issues$invalid_enum), 2L)
+  expect_setequal(issues$invalid_enum$rule_id, c("r2", "r3"))
+})
+
+test_that("enum constants are exported and complete", {
+  expect_setequal(RECODE_MATCH_TYPES, c("exact","exact_ci","trimmed_ci","regex"))
+  expect_setequal(RECODE_ACTIONS, c("recode","delete"))
+})
+
 test_that("apply_recodes with match_type = regex matches by pattern", {
   df <- tibble::tibble(
     cause = c("acute asphyxia", "asphyxiation", "gunshot wound", NA_character_)
