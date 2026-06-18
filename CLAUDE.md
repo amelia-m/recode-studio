@@ -96,8 +96,19 @@ Columns: `rule_id`, `variable`, `apply_to_siblings` (lgl), `sibling_pattern`
 `generate_recode_R(rules, dataset_id)` emits one `dplyr::case_when()` block per
 (effective_pattern, match_type) group. Single-column rules → plain `mutate()`;
 sibling rules → `mutate(across(matches("<pattern>"), function(.x) case_when(...)))`.
-`trimmed_ci` wraps the LHS in `str_squish(tolower(...))`. Always ends each arm
-set with `.default = <col>` so unmatched values pass through.
+`trimmed_ci` wraps the LHS in `str_squish(tolower(...))`. `regex` rules emit
+`str_detect(<col>, "<pattern>") ~ <new>` arms instead of `==`. Always ends each
+arm set with `.default = <col>` so unmatched values pass through.
+
+### match_type semantics
+
+`exact` / `exact_ci` / `trimmed_ci` compare for equality after
+`normalize_value()`. `regex` matches `old_value` as an unanchored `grepl`
+pattern against the RAW value and replaces the whole cell (no partial sub /
+backreferences). All matching goes through the `.rule_hits()` helper in
+`string_helpers.R` — used by both `apply_recodes()` and the stale check in
+`validate_recodes()`, so they can never diverge. Invalid regex patterns are
+caught (all-FALSE, no error) and surfaced by `validate_recodes()$invalid_regex`.
 
 ## Conventions
 

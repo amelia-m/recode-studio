@@ -71,13 +71,20 @@ immediately, or upload your own CSV/Excel.
 | `variable` | column the rule targets |
 | `apply_to_siblings` | `TRUE` → also apply across `sibling_pattern` |
 | `sibling_pattern` | regex (e.g. `^cause[0-9]+$`); `NA` otherwise |
-| `match_type` | `exact` / `exact_ci` / `trimmed_ci` (default) / `regex` |
-| `old_value` | value to match |
+| `match_type` | how `old_value` is matched — see below |
+| `old_value` | value (or regex pattern) to match |
 | `new_value` | replacement (`<NA>` literally means "set to NA") |
 | `action` | `recode` or `delete` |
 | `notes`, `author`, `created_at`, `updated_at`, `source_dataset` | provenance |
 
 NA round-trips as the literal `<NA>` so the file survives editing in Excel.
+
+**Match types:**
+
+- `trimmed_ci` (default) — compare after `str_squish(tolower(...))`. `" Asphyxiation "` matches `"asphyxiation"`.
+- `exact_ci` — case-insensitive exact compare.
+- `exact` — byte-for-byte exact compare.
+- `regex` — `old_value` is an (unanchored) regular expression matched against the raw value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid pattern is flagged by Validate and matches nothing.
 
 ## The generated R
 

@@ -47,7 +47,7 @@ empty_recodes_tibble <- function() {
 #'   - exact        : returned as-is
 #'   - exact_ci     : tolower()
 #'   - trimmed_ci   : str_squish(tolower())  (DEFAULT)
-#'   - regex        : returned as-is (caller must handle matching itself)
+#'   - regex        : returned as-is (matching done by grepl, not equality)
 normalize_value <- function(x,
                             match_type = c("trimmed_ci", "exact_ci",
                                            "exact", "regex")) {
@@ -58,6 +58,26 @@ normalize_value <- function(x,
     trimmed_ci = stringr::str_squish(tolower(x)),
     regex      = x
   )
+}
+
+#' Logical hit vector for a single rule against a raw column.
+#'
+#' For `regex`, `old_value` is treated as an (unanchored) regular expression
+#' matched against raw values with grepl; an invalid pattern yields all-FALSE
+#' rather than erroring. For the other match types, values are normalized and
+#' compared for equality. A match REPLACES THE WHOLE CELL (regex does not do
+#' partial substitution / backreferences).
+.rule_hits <- function(values, old_value, match_type) {
+  if (match_type == "regex") {
+    suppressWarnings(tryCatch(
+      !is.na(values) & grepl(old_value, values),
+      error = function(e) rep(FALSE, length(values))
+    ))
+  } else {
+    norm   <- normalize_value(values, match_type)
+    target <- normalize_value(old_value, match_type)
+    !is.na(norm) & norm == target
+  }
 }
 
 
@@ -183,6 +203,7 @@ recode_rule_id <- function(variable, match_type, old_value) {
 #'   duplicate_keys     : (variable, match_type, old_value) appearing >1x
 #'   blank_new_value    : action == "recode" but new_value is NA or ""
 #'   rule_chains        : per variable, values that appear as both old and new
+#'   invalid_regex      : match_type == "regex" but old_value won't compile
 #'   stale              : rule whose old_value is no longer in any target column
 #'                       (computed only if `data` is provided)
 validate_recodes <- function(rules, data = NULL) {
@@ -191,6 +212,19 @@ validate_recodes <- function(rules, data = NULL) {
   issues$duplicate_keys <- rules |>
     dplyr::count(variable, match_type, old_value, name = "n") |>
     dplyr::filter(n > 1)
+
+  # Regex rules whose pattern fails to compile.
+  rx <- rules[!is.na(rules$match_type) & rules$match_type == "regex", ]
+  if (nrow(rx) > 0) {
+    bad <- vapply(rx$old_value, function(p) {
+      isTRUE(suppressWarnings(tryCatch({ grepl(p, "probe"); FALSE },
+                                       error = function(e) TRUE)))
+    }, logical(1))
+    issues$invalid_regex <- rx[bad, c("rule_id", "variable", "old_value")]
+  } else {
+    issues$invalid_regex <- tibble::tibble(
+      rule_id = character(0), variable = character(0), old_value = character(0))
+  }
 
   issues$blank_new_value <- rules |>
     dplyr::filter(action == "recode",
@@ -222,9 +256,8 @@ validate_recodes <- function(rules, data = NULL) {
       }
       cols <- intersect(cols, names(data))
       if (length(cols) == 0) return(TRUE)
-      target <- normalize_value(r$old_value, r$match_type)
       !any(vapply(cols, function(c) {
-        target %in% normalize_value(data[[c]], r$match_type)
+        any(.rule_hits(data[[c]], r$old_value, r$match_type))
       }, logical(1)))
     }, logical(1))
     issues$stale <- rules[stale_flags, c("rule_id", "variable", "old_value")]
@@ -271,14 +304,11 @@ apply_recodes <- function(df, rules) {
       next
     }
 
-    target <- normalize_value(r$old_value, r$match_type)
     new_val <- if (r$action == "delete") NA_character_ else r$new_value
 
     cells_changed <- 0L
     for (col in cols) {
-      orig <- df[[col]]
-      norm <- normalize_value(orig, r$match_type)
-      hit <- !is.na(norm) & norm == target
+      hit <- .rule_hits(df[[col]], r$old_value, r$match_type)
       if (any(hit)) {
         df[[col]][hit] <- new_val
         cells_changed <- cells_changed + sum(hit)
@@ -356,11 +386,18 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
         r <- g[i, ]
         rhs <- if (r$action == "delete") "NA_character_"
                else deparse(as.character(r$new_value))
-        lhs <- deparse(as.character(r$old_value))
         cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                  paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
-        arms <- c(arms,
-          sprintf("    %s == %s ~ %s,%s", lhs_expr_f, lhs, rhs, cmt))
+        if (match_type == "regex") {
+          # Regex match: detect the (raw) pattern, replace the whole cell.
+          pat <- deparse(as.character(r$old_value))
+          arms <- c(arms,
+            sprintf("    str_detect(%s, %s) ~ %s,%s", col_token, pat, rhs, cmt))
+        } else {
+          lhs <- deparse(as.character(r$old_value))
+          arms <- c(arms,
+            sprintf("    %s == %s ~ %s,%s", lhs_expr_f, lhs, rhs, cmt))
+        }
       }
       arms
     }

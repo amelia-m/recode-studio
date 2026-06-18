@@ -131,6 +131,12 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
             issues$blank_new_value[, c("variable", "old_value", "action")])), collapse = "\n"))
         ))
       }
+      if (nrow(issues$invalid_regex) > 0) {
+        msg <- shiny::tagAppendChild(msg, shiny::tagList(
+          shiny::h5(badge("Invalid regex pattern", "red")),
+          shiny::pre(paste(capture.output(print(issues$invalid_regex)), collapse = "\n"))
+        ))
+      }
       if (nrow(issues$stale) > 0) {
         msg <- shiny::tagAppendChild(msg, shiny::tagList(
           shiny::h5(badge("Stale (old_value not in current data)", "grey")),

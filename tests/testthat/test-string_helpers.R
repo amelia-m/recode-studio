@@ -152,6 +152,69 @@ test_that("generate_recode_R handles values with quotes and backslashes", {
   expect_silent(parse(text = code))
 })
 
+test_that("apply_recodes with match_type = regex matches by pattern", {
+  df <- tibble::tibble(
+    cause = c("acute asphyxia", "asphyxiation", "gunshot wound", NA_character_)
+  )
+  rules <- tibble::tibble(
+    rule_id = "r1", variable = "cause", apply_to_siblings = FALSE,
+    sibling_pattern = NA_character_, match_type = "regex",
+    old_value = "asphyx", new_value = "ASPHYXIA",   # unanchored substring
+    action = "recode", notes = NA_character_, author = "t",
+    created_at = "", updated_at = "", source_dataset = "d"
+  )
+  res <- apply_recodes(df, rules)
+  expect_equal(res$df$cause[1], "ASPHYXIA")   # "acute asphyxia" matched
+  expect_equal(res$df$cause[2], "ASPHYXIA")   # "asphyxiation" matched
+  expect_equal(res$df$cause[3], "gunshot wound")  # untouched
+  expect_true(is.na(res$df$cause[4]))         # NA untouched
+  expect_equal(res$summary$cells_changed, 2L)
+})
+
+test_that("regex delete sets matching cells to NA", {
+  df <- tibble::tibble(x = c("test123", "keep", "test999"))
+  rules <- tibble::tibble(
+    rule_id = "r1", variable = "x", apply_to_siblings = FALSE,
+    sibling_pattern = NA_character_, match_type = "regex",
+    old_value = "^test[0-9]+$", new_value = NA_character_,
+    action = "delete", notes = NA_character_, author = "t",
+    created_at = "", updated_at = "", source_dataset = "d"
+  )
+  res <- apply_recodes(df, rules)
+  expect_true(is.na(res$df$x[1]))
+  expect_equal(res$df$x[2], "keep")
+  expect_true(is.na(res$df$x[3]))
+})
+
+test_that("validate_recodes flags an invalid regex pattern", {
+  rules <- tibble::tibble(
+    rule_id = c("r1", "r2"), variable = c("x", "x"),
+    apply_to_siblings = c(FALSE, FALSE), sibling_pattern = c(NA_character_, NA_character_),
+    match_type = c("regex", "regex"),
+    old_value = c("valid[0-9]+", "broken[unclosed"),  # second is invalid
+    new_value = c("a", "b"), action = c("recode", "recode"),
+    notes = c(NA_character_, NA_character_), author = c("t", "t"),
+    created_at = c("", ""), updated_at = c("", ""), source_dataset = c("d", "d")
+  )
+  issues <- validate_recodes(rules)
+  expect_equal(nrow(issues$invalid_regex), 1L)
+  expect_equal(issues$invalid_regex$old_value, "broken[unclosed")
+})
+
+test_that("generate_recode_R emits str_detect for regex rules", {
+  rules <- tibble::tibble(
+    rule_id = "r1", variable = "cause", apply_to_siblings = FALSE,
+    sibling_pattern = NA_character_, match_type = "regex",
+    old_value = "asphyx", new_value = "asphyxiation",
+    action = "recode", notes = NA_character_, author = "t",
+    created_at = "", updated_at = "", source_dataset = "d"
+  )
+  code <- generate_recode_R(rules, "d")
+  expect_silent(parse(text = code))
+  expect_true(grepl("str_detect", code))
+  expect_false(grepl("== \"asphyx\"", code))
+})
+
 test_that("generate_recode_R sibling rule uses across()", {
   rules <- tibble::tibble(
     rule_id = "r1", variable = "cause1",
