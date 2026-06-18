@@ -159,8 +159,12 @@ empty — this is a general tool, no assumed vocabulary.
 testthat::test_dir("tests/testthat")
 ```
 
-Covers the pure-R core only (schema, normalize, cluster, CSV round-trip,
-validate, apply, codegen). 31 assertions.
+`test-string_helpers.R` covers the pure-R core (schema, normalize, cluster,
+CSV round-trip, validate incl. regex/enum, apply incl. regex, codegen).
+`test-data_loader.R` covers metadata + classifiers (`build_meta`,
+`column_group`, `suggest_sibling_pattern` incl. metachar escaping, date/numeric
+detection, `read_dataset`). ~77 assertions. CI runs them on every push/PR via
+`.github/workflows/tests.yml` (r-lib/actions + DESCRIPTION-driven deps).
 
 **Dependencies:** this repo uses `renv` (initialized 2026-06; `renv.lock` pins
 101 packages on R 4.5.2). `.Rprofile` activates renv on session start, so a
@@ -178,12 +182,9 @@ dependency — exports are CSV + R script only.
 
 ## Open / TODO
 
-- No CI yet — a GitHub Actions workflow (renv restore + `testthat`) would lock
-  in the suite on every push.
-- `data_loader.R` (`build_meta`, `suggest_sibling_pattern`, `column_group`,
-  classifiers) has no unit tests — only smoke coverage.
 - Optional: expand the free-text heuristic to let the user override a column's
   candidate flag manually.
+- Optional: README screenshot / demo GIF (capture from a running app).
 
 Note: `match_type` / `action` are constrained — single-sourced in
 `RECODE_MATCH_TYPES` / `RECODE_ACTIONS` (string_helpers.R). The editor rejects

@@ -1,5 +1,7 @@
 # Recode Studio
 
+[![tests](https://github.com/amelia-m/recode-studio/actions/workflows/tests.yml/badge.svg)](https://github.com/amelia-m/recode-studio/actions/workflows/tests.yml)
+
 A dataset-agnostic [Shiny](https://shiny.posit.co/) app for cleaning messy
 string variables — typos, capitalization noise, duplicate tokens, and
 near-duplicate variants — without writing R by hand. Built for people who are
