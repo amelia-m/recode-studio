@@ -4,8 +4,16 @@
 
 A dataset-agnostic [Shiny](https://shiny.posit.co/) app for cleaning messy
 string variables — typos, capitalization noise, duplicate tokens, and
-near-duplicate variants — without writing R by hand. Built for people who are
-comfortable in spreadsheets but are not fluent R users.
+near-duplicate variants.
+
+It serves two kinds of users:
+
+- **Spreadsheet-comfortable, not-fluent-in-R** reviewers get a point-and-click
+  way to clean values with no code at all.
+- **R users** get a fast, repeatable way to *generate and update recoding
+  syntax* — let the app find variant clusters and spellcheck flags, then export
+  a tidy `dplyr` script and a re-importable rule CSV instead of hand-writing and
+  re-editing `case_when()` blocks every time the data changes.
 
 Load any CSV or Excel file, pick a text column, and Recode Studio helps you:
 
