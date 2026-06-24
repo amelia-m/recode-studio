@@ -65,13 +65,33 @@ This creates a `recode-studio` folder. Later, to pull in updates, run
 
 ### 3. Open the project
 
-In Positron or RStudio: **File → Open Project** (or **Open Folder**) and choose
-the `recode-studio` folder. The console at the bottom is where the commands in
-the next section go.
+Opening the project points your R session at the `recode-studio` folder, so the
+commands in the next section "just work". Steps differ slightly by editor.
+
+**RStudio:**
+
+1. **File → Open Project…**
+2. Browse into the `recode-studio` folder and pick **`recode-studio.Rproj`**.
+3. The **Console** is the bottom-left pane — that's where you'll type commands.
+4. Easiest way to launch the app: open `app.R` (click it in the **Files** pane,
+   bottom-right) and click the **Run App** button at the top of the editor.
+
+**Positron:**
+
+1. **File → Open Folder…** and pick the `recode-studio` folder.
+2. Positron starts an **R** session automatically; the **Console** tab is at the
+   bottom — that's where you'll type commands. (If no R console appears, click
+   the interpreter picker in the top-right and choose your R version, or open
+   the Command Palette with **Ctrl/Cmd+Shift+P** → "Interpreter: Select".)
+3. Easiest way to launch the app: open `app.R` and click the **Run App** /
+   **▶** button at the top of the editor.
+
+In either editor you can skip the button and just type the commands from
+[Quick start](#quick-start) into the Console.
 
 > **Tip:** "from the repo root" means your R session's working directory is the
-> `recode-studio` folder. Opening the project (above) handles that for you. You
-> can confirm with `getwd()` — it should end in `/recode-studio`.
+> `recode-studio` folder. Opening the project / folder (above) handles that for
+> you. Confirm with `getwd()` — it should end in `/recode-studio`.
 
 ## Quick start
 
