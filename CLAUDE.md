@@ -32,9 +32,12 @@ shiny::runApp()
 ```
 
 On the **Data** tab, "Load bundled example dataset" loads
-`inst/extdata/example_messy.csv` (30 rows, deliberate asphyxiation/gunshot
-typo families + a `cause1`/`cause2` sibling pair) so the app is testable out
-of the box.
+`inst/extdata/example_messy.csv` — a benign café-orders dataset (30 rows, 8
+columns) that exercises every feature: typo clusters (cappuccino/espresso
+variants), a `drink1`/`drink2` sibling family, a multi-word `notes` column with
+reordered + duplicate-token values (for the normalize/cosine options), plus
+excluded numeric/date/small-choice columns (`order_id`, `price`, `order_date`,
+`size`). Deliberately non-sensitive.
 
 ## Architecture
 
