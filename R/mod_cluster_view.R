@@ -2,8 +2,9 @@
 # Cluster view
 # =============================================================================
 # Similarity-grouped view of a column's unique values. Each cluster gets a
-# card with members + frequencies, a modal-value suggestion, and a
-# "Recode all to <modal>" button that emits sibling-aware rules.
+# card listing its members (with frequencies); the user picks the canonical
+# target via a radio (default = most frequent) or types a custom value, then
+# Apply emits sibling-aware rules recoding the rest to that target.
 # =============================================================================
 
 mod_cluster_view_ui <- function(id) {
@@ -94,36 +95,36 @@ mod_cluster_view_server <- function(id, shared_state,
       cards <- lapply(cluster_sizes$cluster_id, function(cid) {
         members <- cl[cl$cluster_id == cid, ] |>
           dplyr::arrange(dplyr::desc(n))
-        modal <- members$value[1]
-        member_lines <- lapply(seq_len(nrow(members)), function(i) {
-          m <- members[i, ]
-          color <- if (isTRUE(m$is_rare)) "red"
-                   else if (m$value == modal) "green"
-                   else "grey"
-          shiny::tags$li(
-            badge(sprintf("%dx", m$n), color = color),
-            shiny::tags$span(" "),
-            shiny::tags$code(m$value)
-          )
-        })
+        modal <- members$value[1]   # most frequent = default suggested target
+
+        # Radio choices = the cluster members, labelled with frequency and a
+        # rare flag. Value is the raw string; default selection is the modal.
+        choice_labels <- vapply(seq_len(nrow(members)), function(i)
+          sprintf("%s  —  %d%s", members$value[i], members$n[i],
+                  if (isTRUE(members$is_rare[i])) "  (rare)" else ""),
+          character(1))
+        choices <- stats::setNames(members$value, choice_labels)
+
         bslib::card(
           full_screen = FALSE,
           fill        = FALSE,
           bslib::card_header(
-            shiny::span(
-              sprintf("Cluster %d  (%d members, modal: ", cid, nrow(members)),
-              shiny::tags$code(modal),
-              ")"
-            )
+            sprintf("Cluster %d  (%d members)", cid, nrow(members))
           ),
           bslib::card_body(
             fillable = FALSE,
-            shiny::tags$ul(member_lines),
+            shiny::radioButtons(
+              session$ns(paste0("target_", cid)),
+              "Recode the rest to:",
+              choices  = choices,
+              selected = modal),
+            shiny::textInput(
+              session$ns(paste0("custom_", cid)),
+              label = NULL,
+              placeholder = "…or type a different target value"),
             shiny::HTML(sprintf(
-              '<button class="btn btn-sm btn-primary" onclick="Shiny.setInputValue(\'%s\', {cid:%d, nonce:Math.random()}, {priority:\'event\'});">Recode all to: %s</button>',
-              session$ns("recode_cluster_clicked"), cid,
-              htmltools::htmlEscape(modal)
-            ))
+              '<button class="btn btn-sm btn-primary" onclick="Shiny.setInputValue(\'%s\', {cid:%d, nonce:Math.random()}, {priority:\'event\'});">Apply</button>',
+              session$ns("recode_cluster_clicked"), cid))
           )
         )
       })
@@ -139,11 +140,21 @@ mod_cluster_view_server <- function(id, shared_state,
       v  <- selected_var_r()
       cl <- clusters_r()
       if (is.null(cl) || is.null(v)) return()
-      members   <- cl[cl$cluster_id == .cid, ] |> dplyr::arrange(dplyr::desc(n))
-      modal     <- members$value[1]
-      to_recode <- members$value[members$value != modal]
+      members <- cl[cl$cluster_id == .cid, ] |> dplyr::arrange(dplyr::desc(n))
+
+      # Target precedence: a non-empty custom value, else the selected radio,
+      # else the modal. A custom target need not be one of the members (the
+      # correct spelling may be absent from the data).
+      custom <- input[[paste0("custom_", .cid)]]
+      radio  <- input[[paste0("target_", .cid)]]
+      target <- if (!is.null(custom) && nzchar(trimws(custom))) trimws(custom)
+                else if (!is.null(radio) && nzchar(radio)) radio
+                else members$value[1]
+
+      to_recode <- setdiff(members$value, target)  # every member except target
       if (length(to_recode) == 0) {
-        shiny::showNotification("Nothing to recode in this cluster.", type = "warning")
+        shiny::showNotification("Nothing to recode — target is the only value.",
+                                type = "warning")
         return()
       }
       sib_on  <- isTRUE(input$apply_siblings)
@@ -158,7 +169,7 @@ mod_cluster_view_server <- function(id, shared_state,
         sibling_pattern   = if (sib_on) sib_pat else NA_character_,
         match_type        = "trimmed_ci",
         old_value         = to_recode,
-        new_value         = modal,
+        new_value         = target,
         action            = "recode",
         notes             = sprintf("From cluster %d", .cid),
         author            = Sys.info()[["user"]],
