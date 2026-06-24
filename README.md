@@ -108,7 +108,7 @@ Without `renv`, install the direct dependencies manually:
 ```r
 install.packages(c(
   "shiny", "bslib", "DT", "dplyr", "stringr", "readr", "tibble", "purrr",
-  "tidyr", "stringdist", "igraph", "hunspell", "readxl",
+  "tidyr", "stringdist", "igraph", "phonics", "hunspell", "readxl",
   "clipr", "jsonlite", "rlang"
 ))
 shiny::runApp()
@@ -125,9 +125,14 @@ immediately, or upload your own CSV/Excel.
 2. **Variable** — a sortable, filterable table of columns. Click one to clean.
 3. **Browse values** — frequency table of unique values; rows with duplicated
    adjacent tokens (e.g. `"asphyxia asphyxia"`) are highlighted.
-4. **Clusters** — values grouped by similarity (Jaro-Winkler / OSA / Soundex).
-   Each cluster suggests the most common spelling as canonical; one click
-   recodes the rest to it. Optionally applies across sibling columns.
+4. **Clusters** — values grouped by similarity. Choose the metric (edit-distance:
+   Jaro-Winkler, OSA, Levenshtein, longest-common-substring; token overlap:
+   cosine, Jaccard q-gram; phonetic: Soundex, Metaphone), the q-gram size, and
+   which normalizations to apply before clustering (lowercase, strip
+   punctuation, collapse whitespace, dedupe adjacent words, ignore word order).
+   Each cluster proposes the most common spelling as canonical; pick a different
+   member or type your own target, then recode the rest to it — optionally
+   across sibling columns.
 5. **Spellcheck** — Hunspell flags + clickable suggestions, a free-form
    correction box, and an "add to dictionary" button.
 6. **Recodes** — an editable grid of all rules with a validator (duplicate

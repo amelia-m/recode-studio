@@ -49,7 +49,7 @@ R/
   mod_data_input.R       # upload / example loader (ONLY module that WRITES state)
   mod_variable_picker.R  # DT table of columns; returns selected variable reactive
   mod_value_table.R      # frequency table + "create rule from selected rows"
-  mod_cluster_view.R     # similarity clusters + "recode all to modal"
+  mod_cluster_view.R     # similarity clusters; user-chosen target + algo/normalize
   mod_spellcheck_view.R  # hunspell flags + clickable suggestions + dictionaries
   mod_recode_editor.R    # editable DT of rules + Validate
   mod_preview_export.R   # before/after diff + downloads + copy-to-clipboard

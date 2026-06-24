@@ -18,15 +18,22 @@ mod_cluster_view_ui <- function(id) {
       shiny::fluidRow(
         shiny::column(4,
           shiny::selectInput(ns("algorithm"), "Algorithm:",
-            choices = c("Jaro-Winkler (default)"    = "jw",
-                        "Damerau-Levenshtein (OSA)" = "osa",
-                        "Soundex (phonetic)"        = "soundex"))
+            choices = CLUSTER_ALGORITHMS, selected = "jw"),
+          shiny::numericInput(ns("qgram"), "q-gram size (cosine / jaccard):",
+            value = 2, min = 1, max = 5, step = 1)
         ),
         shiny::column(4,
           shiny::sliderInput(ns("threshold"), "Similarity threshold:",
-            min = 0.80, max = 1.00, value = 0.92, step = 0.01)
+            min = 0.80, max = 1.00, value = 0.92, step = 0.01),
+          shiny::tags$small(shiny::tags$em(
+            "Threshold is ignored by the phonetic algorithms (Soundex / Metaphone)."
+          ))
         ),
         shiny::column(4,
+          shiny::checkboxGroupInput(ns("normalize"),
+            "Normalize before clustering:",
+            choices  = CLUSTER_NORMALIZERS,
+            selected = c("lower", "squish")),
           shiny::checkboxInput(ns("apply_siblings"),
             "Apply to sibling columns when recoding", value = TRUE),
           shiny::uiOutput(ns("sibling_preview"))
@@ -54,7 +61,9 @@ mod_cluster_view_server <- function(id, shared_state,
         values      = uv$value,
         frequencies = uv$n,
         threshold   = input$threshold,
-        algorithm   = input$algorithm
+        algorithm   = input$algorithm,
+        q           = max(1L, as.integer(input$qgram %||% 2L)),
+        normalize   = input$normalize %||% character(0)
       )
     })
 

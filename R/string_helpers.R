@@ -87,19 +87,71 @@ normalize_value <- function(x,
 
 # --- Similarity clustering ---------------------------------------------------
 
+# Supported clustering algorithms, single-sourced for the UI.
+CLUSTER_ALGORITHMS <- c(
+  "Jaro-Winkler"               = "jw",
+  "Optimal String Alignment"   = "osa",
+  "Levenshtein"                = "lv",
+  "Longest common substring"   = "lcs",
+  "Cosine (q-gram)"            = "cosine",
+  "Jaccard (q-gram)"           = "jaccard",
+  "Soundex (phonetic)"         = "soundex",
+  "Metaphone (phonetic)"       = "metaphone"
+)
+
+# Normalization steps applied to a working copy of the values BEFORE distances
+# are computed (the original strings are still what gets displayed/recoded).
+CLUSTER_NORMALIZERS <- c(
+  "Lowercase"               = "lower",
+  "Strip punctuation"       = "punct",
+  "Collapse whitespace"     = "squish",
+  "Dedupe adjacent words"   = "dedupe_tokens",
+  "Ignore word order"       = "sort_tokens"
+)
+
+#' Apply selected normalization steps to a character vector (for clustering).
+normalize_for_cluster <- function(x, methods = character(0)) {
+  out <- x
+  if ("lower"  %in% methods) out <- tolower(out)
+  if ("punct"  %in% methods) out <- gsub("[^[:alnum:][:space:]]+", " ", out)
+  if ("squish" %in% methods) out <- stringr::str_squish(out)
+  if ("dedupe_tokens" %in% methods)
+    out <- gsub("\\b(\\w+)(\\s+\\1\\b)+", "\\1", out, perl = TRUE)
+  if ("sort_tokens" %in% methods)
+    out <- vapply(strsplit(out, "\\s+"),
+                  function(t) paste(sort(t), collapse = " "), character(1))
+  out
+}
+
+# Metaphone codes (one per value); non-alpha stripped, failures -> "".
+.metaphone_codes <- function(x) {
+  vapply(x, function(w) {
+    w2 <- gsub("[^A-Za-z]", "", w)
+    if (!nzchar(w2)) return("")
+    tryCatch(phonics::metaphone(w2), error = function(e) "")
+  }, character(1), USE.NAMES = FALSE)
+}
+
 #' Cluster a character vector by string similarity.
 #'
 #' @param values      Character vector of unique values.
 #' @param frequencies Integer vector of counts. Defaults to 1 per value.
-#' @param threshold   Similarity cutoff (0..1, higher = more similar).
-#' @param algorithm   "jw" (Jaro-Winkler, default), "osa" (Optimal String
-#'                   Alignment / Damerau-Levenshtein normalized), or
-#'                   "soundex" (phonetic encoding bucketing).
+#' @param threshold   Similarity cutoff (0..1, higher = more similar). Ignored
+#'                   by the phonetic algorithms (soundex/metaphone), which
+#'                   bucket by exact code equality.
+#' @param algorithm   One of CLUSTER_ALGORITHMS.
+#' @param q           q-gram size for the cosine / jaccard metrics.
+#' @param normalize   Character vector of CLUSTER_NORMALIZERS keys applied to a
+#'                   working copy before distances are computed. The original
+#'                   strings are preserved in the output.
 #' @return Tibble with value, n, cluster_id, is_rare. `is_rare` is TRUE for
 #'         a cluster member representing <5% of the cluster's frequency mass,
 #'         when the cluster has more than one member.
 cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
-                            algorithm = c("jw", "osa", "soundex")) {
+                            algorithm = c("jw", "osa", "lv", "lcs",
+                                          "cosine", "jaccard",
+                                          "soundex", "metaphone"),
+                            q = 2, normalize = character(0)) {
   algorithm <- match.arg(algorithm)
   if (is.null(frequencies)) frequencies <- rep(1L, length(values))
   stopifnot(length(values) == length(frequencies))
@@ -111,20 +163,26 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
     ))
   }
 
-  v <- as.character(values)
+  v    <- as.character(values)            # original — displayed / recoded
+  keys <- normalize_for_cluster(v, normalize)  # working copy — clustered on
 
-  if (algorithm == "soundex") {
-    codes <- stringdist::phonetic(v, method = "soundex")
+  if (algorithm %in% c("soundex", "metaphone")) {
+    codes <- if (algorithm == "soundex")
+      stringdist::phonetic(keys, method = "soundex")
+    else
+      .metaphone_codes(keys)
     cluster_id <- as.integer(factor(codes))
   } else {
-    if (algorithm == "jw") {
-      d <- stringdist::stringdistmatrix(v, v, method = "jw")
+    # Metrics already in 0..1 (higher d = less similar): jw, cosine, jaccard.
+    # Count metrics (osa, lv, lcs) are normalized by the longer string length.
+    if (algorithm %in% c("jw", "cosine", "jaccard")) {
+      d   <- stringdist::stringdistmatrix(keys, keys, method = algorithm, q = q)
       sim <- 1 - d
-    } else { # osa
-      d <- stringdist::stringdistmatrix(v, v, method = "osa")
-      lens <- outer(nchar(v), nchar(v), pmax)
+    } else {
+      d    <- stringdist::stringdistmatrix(keys, keys, method = algorithm)
+      lens <- outer(nchar(keys), nchar(keys), pmax)
       lens[lens == 0] <- 1L
-      sim <- 1 - d / lens
+      sim  <- 1 - d / lens
     }
     adj <- sim >= threshold
     diag(adj) <- FALSE

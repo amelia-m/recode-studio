@@ -36,6 +36,52 @@ test_that("cluster_strings handles empty input", {
   expect_named(out, c("value", "n", "cluster_id", "is_rare"))
 })
 
+test_that("normalize_for_cluster applies the selected steps", {
+  expect_equal(normalize_for_cluster("Foo, BAR", c("lower","punct","squish")),
+               "foo bar")
+  expect_equal(normalize_for_cluster("asphyxia asphyxia", "dedupe_tokens"),
+               "asphyxia")
+  expect_equal(normalize_for_cluster("head and torso", "sort_tokens"),
+               "and head torso")
+  expect_equal(normalize_for_cluster("Foo Bar", character(0)), "Foo Bar")
+})
+
+test_that("cosine metric clusters reordered multi-word values", {
+  values <- c("head and torso injuries", "injuries of torso and head",
+              "gunshot wound")
+  out <- cluster_strings(values, algorithm = "cosine", q = 2, threshold = 0.6,
+                         normalize = c("lower", "punct", "squish"))
+  reordered <- c("head and torso injuries", "injuries of torso and head")
+  expect_length(unique(out$cluster_id[out$value %in% reordered]), 1L)
+  expect_false(out$cluster_id[out$value == "gunshot wound"] ==
+               out$cluster_id[out$value == "head and torso injuries"])
+})
+
+test_that("sort_tokens normalization groups order-permuted values exactly", {
+  values <- c("a b c", "c b a", "x y z")
+  out <- cluster_strings(values, algorithm = "lv", threshold = 0.99,
+                         normalize = "sort_tokens")
+  expect_equal(out$cluster_id[out$value == "a b c"],
+               out$cluster_id[out$value == "c b a"])
+})
+
+test_that("metaphone clusters phonetically-equal medical terms", {
+  testthat::skip_if_not_installed("phonics")
+  values <- c("asphyxiation", "asfixiation", "gunshot")
+  out <- cluster_strings(values, algorithm = "metaphone")
+  expect_equal(out$cluster_id[out$value == "asphyxiation"],
+               out$cluster_id[out$value == "asfixiation"])
+  expect_false(out$cluster_id[out$value == "gunshot"] ==
+               out$cluster_id[out$value == "asphyxiation"])
+})
+
+test_that("CLUSTER_ALGORITHMS / NORMALIZERS constants are exported", {
+  expect_true(all(c("jw","osa","lv","lcs","cosine","jaccard","soundex",
+                    "metaphone") %in% CLUSTER_ALGORITHMS))
+  expect_true(all(c("lower","punct","squish","dedupe_tokens","sort_tokens")
+                  %in% CLUSTER_NORMALIZERS))
+})
+
 test_that("write_recodes -> read_recodes preserves NA encoding", {
   rules <- tibble::tibble(
     rule_id = c("a", "b"), variable = c("cause1", "city"),
