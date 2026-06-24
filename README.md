@@ -21,6 +21,58 @@ Load any CSV or Excel file, pick a text column, and Recode Studio helps you:
 The app **never modifies your data file.** It produces a recode CSV and an R
 script that you run yourself.
 
+## Before you get started
+
+New to R or GitHub? This section walks you through the one-time setup. If you
+already use R and Git, skip to [Quick start](#quick-start).
+
+### 1. Install R (required)
+
+Download and install **R** from [cran.r-project.org](https://cran.r-project.org/).
+That's the engine the app runs on.
+
+Optional but recommended — an editor that makes running R pleasant:
+[**Positron**](https://positron.posit.co/) or
+[**RStudio**](https://posit.co/download/rstudio-desktop/). Either lets you open
+this project and click "Run" instead of typing at a console.
+
+### 2. Get the code
+
+You need a copy of this project on your computer. Two ways:
+
+**Option A — Download a ZIP (easiest, no Git needed):**
+
+1. Go to the project page:
+   <https://github.com/amelia-m/recode-studio>
+2. Click the green **`< > Code`** button, then **Download ZIP**.
+3. Unzip it somewhere you'll remember (e.g. your Documents folder). You'll get
+   a folder called `recode-studio`.
+
+The downside: to get later updates you re-download and replace the folder.
+
+**Option B — Clone with Git (better for staying up to date):**
+
+[Git](https://git-scm.com/downloads) is a tool for copying and updating code.
+Once it's installed, open a terminal (Command Prompt / PowerShell on Windows,
+Terminal on Mac) and run:
+
+```bash
+git clone https://github.com/amelia-m/recode-studio.git
+```
+
+This creates a `recode-studio` folder. Later, to pull in updates, run
+`git pull` from inside that folder — no re-downloading.
+
+### 3. Open the project
+
+In Positron or RStudio: **File → Open Project** (or **Open Folder**) and choose
+the `recode-studio` folder. The console at the bottom is where the commands in
+the next section go.
+
+> **Tip:** "from the repo root" means your R session's working directory is the
+> `recode-studio` folder. Opening the project (above) handles that for you. You
+> can confirm with `getwd()` — it should end in `/recode-studio`.
+
 ## Quick start
 
 This project uses [`renv`](https://rstudio.github.io/renv/) for reproducible
