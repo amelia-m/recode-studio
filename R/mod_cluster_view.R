@@ -40,6 +40,13 @@ mod_cluster_view_ui <- function(id) {
         )
       ),
       shiny::hr(),
+      shiny::div(
+        class = "alert alert-info", style = "padding:.5em .8em;",
+        shiny::tags$strong("Tip: "),
+        "In each cluster below, click the member you want to keep — the others ",
+        "are recoded to it. The most frequent value is pre-selected; pick a ",
+        "different one, or type your own target in the box."
+      ),
       shiny::uiOutput(ns("clusters_ui"))
     )
   )
