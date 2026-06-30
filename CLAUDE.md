@@ -189,6 +189,12 @@ dependency — exports are CSV + R script only.
 
 ## Open / TODO
 
+- **Language detection** — add an option to detect the language of a text
+  column's values (e.g. flag non-English entries, or per-value language tags).
+  Most relevant to the Text analysis tab / long-text columns. Candidate
+  approaches: `cld2`/`cld3` (compiled, accurate) or `textcat` (pure-R, heavier).
+- **Review the reference code and implement** — incorporate the relevant pieces of
+  the reference code into the app (clarify scope / which features before building).
 - Optional: expand the free-text heuristic to let the user override a column's
   candidate flag manually.
 - Optional: README screenshot / demo GIF (capture from a running app).
