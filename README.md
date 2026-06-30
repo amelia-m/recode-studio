@@ -129,10 +129,12 @@ immediately, or upload your own CSV/Excel.
 
 1. **Data** — upload a CSV/Excel (or load the example). Every column is read as
    text. The app flags which columns look like free text (excluding dates,
-   numbers, and small choice sets like Yes/No).
-2. **Variable** — a sortable, filterable table of columns. Click one to clean.
+   numbers, and small choice sets like Yes/No), and tags each as **short** (a
+   few words / labels) or **long** (sentences / paragraphs).
+2. **Variable** — a sortable, filterable table of columns (with a `kind` column:
+   short / long). Click one to work on.
 3. **Browse values** — frequency table of unique values; rows with duplicated
-   adjacent tokens (e.g. `"asphyxia asphyxia"`) are highlighted.
+   adjacent tokens (e.g. `"oat milk oat milk"`) are highlighted.
 4. **Clusters** — values grouped by similarity. Choose the metric (edit-distance:
    Jaro-Winkler, OSA, Levenshtein, longest-common-substring; token overlap:
    cosine, Jaccard q-gram; phonetic: Soundex, Metaphone), the q-gram size, and
@@ -140,12 +142,17 @@ immediately, or upload your own CSV/Excel.
    punctuation, collapse whitespace, dedupe adjacent words, ignore word order).
    Each cluster proposes the most common spelling as canonical; pick a different
    member or type your own target, then recode the rest to it — optionally
-   across sibling columns.
+   across sibling columns. (Best for **short** columns.)
 5. **Spellcheck** — Hunspell flags + clickable suggestions, a free-form
-   correction box, and an "add to dictionary" button.
-6. **Recodes** — an editable grid of all rules with a validator (duplicate
-   keys, rule chains, blanks, stale rules).
-7. **Preview & export** — before/after diff with affected-cell counts;
+   correction box, selectable discipline dictionaries, and an "add to
+   dictionary" button. (Best for **short** columns.)
+6. **Text analysis** — for **long** (sentence/paragraph) columns where
+   clustering and spellcheck don't help: length distribution (chars / words /
+   sentences), top words and phrases (n-grams) with stopword removal, and
+   keyword-in-context search.
+7. **Recodes** — an editable grid of all rules with a validator (duplicate
+   keys, rule chains, blanks, invalid enums/regex, stale rules).
+8. **Preview & export** — before/after diff with affected-cell counts;
    download the recode CSV and R script; import an existing CSV to merge.
 
 ## The recode CSV

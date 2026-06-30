@@ -1,31 +1,31 @@
-order_id,drink1,drink2,size,city,notes,price,order_date
-1,cappuccino,latte,Medium,Portland,oat milk no sugar,4.25,2026-03-01
-2,capuccino,espresso,Small,Portand,extra hot,3.50,2026-03-01
-3,cappucino,expresso,Large,Seattle,no sugar oat milk,4.75,2026-03-02
-4,capccino,macchiato,Medium,Seatle,extra extra hot,4.25,2026-03-02
-5,espresso,machiato,Small,Austin,decaf soy,3.25,2026-03-03
-6,expresso,latte,Medium,Austn,double shot,4.00,2026-03-03
-7,macchiato,americano,Large,Denver,iced no whip,4.50,2026-03-04
-8,machiato,americanno,Small,Denvar,no whip iced,3.75,2026-03-04
-9,latte,mocha,Medium,Boston,extra foam,4.25,2026-03-05
-10,latté,moccha,Large,Bostan,soy decaf,4.75,2026-03-05
-11,latte,mocca,Small,Chicago,extra hot,3.50,2026-03-06
-12,americano,flat white,Medium,Chicgo,oat milk no sugar,4.00,2026-03-06
-13,americanno,flatwhite,Large,Portland,double shot,4.50,2026-03-07
-14,mocha,cortado,Medium,Portand,decaf soy,4.25,2026-03-07
-15,moccha,cold brew,Small,Seattle,iced no whip,3.75,2026-03-08
-16,mocca,coldbrew,Large,Seatle,extra foam,4.75,2026-03-08
-17,flat white,cappuccino,Medium,Austin,no sugar oat milk,4.25,2026-03-09
-18,flatwhite,capuccino,Small,Austn,extra extra hot,3.50,2026-03-09
-19,cortado,espresso,Medium,Denver,soy decaf,4.00,2026-03-10
-20,cold brew,macchiato,Large,Denvar,double shot,4.50,2026-03-10
-21,coldbrew,latte,Small,Boston,half caff,3.25,2026-03-11
-22,cappuccino,mocha,Medium,Bostan,iced no whip,4.25,2026-03-11
-23,capccino,americano,Large,Chicago,extra foam,4.75,2026-03-12
-24,espresso,flat white,Medium,Chicgo,oat milk no sugar,4.25,2026-03-12
-25,esspresso,cortado,Small,Riverside,no whip iced,3.50,2026-03-13
-26,macchiatto,cold brew,Large,Riverdale,decaf soy,4.75,2026-03-13
-27,latte,mocha,Medium,Portland,extra extra hot,4.25,2026-03-14
-28,americano,cappuccino,Small,Seattle,double shot,3.75,2026-03-14
-29,mocha,espresso,Large,Austin,soy decaf,4.50,2026-03-15
-30,cortado,latte,Medium,Denver,light ice,4.00,2026-03-15
+order_id,drink1,drink2,size,city,notes,price,order_date,review
+1,cappuccino,latte,Medium,Portland,oat milk no sugar,4.25,2026-03-01,"The latte was rich and creamy. Service was quick and the barista was friendly."
+2,capuccino,espresso,Small,Portand,extra hot,3.50,2026-03-01,"My cappuccino arrived lukewarm. The line moved slowly but the staff stayed polite."
+3,cappucino,expresso,Large,Seattle,no sugar oat milk,4.75,2026-03-02,"Great espresso with a smooth finish. I will definitely come back next week."
+4,capccino,macchiato,Medium,Seatle,extra extra hot,4.25,2026-03-02,"The macchiato tasted burnt today. Otherwise the seating area was clean and quiet."
+5,espresso,machiato,Small,Austin,decaf soy,3.25,2026-03-03,"Friendly barista who remembered my order. The pastry selection looked fresh and tempting."
+6,expresso,latte,Medium,Austn,double shot,4.00,2026-03-03,"Coffee was excellent but the music was too loud. I could barely hear my friend."
+7,macchiato,americano,Large,Denver,iced no whip,4.50,2026-03-04,"Quick service during the morning rush. The americano was strong and perfectly hot."
+8,machiato,americanno,Small,Denvar,no whip iced,3.75,2026-03-04,"The mocha was overly sweet for me. Still, the atmosphere felt cozy and warm."
+9,latte,mocha,Medium,Boston,extra foam,4.25,2026-03-05,"Best flat white in town. The foam was velvety and the cup was generous."
+10,latté,moccha,Large,Bostan,soy decaf,4.75,2026-03-05,"Slow service this afternoon. My drink was fine once it finally arrived."
+11,latte,mocca,Small,Chicago,extra hot,3.50,2026-03-06,"Loved the cold brew on a hot day. The staff were cheerful and attentive."
+12,americano,flat white,Medium,Chicgo,oat milk no sugar,4.00,2026-03-06,"The cortado was balanced and smooth. Prices are a little high for the size."
+13,americanno,flatwhite,Large,Portland,double shot,4.50,2026-03-07,"Comfortable seating and fast wifi. The latte art was a really nice touch."
+14,mocha,cortado,Medium,Portand,decaf soy,4.25,2026-03-07,"My order was wrong twice. The manager apologized and fixed it right away."
+15,moccha,cold brew,Small,Seattle,iced no whip,3.75,2026-03-08,"Cozy spot with great lighting. The espresso was bold and freshly ground."
+16,mocca,coldbrew,Large,Seatle,extra foam,4.75,2026-03-08,"The cappuccino was perfect this morning. Friendly faces behind the counter as always."
+17,flat white,cappuccino,Medium,Austin,no sugar oat milk,4.25,2026-03-09,"Average coffee but excellent pastries. I would return mainly for the croissants."
+18,flatwhite,capuccino,Small,Austn,extra extra hot,3.50,2026-03-09,"The line was out the door. Service was efficient considering how busy it was."
+19,cortado,espresso,Medium,Denver,soy decaf,4.00,2026-03-10,"Smooth americano and a quiet corner. An ideal spot to read for an hour."
+20,cold brew,macchiato,Large,Denvar,double shot,4.50,2026-03-10,"Disappointing macchiato that tasted watery. The barista offered to remake it kindly."
+21,coldbrew,latte,Small,Boston,half caff,3.25,2026-03-11,"Half caff latte done exactly right. The staff are consistently warm and welcoming."
+22,cappuccino,mocha,Medium,Bostan,iced no whip,4.25,2026-03-11,"The mocha really hit the spot. Seating was limited during the lunch rush though."
+23,capccino,americano,Large,Chicago,extra foam,4.75,2026-03-12,"Excellent foam and rich flavor. This is my new favorite neighborhood cafe."
+24,espresso,flat white,Medium,Chicgo,oat milk no sugar,4.25,2026-03-12,"Coffee was cold and service slow. I probably will not come back soon."
+25,esspresso,cortado,Small,Riverside,no whip iced,3.50,2026-03-13,"The espresso shot was flawless. Quick, friendly, and exactly what I needed."
+26,macchiatto,cold brew,Large,Riverdale,decaf soy,4.75,2026-03-13,"A bit pricey but worth it. The cortado was easily the best I have had."
+27,latte,mocha,Medium,Portland,extra extra hot,4.25,2026-03-14,"Loud and crowded at peak hours. The latte itself was genuinely delicious."
+28,americano,cappuccino,Small,Seattle,double shot,3.75,2026-03-14,"The americano was watery today. Staff were apologetic and offered a free refill."
+29,mocha,espresso,Large,Austin,soy decaf,4.50,2026-03-15,"Wonderful soy mocha and kind staff. The corner table is perfect for working."
+30,cortado,latte,Medium,Denver,light ice,4.00,2026-03-15,"Light ice as requested and very refreshing. I will be ordering this again."

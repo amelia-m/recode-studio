@@ -45,17 +45,21 @@ dataset_sheets <- function(path) {
 #'   - does NOT look like a date column (regex, 80% threshold)
 #'   - does NOT look like a numeric column (regex, 80% threshold)
 #'
+#' A free-text candidate is additionally flagged `is_long_text` when its values
+#' read like sentences/paragraphs (see classify_text_length); `median_words`
+#' and `text_kind` ("short"/"long"/"-") are reported for the picker.
+#'
 #' @param df  tibble from read_dataset().
 #' @return tibble of per-column meta.
 build_meta <- function(df) {
   n <- nrow(df)
-  if (n == 0 || ncol(df) == 0) {
-    return(tibble::tibble(
-      column = character(0), group = character(0), n_unique = integer(0),
-      na_share = numeric(0), median_len = numeric(0),
-      is_free_text_candidate = logical(0)
-    ))
-  }
+  empty <- tibble::tibble(
+    column = character(0), group = character(0), n_unique = integer(0),
+    na_share = numeric(0), median_len = numeric(0), median_words = numeric(0),
+    is_free_text_candidate = logical(0), is_long_text = logical(0),
+    text_kind = character(0)
+  )
+  if (n == 0 || ncol(df) == 0) return(empty)
 
   purrr::map_dfr(names(df), function(col) {
     x <- as.character(df[[col]])
@@ -75,13 +79,27 @@ build_meta <- function(df) {
       }
     }
 
+    # Long-text detection only matters for free-text candidates.
+    if (is_candidate) {
+      median_words <- stats::median(lengths(.tokens_of(non_na)))
+      is_long      <- classify_text_length(non_na) == "long"
+      kind         <- if (is_long) "long" else "short"
+    } else {
+      median_words <- 0
+      is_long      <- FALSE
+      kind         <- "-"
+    }
+
     tibble::tibble(
       column                 = col,
       group                  = column_group(col),
       n_unique               = n_unique,
       na_share               = na_share,
       median_len             = median_len,
-      is_free_text_candidate = is_candidate
+      median_words           = median_words,
+      is_free_text_candidate = is_candidate,
+      is_long_text           = is_long,
+      text_kind              = kind
     )
   })
 }

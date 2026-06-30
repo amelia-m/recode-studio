@@ -41,9 +41,11 @@ mod_variable_picker_server <- function(id, shared_state) {
       tibble::tibble(
         variable   = m$column,
         group      = m$group,
+        kind       = m$text_kind,        # short / long / -
         n_unique   = m$n_unique,
         na_share   = round(m$na_share, 3),
         median_len = m$median_len,
+        words      = m$median_words,
         free_text  = m$is_free_text_candidate
       )
     })

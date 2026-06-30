@@ -40,8 +40,9 @@ ui <- bslib::page_navbar(
       bslib::nav_panel("3. Browse values",   value = "browse",     mod_value_table_ui("value_table")),
       bslib::nav_panel("4. Clusters",        value = "clusters",   mod_cluster_view_ui("cluster_view")),
       bslib::nav_panel("5. Spellcheck",      value = "spellcheck", mod_spellcheck_view_ui("spellcheck_view")),
-      bslib::nav_panel("6. Recodes",         value = "recodes",    mod_recode_editor_ui("recode_editor")),
-      bslib::nav_panel("7. Preview & export", value = "export",
+      bslib::nav_panel("6. Text analysis",   value = "text",       mod_text_analysis_ui("text_analysis")),
+      bslib::nav_panel("7. Recodes",         value = "recodes",    mod_recode_editor_ui("recode_editor")),
+      bslib::nav_panel("8. Preview & export", value = "export",
         mod_preview_export_ui("preview_export"),
         br(),
         mod_import_recodes_ui("import_recodes")
@@ -124,6 +125,8 @@ server <- function(input, output, session) {
   mod_spellcheck_view_server("spellcheck_view", shared_state,
     selected_var_r = selected_var_r, unique_values_r = unique_values_r,
     rules_proxy = rules_proxy)
+
+  mod_text_analysis_server("text_analysis", shared_state, selected_var_r)
 
   mod_recode_editor_server("recode_editor", shared_state, rules_proxy)
   mod_preview_export_server("preview_export", shared_state, rules_proxy)

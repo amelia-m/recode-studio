@@ -1,5 +1,6 @@
 # Run with: testthat::test_dir("tests/testthat")
 
+source(file.path("..", "..", "R", "text_helpers.R"))  # build_meta() uses these
 source(file.path("..", "..", "R", "data_loader.R"))
 
 # A small all-character fixture shaped like read_dataset() output.
@@ -22,8 +23,9 @@ source(file.path("..", "..", "R", "data_loader.R"))
 
 test_that("build_meta classifies free-text vs non-candidates", {
   meta <- build_meta(.fixture())
-  expect_named(meta, c("column","group","n_unique","na_share",
-                       "median_len","is_free_text_candidate"))
+  expect_named(meta, c("column","group","n_unique","na_share","median_len",
+                       "median_words","is_free_text_candidate","is_long_text",
+                       "text_kind"))
   pick <- function(col) meta$is_free_text_candidate[meta$column == col]
   expect_true(pick("cause"))
   expect_true(pick("city"))
@@ -44,8 +46,24 @@ test_that("build_meta counts uniques and NA share", {
 test_that("build_meta handles an empty data frame", {
   meta <- build_meta(tibble::tibble())
   expect_equal(nrow(meta), 0)
-  expect_named(meta, c("column","group","n_unique","na_share",
-                       "median_len","is_free_text_candidate"))
+  expect_named(meta, c("column","group","n_unique","na_share","median_len",
+                       "median_words","is_free_text_candidate","is_long_text",
+                       "text_kind"))
+})
+
+test_that("build_meta flags long-text vs short-text candidates", {
+  long <- paste0("Order ", seq_len(24),
+                 ": the service was excellent and the staff were friendly. ",
+                 "Coffee was rich and the room felt calm and quiet.")
+  short <- rep(c("latte","espresso","mocha","cortado","americano",
+                 "cold brew","flat white","cappuccino","macchiato",
+                 "ristretto","affogato","cubano"), 2)
+  df <- tibble::tibble(review = long, drink = short)
+  meta <- build_meta(df)
+  expect_true(meta$is_long_text[meta$column == "review"])
+  expect_equal(meta$text_kind[meta$column == "review"], "long")
+  expect_false(meta$is_long_text[meta$column == "drink"])
+  expect_equal(meta$text_kind[meta$column == "drink"], "short")
 })
 
 test_that("column_group extracts the prefix before the first underscore", {

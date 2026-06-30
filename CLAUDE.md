@@ -47,13 +47,17 @@ Single-purpose Shiny app (no multi-section shell — that was upstream-specific)
 app.R                    # entry: sources R/, builds ui + server, shinyApp()
 R/
   string_helpers.R       # PURE R core (no Shiny). cluster/validate/apply/codegen
+  text_helpers.R         # PURE R. long-text: tokenize, classify_text_length,
+                         #   top_tokens / top_ngrams / kwic, count_sentences
   data_loader.R          # read CSV/Excel + build per-column metadata
+                         #   (incl. is_long_text / text_kind via text_helpers)
   ui_helpers.R           # %||%, warning_banner(), badge()
   mod_data_input.R       # upload / example loader (ONLY module that WRITES state)
   mod_variable_picker.R  # DT table of columns; returns selected variable reactive
   mod_value_table.R      # frequency table + "create rule from selected rows"
   mod_cluster_view.R     # similarity clusters; user-chosen target + algo/normalize
   mod_spellcheck_view.R  # hunspell flags + clickable suggestions + dictionaries
+  mod_text_analysis.R    # long-text columns: length dist, token/n-gram freq, KWIC
   mod_recode_editor.R    # editable DT of rules + Validate
   mod_preview_export.R   # before/after diff + downloads + copy-to-clipboard
   mod_import_recodes.R   # merge an external recodes CSV (conflict resolution)
