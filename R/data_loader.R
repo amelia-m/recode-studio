@@ -38,6 +38,9 @@ dataset_sheets <- function(path) {
 #' Build column metadata for a dataset.
 #'
 #' A column is a free-text candidate iff ALL hold:
+#'   - its NAME does not end in `id` / `_id` (case-insensitive) — identifier
+#'     columns are keys, not text to recode, and high-cardinality alphanumeric
+#'     ids (e.g. "AB123456") otherwise sail past every content heuristic
 #'   - median non-empty value length > 3
 #'   - NA / empty share < 60%
 #'   - more than 10 unique non-empty values (excludes Yes/No, TRUE/FALSE,
@@ -69,7 +72,11 @@ build_meta <- function(df) {
     na_share <- if (n > 0) sum(is.na(x) | !nzchar(x)) / n else 0
     median_len <- if (length(lens) > 0) stats::median(lens) else 0
 
-    is_candidate <- median_len > 3 &&
+    # Cheap structural check first: identifier columns are keys, never free
+    # text. Deliberately anchored as `(^|_)id$` so `id` / `case_id` match but
+    # `paid` / `grid` / `valid` do not.
+    is_candidate <- !.is_id_name(col) &&
+                    median_len > 3 &&
                     na_share < 0.6 &&
                     n_unique > 10
 
@@ -105,6 +112,15 @@ build_meta <- function(df) {
 }
 
 # --- Internal classifiers ----------------------------------------------------
+
+# Identifier-named: the column name is `id` or ends in `_id` (case-insensitive).
+# NOTE: this repo deliberately does NOT also exclude names ending in "label"
+# (the upstream copy does). "label" there means a coded-value twin column;
+# in a domain-neutral tool a column called `product_label` or `warning_label`
+# is plausibly real free text worth recoding. "id", by contrast, is a near-universal key convention.
+.is_id_name <- function(col) {
+  grepl("(^|_)id$", col, ignore.case = TRUE)
+}
 
 # Date-like: 80%+ of (up to 200 sampled) values match a common date pattern.
 .is_date_like <- function(values) {

@@ -295,3 +295,276 @@ test_that("generate_recode_R sibling rule uses across()", {
   expect_true(grepl("across", code))
   expect_true(grepl("matches", code))
 })
+
+
+# =============================================================================
+# Correctness regressions: single-pass apply, normalized codegen literals,
+# NA-targeting rules, and one case_when block per target pattern.
+# =============================================================================
+
+mk_rule <- function(variable, match_type, old_value, new_value,
+                    action = "recode", siblings = FALSE,
+                    pattern = NA_character_, notes = NA_character_) {
+  tibble::tibble(
+    rule_id           = recode_rule_id(variable, match_type, old_value),
+    variable          = variable,
+    apply_to_siblings = siblings,
+    sibling_pattern   = pattern,
+    match_type        = match_type,
+    old_value         = old_value,
+    new_value         = new_value,
+    action            = action,
+    notes             = notes,
+    author            = "test",
+    created_at        = "2026-08-13T00:00:00",
+    updated_at        = "2026-08-13T00:00:00",
+    source_dataset    = "synthetic"
+  )
+}
+
+# Synthetic frame. One column per thing under test:
+#   race        - exact, exact_ci, regex, and the CASCADE pair
+#   cause1/2    - sibling expansion (other must stay untouched)
+#   status      - a rule targeting the MISSING cells (`<NA>` sentinel)
+#   notes       - free text rewritten by a plain rule
+synthetic_df <- function() {
+  tibble::tibble(
+    id     = paste0("p", 1:6),
+    race   = c("asain", "Asian", "wht", "BLK", "Nat Am", NA),
+    cause1 = c("gsw", "hanging", "gsw", "overdose", NA, "gsw"),
+    cause2 = c("gsw", NA, "drowning", "gsw", "hanging", NA),
+    other  = rep("gsw", 6),
+    status = c("open", NA, "closed", NA, "open", NA),
+    notes  = c("self inflicted gsw", "overdose of pills", "hanging",
+               "gsw to the head", "drowning", "unknown")
+  )
+}
+
+synthetic_rules <- function() {
+  dplyr::bind_rows(
+    # CASCADE PAIR: rule 1's replacement is rule 2's old_value. Single-pass
+    # means "asain" -> "Asian" and the pre-existing "Asian" -> "Asian or PI",
+    # and rule 1's output is NOT pushed through rule 2.
+    mk_rule("race", "trimmed_ci", "asain", "Asian"),
+    mk_rule("race", "trimmed_ci", "Asian", "Asian or PI"),
+    mk_rule("race", "exact",      "wht",   "White"),
+    mk_rule("race", "exact_ci",   "blk",   "Black"),   # hits "BLK"
+    mk_rule("race", "regex",      "^Nat",  "Native"),
+    mk_rule("cause1", "trimmed_ci", "gsw", "gunshot wound",
+            siblings = TRUE, pattern = "^cause[0-9]+$"),
+    mk_rule("status", "exact", NA_character_, "unrecorded"),
+    mk_rule("notes", "trimmed_ci", "self inflicted gsw", "firearm injury")
+  )
+}
+
+# The eval() here runs code this test just produced from its own in-test rule
+# table (no external or user input) — that IS the thing under test.
+eval_generated_recodes <- function(df, rules, dataset_id = "synthetic") {
+  code <- generate_recode_R(rules, dataset_id = dataset_id)
+  env  <- new.env(parent = globalenv())
+  env$df <- df
+  suppressWarnings(suppressMessages(eval(parse(text = code), envir = env)))
+  env$df
+}
+
+
+# --- Defect 1: apply_recodes is single pass, first match wins ----------------
+
+test_that("a rule's replacement is never fed into another rule (no cascade)", {
+  # Symptom: with `asain -> Asian` and `Asian -> Asian or PI` in one rule set,
+  # every Asian row came out "Asian or PI" and no cell held "Asian".
+  df <- tibble::tibble(race = c("asain", "Asian", "White", "asain"))
+  rules <- dplyr::bind_rows(
+    mk_rule("race", "trimmed_ci", "asain", "Asian"),
+    mk_rule("race", "trimmed_ci", "Asian", "Asian or PI"))
+
+  got <- apply_recodes(df, rules)$df$race
+  expect_identical(got, c("Asian", "Asian or PI", "White", "Asian"))
+
+  # ...and the answer must not depend on the row order of the rule table.
+  rev <- apply_recodes(df, rules[c(2, 1), ])$df$race
+  expect_identical(rev, got)
+})
+
+test_that("apply_recodes is independent of rule row order", {
+  df    <- synthetic_df()
+  rules <- synthetic_rules()
+  a <- apply_recodes(df, rules)$df
+  b <- apply_recodes(df, rules[rev(seq_len(nrow(rules))), ])$df
+  expect_identical(as.data.frame(a), as.data.frame(b))
+})
+
+test_that("the synthetic rule set produces exactly the expected frame", {
+  res <- apply_recodes(synthetic_df(), synthetic_rules())
+  expect_identical(res$df$race,
+                   c("Asian", "Asian or PI", "White", "Black", "Native", NA))
+  expect_identical(res$df$cause1,
+                   c("gunshot wound", "hanging", "gunshot wound", "overdose",
+                     NA, "gunshot wound"))
+  expect_identical(res$df$cause2,
+                   c("gunshot wound", NA, "drowning", "gunshot wound",
+                     "hanging", NA))
+  expect_identical(res$df$other, rep("gsw", 6))     # not a sibling column
+  expect_identical(res$df$status,
+                   c("open", "unrecorded", "closed", "unrecorded", "open",
+                     "unrecorded"))
+  expect_identical(res$df$notes[1], "firearm injury")
+})
+
+test_that("apply_recodes summary separates matched / changed / shadowed", {
+  df <- tibble::tibble(x = c("White", "blk"))
+  res <- apply_recodes(df, mk_rule("x", "exact", "White", "White"))  # no-op
+  expect_equal(res$summary$cells_matched, 1L)
+  expect_equal(res$summary$cells_changed, 0L)
+  expect_equal(res$summary$cells_shadowed, 0L)
+  expect_named(res$summary,
+               c("rule_id", "cells_changed", "cells_matched", "cells_shadowed"))
+})
+
+
+# --- Defect 4 + the agreement guard -----------------------------------------
+
+test_that("generate_recode_R agrees with apply_recodes cell for cell", {
+  df      <- synthetic_df()
+  rules   <- synthetic_rules()
+  applied <- apply_recodes(df, rules)$df
+  genned  <- eval_generated_recodes(df, rules)
+  for (col in names(df)) {
+    expect_identical(genned[[col]], applied[[col]],
+                     info = sprintf("column %s", col))
+  }
+})
+
+test_that("mixed match_types on one column emit a single case_when block", {
+  # Pre-fix, grouping by (effective_pattern, match_type) emitted the `exact`
+  # block first and the `trimmed_ci` block second, so the trimmed block
+  # re-recoded what the exact block wrote and the exact rule was discarded --
+  # and the script disagreed with apply_recodes().
+  df <- tibble::tibble(city = c("Omaha", "omaha "))
+  rules <- dplyr::bind_rows(
+    mk_rule("city", "trimmed_ci", "omaha", "Omaha"),
+    mk_rule("city", "exact",      "Omaha", "OMAHA"))
+
+  code <- generate_recode_R(rules, "d")
+  expect_silent(parse(text = code))
+  expect_equal(lengths(regmatches(code, gregexpr("case_when", code)))[[1]], 1L)
+
+  applied <- apply_recodes(df, rules)
+  expect_identical(applied$df$city, c("Omaha", "Omaha"))
+  expect_identical(eval_generated_recodes(df, rules)$city, c("Omaha", "Omaha"))
+  # The exact rule matched the original "Omaha" but the trimmed rule claimed it.
+  expect_equal(applied$summary$cells_shadowed, c(0L, 1L))
+})
+
+test_that("blocks are emitted in first-appearance order of the pattern", {
+  rules <- dplyr::bind_rows(
+    mk_rule("zeta",  "exact", "a", "A"),
+    mk_rule("alpha", "exact", "b", "B"))
+  code <- generate_recode_R(rules, "d")
+  expect_lt(regexpr("mutate(zeta", code, fixed = TRUE)[[1]],
+            regexpr("mutate(alpha", code, fixed = TRUE)[[1]])
+})
+
+test_that("a column reached by two patterns gets a WARNING comment", {
+  rules <- dplyr::bind_rows(
+    mk_rule("cause1", "exact", "a", "A"),
+    mk_rule("cause1", "exact", "b", "B",
+            siblings = TRUE, pattern = "^cause[0-9]+$"))
+  code <- generate_recode_R(rules, "d")
+  expect_true(grepl("# WARNING: these columns are targeted by more than one",
+                    code, fixed = TRUE))
+  expect_true(grepl("#   cause1", code, fixed = TRUE))
+})
+
+test_that("a single-pattern rule set gets no overlap warning", {
+  expect_false(grepl("# WARNING", generate_recode_R(synthetic_rules(), "d"),
+                     fixed = TRUE))
+})
+
+
+# --- Defect 2: the generated script normalizes BOTH sides -------------------
+
+test_that("case-insensitive rules fire in the generated script too", {
+  # Pre-fix the script emitted `tolower(x) == "WHT"`, which can never be TRUE,
+  # so exact_ci / trimmed_ci rules with any capital letter did nothing in the
+  # exported script while working in the app.
+  df <- tibble::tibble(x = c("WHT", "wht", " Wht "))
+  rules <- dplyr::bind_rows(
+    mk_rule("x", "exact_ci",   "WHT",   "White"),
+    mk_rule("x", "trimmed_ci", " Wht ", "White"))
+
+  code <- generate_recode_R(rules, "d")
+  expect_silent(parse(text = code))
+  expect_true(grepl('tolower(x) == "wht"', code, fixed = TRUE))
+  expect_true(grepl('str_squish(tolower(x)) == "wht"', code, fixed = TRUE))
+  expect_false(grepl('"WHT"', code, fixed = TRUE))
+  expect_false(grepl('" Wht "', code, fixed = TRUE))
+
+  expect_identical(eval_generated_recodes(df, rules)$x, rep("White", 3))
+  expect_identical(apply_recodes(df, rules)$df$x, rep("White", 3))
+})
+
+test_that("exact rules keep the literal verbatim", {
+  code <- generate_recode_R(mk_rule("x", "exact", "WHT", "White"), "d")
+  expect_true(grepl('x == "WHT"', code, fixed = TRUE))
+})
+
+
+# --- Defect 3: NA-targeting rules -------------------------------------------
+
+test_that(".rule_hits returns a plain logical for an NA old_value", {
+  hits <- .rule_hits(c("open", NA, "closed"), NA_character_, "exact")
+  expect_identical(hits, c(FALSE, TRUE, FALSE))
+  expect_false(anyNA(hits))
+})
+
+test_that(".rule_hits matches nothing for an unusable match_type", {
+  expect_identical(.rule_hits(c("a", "b"), "a", NA_character_),
+                   c(FALSE, FALSE))
+  expect_identical(.rule_hits(c("a", "b"), "a", "regx"), c(FALSE, FALSE))
+  expect_identical(.rule_hits(character(0), "a", "exact"), logical(0))
+})
+
+test_that("a rule targeting NA rewrites the missing cells instead of erroring", {
+  df    <- tibble::tibble(status = c("open", NA, "closed", NA))
+  rules <- mk_rule("status", "exact", NA_character_, "unrecorded")
+
+  expect_no_error(res <- apply_recodes(df, rules))
+  expect_identical(res$df$status,
+                   c("open", "unrecorded", "closed", "unrecorded"))
+  expect_equal(res$summary$cells_changed, 2L)
+
+  expect_no_error(issues <- validate_recodes(rules, df))
+  expect_equal(nrow(issues$stale), 0L)   # it hits the NA cells, so not stale
+})
+
+test_that("codegen emits is.na() for an NA-targeting rule", {
+  code <- generate_recode_R(
+    mk_rule("status", "exact", NA_character_, "unrecorded"), "d")
+  expect_silent(parse(text = code))
+  expect_true(grepl("is.na(status)", code, fixed = TRUE))
+  expect_false(grepl("NA_character_ ~", code, fixed = TRUE))
+
+  df <- tibble::tibble(status = c("open", NA))
+  expect_identical(eval_generated_recodes(
+    df, mk_rule("status", "exact", NA_character_, "unrecorded"))$status,
+    c("open", "unrecorded"))
+})
+
+test_that("an NA-targeting rule survives the recodes CSV round trip", {
+  tmp <- tempfile(fileext = ".csv"); on.exit(unlink(tmp), add = TRUE)
+  rules <- mk_rule("status", "exact", NA_character_, "unrecorded")
+  write_recodes(rules, tmp)
+  back <- read_recodes(tmp)
+  expect_true(is.na(back$old_value))
+  expect_identical(back$rule_id, rules$rule_id)
+  expect_identical(apply_recodes(tibble::tibble(status = c("open", NA)),
+                                 back)$df$status,
+                   c("open", "unrecorded"))
+})
+
+test_that("an unusable match_type emits a FALSE arm rather than a live one", {
+  code <- generate_recode_R(mk_rule("x", "regx", "a", "A"), "d")
+  expect_silent(parse(text = code))
+  expect_true(grepl("FALSE ~ \"A\"", code, fixed = TRUE))
+})

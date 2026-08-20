@@ -66,6 +66,59 @@ test_that("build_meta flags long-text vs short-text candidates", {
   expect_equal(meta$text_kind[meta$column == "drink"], "short")
 })
 
+test_that(".is_id_name matches id / _id but not id-suffixed words", {
+  expect_true(.is_id_name("id"))
+  expect_true(.is_id_name("ID"))
+  expect_true(.is_id_name("case_id"))
+  expect_true(.is_id_name("sample_case_Id"))
+  expect_false(.is_id_name("paid"))
+  expect_false(.is_id_name("grid"))
+  expect_false(.is_id_name("identifier"))
+  expect_false(.is_id_name("id_number"))
+})
+
+test_that("build_meta excludes identifier-named columns from free text", {
+  # High-cardinality alphanumeric ids clear every content heuristic (median
+  # length 8, 0% NA, 60 uniques, neither date- nor numeric-like) -- only the
+  # structural name guard rejects them.
+  ids <- sprintf("AB%06d", seq_len(60))
+  df <- tibble::tibble(
+    sample_case_id = ids,
+    id             = ids,
+    paid           = ids   # control: "id"-suffixed word, still free text
+  )
+  meta <- build_meta(df)
+  pick <- function(col) meta$is_free_text_candidate[meta$column == col]
+  expect_false(pick("sample_case_id"))
+  expect_false(pick("id"))
+  expect_true(pick("paid"))
+})
+
+test_that("build_meta does NOT exclude 'label'-named columns (domain-neutral)", {
+  # Deliberate divergence from the upstream copy: `label$` is a coded-value-twin
+  # convention there, not a general one.
+  df <- tibble::tibble(
+    product_label = c("blue widget","red widget","green widget","teal widget",
+                      "black widget","white widget","grey widget","pink widget",
+                      "amber widget","olive widget","coral widget","navy widget")
+  )
+  expect_true(build_meta(df)$is_free_text_candidate)
+})
+
+test_that("bundled example dataset classification is unchanged", {
+  # Regression guard for the free-text classifier (see CLAUDE.md Gotchas).
+  path <- file.path("..", "..", "inst", "extdata", "example_messy.csv")
+  skip_if_not(file.exists(path), "bundled example dataset not found")
+  meta <- build_meta(read_dataset(path))
+  pick <- function(col) meta$is_free_text_candidate[meta$column == col]
+  for (col in c("drink1", "drink2", "city", "notes", "review")) {
+    expect_true(pick(col), info = col)
+  }
+  for (col in c("order_id", "size", "price", "order_date")) {
+    expect_false(pick(col), info = col)
+  }
+})
+
 test_that("column_group extracts the prefix before the first underscore", {
   expect_equal(column_group("vic_death_cause1"), "vic")
   expect_equal(column_group("cause"), "(none)")

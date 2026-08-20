@@ -12,7 +12,8 @@
 #   write_recodes(rules, path)          write recode CSV with NA round-trip
 #   recode_rule_id(variable, match_type, old_value)  stable hash id
 #   validate_recodes(rules, data = NULL)  duplicates, chains, blanks, stale
-#   apply_recodes(df, rules)            return list(df, summary)
+#   apply_recodes(df, rules)            single pass, first match wins;
+#                                       returns list(df, summary)
 #   generate_recode_R(rules, dataset_id, source_csv_path = NULL)
 #                                       emit copyable R script content
 # =============================================================================
@@ -71,17 +72,70 @@ normalize_value <- function(x,
 #' rather than erroring. For the other match types, values are normalized and
 #' compared for equality. A match REPLACES THE WHOLE CELL (regex does not do
 #' partial substitution / backreferences).
+#'
+#' NA handling: an NA `old_value` — which is how the CSV's `<NA>` sentinel
+#' round-trips — targets the MISSING cells of the column. It used to produce an
+#' all-NA hit vector, which made the caller's `if (any(hit))` throw "missing
+#' value where TRUE/FALSE needed" and abort Apply & Export. The returned vector
+#' is now always a plain logical with no NAs, whatever the inputs. An
+#' NA/unrecognised `match_type` matches nothing (validate_recodes() reports it
+#' as `invalid_enum`) rather than erroring.
 .rule_hits <- function(values, old_value, match_type) {
-  if (match_type == "regex") {
+  n <- length(values)
+  if (n == 0) return(logical(0))
+
+  # A rule with no usable match_type matches nothing (never errors).
+  if (length(match_type) != 1 || is.na(match_type) ||
+      !(match_type %in% RECODE_MATCH_TYPES)) {
+    return(rep(FALSE, n))
+  }
+
+  # Explicit NA target: the rule is about the column's missing cells.
+  if (length(old_value) != 1 || is.na(old_value)) return(is.na(values))
+
+  hits <- if (match_type == "regex") {
     suppressWarnings(tryCatch(
       !is.na(values) & grepl(old_value, values),
-      error = function(e) rep(FALSE, length(values))
+      error = function(e) rep(FALSE, n)
     ))
   } else {
     norm   <- normalize_value(values, match_type)
     target <- normalize_value(old_value, match_type)
     !is.na(norm) & norm == target
   }
+  hits[is.na(hits)] <- FALSE
+  hits
+}
+
+#' Resolve the target columns of one recode rule against a data frame.
+#'
+#' Sibling rules expand their `sibling_pattern` against the frame's names;
+#' everything else targets `variable` alone. Always returns names present in
+#' `df` (possibly none).
+.recode_cols <- function(df, rule) .recode_cols_from_names(names(df), rule)
+
+# Same resolution against a bare vector of column NAMES, for callers that hold
+# the names but not the frame.
+.recode_cols_from_names <- function(all_cols, rule) {
+  all_cols <- as.character(all_cols)
+  cols <- if (length(rule$apply_to_siblings) == 1 &&
+              !is.na(rule$apply_to_siblings) && rule$apply_to_siblings &&
+              !is.na(rule$sibling_pattern)) {
+    grep(rule$sibling_pattern, all_cols, value = TRUE)
+  } else {
+    rule$variable
+  }
+  intersect(cols, all_cols)
+}
+
+# Cell-level "did this actually change?" test, NA-aware. One side NA and the
+# other not counts as a change; NA -> NA and x -> x do not.
+.cells_differ <- function(before, after) {
+  if (length(before) == 0) return(logical(0))
+  after  <- rep(as.character(after), length.out = length(before))
+  before <- as.character(before)
+  xor(is.na(before), is.na(after)) |
+    (!is.na(before) & !is.na(after) & before != after)
 }
 
 
@@ -317,13 +371,8 @@ validate_recodes <- function(rules, data = NULL) {
 
   if (!is.null(data) && nrow(rules) > 0) {
     stale_flags <- vapply(seq_len(nrow(rules)), function(i) {
-      r <- rules[i, ]
-      cols <- if (!is.na(r$apply_to_siblings) && r$apply_to_siblings && !is.na(r$sibling_pattern)) {
-        grep(r$sibling_pattern, names(data), value = TRUE)
-      } else {
-        r$variable
-      }
-      cols <- intersect(cols, names(data))
+      r    <- rules[i, ]
+      cols <- .recode_cols(data, r)
       if (length(cols) == 0) return(TRUE)
       !any(vapply(cols, function(c) {
         any(.rule_hits(data[[c]], r$old_value, r$match_type))
@@ -344,51 +393,79 @@ validate_recodes <- function(rules, data = NULL) {
 
 #' Apply a rule set to a data frame.
 #'
-#' @return list(df = modified df, summary = tibble(rule_id, cells_changed))
+#' SEMANTICS (single pass). Every rule is matched against the ORIGINAL column
+#' values, and the FIRST rule to claim a cell wins; a later rule never sees —
+#' and so never re-recodes — a value an earlier rule just wrote.
+#'
+#' This used to be a cascade: rules were applied one after another to the
+#' progressively-rewritten frame, so a rule set containing both
+#' `asain -> Asian` and `Asian -> Asian or PI` pushed the first rule's output
+#' through the second one and left NO cell holding "Asian", which is not what
+#' the rule table says. It also made the result depend on the row order of the
+#' recodes CSV. Single-pass matches both the rule table and
+#' `generate_recode_R()`'s `case_when()` output (see the agreement test in
+#' tests/testthat/test-string_helpers.R).
+#'
+#' @return list(
+#'   df      = modified df,
+#'   summary = tibble(rule_id, cells_changed, cells_matched, cells_shadowed))
+#'   - cells_matched  : cells the rule matched in the original data
+#'   - cells_changed  : of those, the ones it actually rewrote to a new value
+#'                      (a rule whose new_value equals the old value changes
+#'                      nothing, and a shadowed cell is not changed by it)
+#'   - cells_shadowed : cells this rule matched but an earlier rule had claimed
 apply_recodes <- function(df, rules) {
-  if (nrow(rules) == 0) {
-    return(list(
-      df = df,
-      summary = tibble::tibble(rule_id = character(0),
-                               cells_changed = integer(0))
-    ))
-  }
+  empty_summary <- tibble::tibble(rule_id        = character(0),
+                                  cells_changed  = integer(0),
+                                  cells_matched  = integer(0),
+                                  cells_shadowed = integer(0))
+  if (nrow(rules) == 0) return(list(df = df, summary = empty_summary))
 
-  summary <- tibble::tibble(rule_id = character(0),
-                            cells_changed = integer(0))
+  n_rules  <- nrow(rules)
+  cols_for <- lapply(seq_len(n_rules), function(i) .recode_cols(df, rules[i, ]))
 
-  for (i in seq_len(nrow(rules))) {
-    r <- rules[i, ]
+  # Snapshot the ORIGINAL values of every targeted column: all matching is done
+  # against these, never against a value another rule has already written.
+  target_cols <- unique(unlist(cols_for))
+  orig    <- stats::setNames(lapply(target_cols, function(cn) df[[cn]]), target_cols)
+  claimed <- stats::setNames(
+    lapply(target_cols, function(cn) rep(FALSE, nrow(df))), target_cols)
 
-    cols <- if (!is.na(r$apply_to_siblings) && r$apply_to_siblings && !is.na(r$sibling_pattern)) {
-      grep(r$sibling_pattern, names(df), value = TRUE)
-    } else {
-      r$variable
-    }
-    cols <- intersect(cols, names(df))
+  n_matched  <- integer(n_rules)
+  n_changed  <- integer(n_rules)
+  n_shadowed <- integer(n_rules)
 
-    if (length(cols) == 0) {
-      summary <- dplyr::bind_rows(summary,
-        tibble::tibble(rule_id = r$rule_id, cells_changed = 0L))
-      next
-    }
+  for (i in seq_len(n_rules)) {
+    r    <- rules[i, ]
+    cols <- cols_for[[i]]
+    if (length(cols) == 0) next
 
-    new_val <- if (r$action == "delete") NA_character_ else r$new_value
+    new_val <- if (identical(as.character(r$action), "delete")) NA_character_
+               else r$new_value
 
-    cells_changed <- 0L
     for (col in cols) {
-      hit <- .rule_hits(df[[col]], r$old_value, r$match_type)
-      if (any(hit)) {
-        df[[col]][hit] <- new_val
-        cells_changed <- cells_changed + sum(hit)
-      }
+      hit <- .rule_hits(orig[[col]], r$old_value, r$match_type)
+      if (!any(hit)) next
+      n_matched[i]  <- n_matched[i] + sum(hit)
+      take          <- hit & !claimed[[col]]
+      n_shadowed[i] <- n_shadowed[i] + sum(hit & claimed[[col]])
+      if (!any(take)) next
+      before <- df[[col]][take]
+      df[[col]][take] <- new_val
+      n_changed[i] <- n_changed[i] + sum(.cells_differ(before, df[[col]][take]))
+      claimed[[col]] <- claimed[[col]] | take
     }
-
-    summary <- dplyr::bind_rows(summary,
-      tibble::tibble(rule_id = r$rule_id, cells_changed = cells_changed))
   }
 
-  list(df = df, summary = summary)
+  list(
+    df = df,
+    summary = tibble::tibble(
+      rule_id        = as.character(rules$rule_id),
+      cells_changed  = as.integer(n_changed),
+      cells_matched  = as.integer(n_matched),
+      cells_shadowed = as.integer(n_shadowed)
+    )
+  )
 }
 
 
@@ -432,41 +509,68 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
       )
     )
 
-  groups <- rules |>
-    dplyr::group_by(effective_pattern, match_type) |>
-    dplyr::group_split()
+  # One group per target pattern, emitted in the order the patterns first
+  # appear in the rule table (deterministic, and it reads in rule order). Every
+  # arm inside a case_when() is tested against the ORIGINAL column, so grouping
+  # all the match types together is what keeps the script single-pass.
+  pattern_order <- unique(rules$effective_pattern)
+  groups <- lapply(pattern_order,
+                   function(p) rules[rules$effective_pattern == p, , drop = FALSE])
+
+  # A column reached by more than one pattern (e.g. a plain rule on cause1 plus
+  # a sibling rule matching "^cause[0-9]+$") lands in two blocks, which run in
+  # sequence rather than in one pass — say so rather than diverging silently
+  # from apply_recodes().
+  overlapping <- unique(rules$variable[vapply(rules$variable, function(v) {
+    sum(vapply(pattern_order, function(p) isTRUE(grepl(p, v)), logical(1))) > 1L
+  }, logical(1))])
+  if (length(overlapping) > 0) {
+    header <- c(header,
+      "# WARNING: these columns are targeted by more than one rule pattern, so",
+      "# their blocks run in sequence (a later block can re-recode what an",
+      "# earlier one wrote). Give each column a single pattern to avoid it:",
+      paste0("#   ", paste(overlapping, collapse = ", ")),
+      "")
+  }
 
   blocks <- character(0)
   for (g in groups) {
-    pattern    <- g$effective_pattern[1]
-    match_type <- g$match_type[1]
-
-    lhs_expr <- switch(match_type,
-      exact      = "{{col}}",
-      exact_ci   = "tolower({{col}})",
-      trimmed_ci = "str_squish(tolower({{col}}))",
-      regex      = "{{col}}"
-    )
+    pattern <- g$effective_pattern[1]
 
     make_arms <- function(col_token) {
-      lhs_expr_f <- gsub("\\{\\{col\\}\\}", col_token, lhs_expr, fixed = FALSE)
       arms <- character(0)
       for (i in seq_len(nrow(g))) {
-        r <- g[i, ]
-        rhs <- if (r$action == "delete") "NA_character_"
+        r  <- g[i, ]
+        mt <- as.character(r$match_type)
+        rhs <- if (identical(as.character(r$action), "delete")) "NA_character_"
                else deparse(as.character(r$new_value))
         cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                  paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
-        if (match_type == "regex") {
+        lhs <- if (is.na(mt) || !(mt %in% RECODE_MATCH_TYPES)) {
+          # Unusable match_type: matches nothing, same as .rule_hits().
+          "FALSE"
+        } else if (is.na(r$old_value)) {
+          # `<NA>` in the CSV: the rule targets the column's missing cells.
+          sprintf("is.na(%s)", col_token)
+        } else if (identical(mt, "regex")) {
           # Regex match: detect the (raw) pattern, replace the whole cell.
-          pat <- deparse(as.character(r$old_value))
-          arms <- c(arms,
-            sprintf("    str_detect(%s, %s) ~ %s,%s", col_token, pat, rhs, cmt))
+          sprintf("str_detect(%s, %s)", col_token,
+                  deparse(as.character(r$old_value)))
         } else {
-          lhs <- deparse(as.character(r$old_value))
-          arms <- c(arms,
-            sprintf("    %s == %s ~ %s,%s", lhs_expr_f, lhs, rhs, cmt))
+          # Normalize BOTH sides identically for the case-insensitive types.
+          col_expr <- switch(mt,
+            exact      = col_token,
+            exact_ci   = sprintf("tolower(%s)", col_token),
+            trimmed_ci = sprintf("str_squish(tolower(%s))", col_token),
+            col_token)
+          target <- switch(mt,
+            exact      = as.character(r$old_value),
+            exact_ci   = tolower(as.character(r$old_value)),
+            trimmed_ci = stringr::str_squish(tolower(as.character(r$old_value))),
+            as.character(r$old_value))
+          sprintf("%s == %s", col_expr, deparse(target))
         }
+        arms <- c(arms, sprintf("    %s ~ %s,%s", lhs, rhs, cmt))
       }
       arms
     }
