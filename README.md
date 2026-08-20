@@ -117,7 +117,7 @@ Without `renv`, install the direct dependencies manually:
 install.packages(c(
   "shiny", "bslib", "DT", "dplyr", "stringr", "readr", "tibble", "purrr",
   "tidyr", "ggplot2", "htmltools", "stringdist", "igraph", "phonics",
-  "hunspell", "readxl", "clipr", "jsonlite", "rlang"
+  "hunspell", "readxl", "clipr", "jsonlite", "rlang", "wordcloud2"
 ))
 shiny::runApp()
 ```
@@ -148,8 +148,8 @@ immediately, or upload your own CSV/Excel.
    dictionary" button. (Best for **short** columns.)
 6. **Text analysis** — for **long** (sentence/paragraph) columns where
    clustering and spellcheck don't help: length distribution (chars / words /
-   sentences), top words and phrases (n-grams) with stopword removal, and
-   keyword-in-context search.
+   sentences), top words and phrases (n-grams) with stopword removal,
+   interactive `wordcloud2` word cloud, and keyword-in-context search.
 7. **Recodes** — an editable grid of all rules with a validator (duplicate
    keys, rule chains, blanks, invalid enums/regex, stale rules).
 8. **Recategorize** — derive a *new* column from term logic across several

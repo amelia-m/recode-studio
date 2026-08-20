@@ -31,7 +31,8 @@ Imports:
     readxl,
     clipr,
     jsonlite,
-    rlang
+    rlang,
+    wordcloud2
 Suggests:
     testthat (>= 3.0.0)
 Config/testthat/edition: 3

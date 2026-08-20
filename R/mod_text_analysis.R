@@ -40,6 +40,10 @@ mod_text_analysis_ui <- function(id) {
       ),
       shiny::hr(),
 
+      shiny::h6("Interactive word cloud"),
+      wordcloud2::wordcloud2Output(ns("wordcloud"), height = "320px"),
+      shiny::hr(),
+
       shiny::h6("Keyword in context"),
       shiny::textInput(ns("kw"), NULL, placeholder = "type a word to see it in context"),
       DT::DTOutput(ns("kwic"))
@@ -120,6 +124,26 @@ mod_text_analysis_server <- function(id, shared_state, selected_var_r) {
                    remove_stopwords = isTRUE(input$stop),
                    min_chars = input$minchars %||% 1),
         rownames = FALSE, options = list(pageLength = 10, dom = "tp"))
+    })
+
+    output$wordcloud <- wordcloud2::renderWordcloud2({
+      v <- col_values()
+      shiny::validate(shiny::need(!is.null(v) && length(v) > 0, "No values."))
+      toks <- top_tokens(v, n = input$topn %||% 25,
+                         remove_stopwords = isTRUE(input$stop),
+                         min_chars = input$minchars %||% 1)
+      shiny::validate(shiny::need(nrow(toks) > 0, "No tokens matching filters."))
+      df_cloud <- data.frame(
+        word = as.character(toks$token),
+        freq = as.numeric(toks$n),
+        stringsAsFactors = FALSE
+      )
+      wordcloud2::wordcloud2(
+        data = df_cloud,
+        size = 0.6,
+        color = "random-dark",
+        backgroundColor = "white"
+      )
     })
 
     output$kwic <- DT::renderDT({
