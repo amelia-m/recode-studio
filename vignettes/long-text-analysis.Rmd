@@ -1,0 +1,101 @@
+---
+title: "Long-Text Analysis & Interactive Visualizations"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Long-Text Analysis & Interactive Visualizations}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+
+Free-text variables like customer reviews, survey comments, and incident descriptions contain sentence- and paragraph-length content. For these columns, string-edit clustering is unhelpful.
+
+Recode Studio's **Text analysis** module provides:
+1. **Length distribution profiling** (character, word, and sentence counts).
+2. **Top token and n-gram frequency extraction** with configurable stopword filtering.
+3. **Keyword-In-Context (KWIC)** search.
+4. **Interactive word clouds** via `wordcloud2`.
+
+---
+
+## 1. Profiling Long Text Columns
+
+```{r load_data}
+source(file.path("..", "R", "text_helpers.R"))
+
+csv_path <- system.file("extdata", "example_survey.csv", package = "recodeStudio")
+if (!nzchar(csv_path)) csv_path <- file.path("..", "inst", "extdata", "example_survey.csv")
+
+df <- readr::read_csv(csv_path, show_col_types = FALSE)
+comments <- df$detailed_comments
+
+# Classify column length
+classify_text_length(comments)
+
+# Calculate summary metrics per response
+stats <- text_length_stats(comments)
+summary(stats)
+```
+
+---
+
+## 2. Token & N-Gram Extraction
+
+Extracting the most frequent individual words (unigrams) and phrases (bigrams/trigrams) while filtering common English stopwords:
+
+```{r tokens}
+# Top 10 words (excluding common English stopwords)
+tokens_df <- top_tokens(comments, n = 10, remove_stopwords = TRUE, min_chars = 3)
+knitr::kable(tokens_df)
+
+# Top contiguous 2-word phrases
+ngrams_df <- top_ngrams(comments, ngram = 2, n = 8, remove_stopwords = TRUE)
+knitr::kable(ngrams_df)
+```
+
+---
+
+## 3. Keyword in Context (KWIC)
+
+KWIC lets reviewers inspect how specific words (e.g. `"performance"`, `"bug"`, `"support"`) are used across customer sentences:
+
+```{r kwic}
+kwic_results <- kwic(comments, term = "performance", window = 4)
+knitr::kable(kwic_results)
+```
+
+---
+
+## 4. Interactive Word Cloud Visualization
+
+Recode Studio integrates `wordcloud2` to render HTML5 canvas token clouds directly in the Shiny UI:
+
+```{r wordcloud, eval = FALSE}
+# Inside Shiny text analysis server module:
+df_cloud <- data.frame(
+  word = as.character(tokens_df$token),
+  freq = as.numeric(tokens_df$n),
+  stringsAsFactors = FALSE
+)
+
+wordcloud2::wordcloud2(
+  data = df_cloud,
+  size = 0.6,
+  color = "random-dark",
+  backgroundColor = "white"
+)
+```
+
+---
+
+## Conclusion
+
+Combining length distributions, n-gram mining, KWIC search, and interactive canvas visualizations allows rapid exploratory review of large unstructured text fields prior to recoding and categorization.

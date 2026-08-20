@@ -1,0 +1,112 @@
+---
+title: "Getting Started with Recode Studio"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with Recode Studio}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+
+**Recode Studio** is a standalone, dataset-agnostic [Shiny](https://shiny.posit.co/) application and pure-R toolkit designed for cleaning messy string variables, grouping typo variants, building recode rules, and generating reproducible, deterministic data transformation pipelines.
+
+This vignette demonstrates:
+1. Identifying messy string columns and column metadata.
+2. Grouping typo variants using string-similarity clustering.
+3. Propagating recode rules across sibling columns (e.g., `drink1` and `drink2`).
+4. Generating deterministic, single-pass `dplyr::case_when()` R code.
+
+---
+
+## 1. Inspecting Datasets and Free-Text Columns
+
+Recode Studio includes a pure-R metadata scanner (`build_meta()`) that classifies columns into:
+* **Identifiers/Numbers/Dates:** Automatically detected and excluded from text clustering.
+* **Short text:** Categorical strings and labels suitable for similarity clustering and spellchecking.
+* **Long text:** Paragraphs and multi-sentence reviews suitable for token analysis and word clouds.
+
+```{r metadata}
+# Load the bundled cafe dataset
+csv_path <- system.file("extdata", "example_messy.csv", package = "recodeStudio")
+if (!nzchar(csv_path)) csv_path <- file.path("..", "inst", "extdata", "example_messy.csv")
+
+df <- readr::read_csv(csv_path, show_col_types = FALSE)
+knitr::kable(head(df[, 1:6], 5))
+```
+
+We can inspect the column classifications:
+
+```{r inspect_meta}
+source(file.path("..", "R", "text_helpers.R"))
+source(file.path("..", "R", "data_loader.R"))
+
+meta <- build_meta(df)
+knitr::kable(meta[, c("column", "is_free_text_candidate", "text_kind", "n_unique", "pct_na")])
+```
+
+---
+
+## 2. String-Similarity Clustering
+
+When inspecting short text columns like `drink1` (which contains variants such as `cappuccino`, `capuccino`, `cappucino`, `capccino`), Recode Studio groups them into similarity clusters.
+
+```{r clustering}
+source(file.path("..", "R", "string_helpers.R"))
+
+# Cluster the unique values in drink1 using Jaro-Winkler distance
+clusters <- cluster_strings(df$drink1, method = "jw", threshold = 0.85)
+
+# View detected clusters
+knitr::kable(head(clusters, 8))
+```
+
+---
+
+## 3. Building Single-Pass Recode Rules
+
+Recode rules are structured tibbles conforming to the canonical schema:
+* `rule_id`: 12-character SHA-1 hash of `(variable, match_type, old_value)`.
+* `variable`: Target column.
+* `match_type`: `exact`, `exact_ci`, `trimmed_ci`, or `regex`.
+* `old_value`: Pattern or string to replace.
+* `new_value`: Standardized target value.
+* `apply_to_siblings`: Boolean flag indicating whether to apply across sibling columns.
+* `sibling_pattern`: Regex identifying sibling columns (e.g. `^drink[12]$`).
+
+```{r rules}
+rules <- tibble::tribble(
+  ~rule_id, ~variable, ~apply_to_siblings, ~sibling_pattern, ~match_type, ~old_value, ~new_value, ~action, ~notes, ~author, ~created_at, ~updated_at, ~source_dataset,
+  "rule_cap_01", "drink1", TRUE, "^drink[12]$", "trimmed_ci", "capuccino", "cappuccino", "recode", "typo fix", "reviewer", "2026-08-20", "2026-08-20", "example_messy",
+  "rule_cap_02", "drink1", TRUE, "^drink[12]$", "trimmed_ci", "cappucino", "cappuccino", "recode", "typo fix", "reviewer", "2026-08-20", "2026-08-20", "example_messy",
+  "rule_exp_01", "drink1", TRUE, "^drink[12]$", "trimmed_ci", "expresso",  "espresso",   "recode", "typo fix", "reviewer", "2026-08-20", "2026-08-20", "example_messy"
+)
+
+# Apply recodes directly to data
+cleaned_df <- apply_recodes(df, rules)
+knitr::kable(head(cleaned_df[, c("order_id", "drink1", "drink2")], 6))
+```
+
+---
+
+## 4. Reproducible Code Generation
+
+Recode Studio exports clean, standalone `dplyr` code that matches `apply_recodes()` with exact 1-to-1 agreement:
+
+```{r codegen}
+code <- generate_recode_R(rules, dataset_id = "df")
+cat(code)
+```
+
+---
+
+## Summary
+
+Recode Studio allows teams to explore dirty datasets, build and validate rules interactively, and export self-contained, reproducible scripts for downstream reporting.

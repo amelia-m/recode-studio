@@ -1,0 +1,102 @@
+---
+title: "Cross-Variable Recategorization & Classification"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Cross-Variable Recategorization & Classification}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Overview
+
+While standard recoding modifies existing columns in place (e.g. fixing typos within `city` or `drink1`), **Recategorization** derives *new* composite variables from multi-column inclusion and exclusion rules.
+
+This vignette demonstrates:
+1. Constructing multi-column category definitions.
+2. Handling priority order and default fallbacks.
+3. Deriving categories from realistic survey feedback.
+4. Exporting runnable recategorization scripts.
+
+---
+
+## 1. The Recategorization Rule Model
+
+Each recategorization rule specifies:
+* `output_variable`: The new column being created.
+* `output_value`: The assigned category label when matched.
+* `input_variables`: Comma-separated list of columns to inspect.
+* `include_terms`: Terms where *any* match triggers the category (OR logic).
+* `exclude_terms`: Terms where *any* match disqualifies the row (NOT logic).
+* `match_type`: `contains_ci` (case-insensitive substring) or `exact_ci`.
+* `priority`: Integer evaluation order (lower runs first; first match wins).
+
+---
+
+## 2. Worked Example: Categorizing Support & Survey Feedback
+
+Using the bundled `example_survey.csv` dataset:
+
+```{r load_data}
+csv_path <- system.file("extdata", "example_survey.csv", package = "recodeStudio")
+if (!nzchar(csv_path)) csv_path <- file.path("..", "inst", "extdata", "example_survey.csv")
+
+survey_df <- readr::read_csv(csv_path, show_col_types = FALSE)
+knitr::kable(head(survey_df[, c("respondent_id", "department", "feedback_theme1", "feedback_theme2")], 5))
+```
+
+We define classification rules to categorize responses into operational focus areas (`focus_area`):
+
+```{r define_rules}
+source(file.path("..", "R", "recat_helpers.R"))
+
+rules <- tibble::tribble(
+  ~rule_id, ~output_variable, ~output_value, ~input_variables, ~include_terms, ~exclude_terms, ~match_type, ~priority, ~active, ~notes, ~author, ~created_at, ~updated_at, ~source_dataset,
+  "R001", "focus_area", "Engineering & Stability", "feedback_theme1, feedback_theme2, detailed_comments", "glitch, bug, timeout, latency, performance", "", "contains_ci", 1L, TRUE, "Tech issues", "analyst", "2026-08-20", "2026-08-20", "survey",
+  "R002", "focus_area", "Billing & Commercial", "feedback_theme1, feedback_theme2, detailed_comments", "billing, invoice, pricing, contract", "", "contains_ci", 2L, TRUE, "Commercial issues", "analyst", "2026-08-20", "2026-08-20", "survey",
+  "R003", "focus_area", "Access & Identity", "feedback_theme1, feedback_theme2, detailed_comments", "password, login, lockout, access", "", "contains_ci", 3L, TRUE, "Auth issues", "analyst", "2026-08-20", "2026-08-20", "survey",
+  "R004", "focus_area", "People & Workplace", "department, feedback_theme1, feedback_theme2", "onboarding, wellness, benefits, training", "", "contains_ci", 4L, TRUE, "HR and team", "analyst", "2026-08-20", "2026-08-20", "survey"
+)
+
+knitr::kable(rules[, c("output_variable", "output_value", "include_terms", "priority")])
+```
+
+---
+
+## 3. Applying Multi-Column Recategorization
+
+```{r apply_recat}
+result_df <- apply_recat(survey_df, rules, default_value = "General / Other")
+
+# View summary of derived focus areas
+table(result_df$focus_area)
+```
+
+Inspecting sample classified rows:
+
+```{r view_results}
+knitr::kable(head(result_df[, c("department", "feedback_theme1", "focus_area")], 8))
+```
+
+---
+
+## 4. Generated R Transformation Syntax
+
+Recode Studio compiles the rule set into clean `dplyr::case_when()` pipelines:
+
+```{r codegen}
+recat_code <- generate_recat_R(rules, dataset_id = "survey_df", default_value = "General / Other")
+cat(recat_code)
+```
+
+---
+
+## Conclusion
+
+Recategorization provides a transparent, auditable mechanism to map multi-field free text into standardized analytical taxonomies.
