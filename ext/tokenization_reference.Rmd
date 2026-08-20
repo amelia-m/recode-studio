@@ -1,0 +1,336 @@
+---
+title: "Tokenization"
+author: "Reference"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# install.packages(c(
+#   "dplyr", "here", "httr2", "openxlsx",
+#   "readxl", "RedditExtractoR", "stringr", "textmineR",
+#   "tm", "wordcloud", "cld2","httr", "ggplot2", "tidyverse","ggwordcloud","tidytext"
+# ))
+
+pkgs <- c(
+  "dplyr", "here", "httr2", "openxlsx",
+  "readxl", "RedditExtractoR", "stringr", "textmineR",
+  "tm", "wordcloud","cld2","httr","ggplot2","tidyverse","ggwordcloud",
+  "tidytext"
+)
+
+invisible(lapply(pkgs, library, character.only = TRUE))
+```
+
+# Data import
+```{r, echo=TRUE}
+#quall_b<- read_csv(here("youtube_contra.csv"))
+
+sheet_names <- excel_sheets(here("reddit_comments.xlsx"))
+
+reddit_comments <- lapply(sheet_names, function(sheet) {
+  read_excel(here("reddit_comments.xlsx"), sheet = sheet)
+})
+
+names(reddit_comments) <- sheet_names
+
+quall_b <- rbind(reddit_comments$r_lgbt_2026)
+```
+
+# Are there duplicates
+```{r, echo=TRUE}
+quall_b |>
+  filter(duplicated(content) | duplicated(content, fromLast = TRUE)) |>
+  arrange(content) |>
+  select(content, everything())
+```
+
+# Are they not in english 
+```{r, echo=TRUE}
+quall_b |>
+  mutate(lang = detect_language(content)) |>
+  filter(lang != "en" | is.na(lang))
+```
+
+# Does the data still exist
+```{r}
+library(httr)
+
+check_links <- function(df, id_col = "ID", link_col = "direct_link") {
+  results <- vector("list", nrow(df))
+  
+  for (i in seq_len(nrow(df))) {
+    url <- df[[link_col]][i]
+    id  <- df[[id_col]][i]
+    
+    status <- tryCatch({
+      resp <- GET(url, timeout(10))
+      status_code(resp)
+    }, error = function(e) NA_integer_)
+    
+    results[[i]] <- data.frame(
+      ID     = id,
+      link   = url,
+      status = status,
+      ok     = !is.na(status) && status < 400,
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  dplyr::bind_rows(results)
+}
+
+link_check <- check_links(quall_b)
+
+# Print only broken / unreachable links
+broken <- link_check[!link_check$ok, ]
+
+if (nrow(broken) == 0) {
+  message("All links returned OK.")
+} else {
+  message(nrow(broken), " broken/unreachable link(s):")
+  print(broken)
+}
+```
+
+# Data frame
+```{r}
+quall_clean<- quall_b|>
+  mutate(clean = content)|>
+  mutate(comment = content)
+
+col_to_text <- function(x){
+  deparse(substitute(x))
+}
+```
+
+# Stopwords and tokenization
+```{r, echo=TRUE}
+stopword_clean <- c(
+  stopwords("en"),
+  # custom stopwords (alphabetical)
+  "across",   "ago",       "also",     "always",    "alyssa",   "anymore",
+  "apex",     "assumes",   "back",     "beatmaker", "become",   "begin",
+  "belly",    "bit",       "black",    "bunch",     "call",     "can",
+  "come",     "date",      "didnt",    "dont",      "e",        "else",
+  "end",      "even",      "every",    "ex",        "first",    "full",
+  "get",      "goes",      "grade",    "hello",     "idea",     "im",
+  "john",     "just",      "keep",     "late",      "less",     "like",
+  "linguo",   "ll",        "lot",      "maybe",     "new",      "non",
+  "now",      "oconnell",  "old",      "one",       "part",     "people",
+  "red",      "said",      "saw",      "see",       "stuff",    "supposed",
+  "sure",     "talk",      "tell",     "thats",     "think",    "time",
+  "told",     "towards",   "two",      "us",        "ve",       "vs",
+  "wake",     "want",      "way",      "yo",        "around"
+)
+
+#here are stop words
+#may need to restart them 
+#talk to jim/wayne about words/lost 
+
+
+quall_clean_r <- quall_clean|>
+  select(clean, comment)|>
+  mutate(clean = tolower(clean),
+         #removing        
+         clean = removeWords(clean, stopword_clean),
+         clean = str_replace_all(clean, ",", ""),
+         clean = str_replace_all(clean, "\\.", ""),
+         clean = str_replace_all(clean, "\\*", ""),
+         clean = str_replace_all(clean, "[/\\\\]", ""),
+         clean = str_replace_all(clean, "\\'", ""),
+         clean = str_replace_all(clean, "\\?", ""),
+         clean = str_replace_all(clean, "\\|", ""),
+         clean = str_replace_all(clean, "\\:", ""),
+         clean = str_replace_all(clean, "\\[", ""),
+         clean = str_replace_all(clean, "\\]", ""),
+         clean = str_replace_all(clean, "-", " "),
+         clean = str_replace_all(clean, '"', ""),
+         clean = str_replace_all(clean, "[()&%!]", ""),
+         clean = str_replace_all(clean, "[^\\x00-\\x7F]", ""),
+         clean = str_replace_all(clean, "\n", ""), # n is new line
+         clean = str_replace_all(clean, "\\d+", ""), # d is digits
+         clean = str_replace_all(clean, " s ", " "), #s is space 
+         clean = str_replace_all(clean, "\\b[a]\\b", " "), #b is boundaries
+         clean = str_replace_all(clean, "  ", " "),
+         #stemming
+         clean = str_replace_all(clean, "duties", "duty"),
+         clean = str_replace_all(clean, "feels", "feel"),
+         clean = str_replace_all(clean, "actively", "active"),
+         clean = str_replace_all(clean, "responsibilities ", "responsibility"),
+         clean = str_replace_all(clean, "gotten", "got"),
+         clean = str_replace_all(clean, "tasks", "task"),
+         clean = str_replace_all(clean, "rests", "rest"),
+         clean = str_replace_all(clean, "services", "service"),
+         clean = str_replace_all(clean, "talked", "talk"),
+         clean = str_replace_all(clean, "claimed", "claim"),
+         clean = str_replace_all(clean, "attached", "attach"),
+         clean = str_replace_all(clean, "skills", "skill"),
+         clean = str_replace_all(clean, "made", "make"),
+         clean = str_replace_all(clean, "used", "use"),
+         clean = str_replace_all(clean, "making", "make"),
+         clean = str_replace_all(clean, "names", "name"),
+         clean = str_replace_all(clean, "feeling", "feel"),
+         clean = str_replace_all(clean, "wrote", "write"),
+         clean = str_replace_all(clean, "affirmed", "affirm"),
+         clean = str_replace_all(clean, "\\s+", " "),
+         clean = str_replace_all(clean, "responsibilityactions", "responsibility actions"),
+         clean = str_replace_all(clean, "qq pm", "qqpm"),
+         clean = str_replace_all(clean, "responsibilityassociated","responsibility associated"),
+         clean = str_replace_all(clean, "responsibilitycompliments", "responsibility compliments"),
+         clean = str_replace_all(clean, "responsibilitycontributions", "responsibility contributions"),
+         clean = str_replace_all(clean, "responsibilityduty", "responsibility duty"),
+         clean = str_replace_all(clean, "responsibilityexpectations", "responsibility expectations"),
+         clean = str_replace_all(clean, "responsibilityjob", "responsibility job"),
+         clean = str_replace_all(clean, "responsibilitypractices", "responsibility practices"),
+         clean = str_replace_all(clean, "departmental", "department"),
+         clean = str_squish(clean)
+  )
+```
+
+# Clusterign and word patterns 
+```{r}
+# num_docs<- quall_clean_r|>
+#   nrow()|>
+#   as.numeric()
+
+dtm <- CreateDtm(doc_vec = quall_clean$clean, # character vector of documents
+                 doc_names = quall_clean$ID, # document names, optional
+                 ngram_window = c(1, 2), # minimum and maximum n-gram length
+                 stopword_vec = c(stopwords::stopwords("en"), # stopwords from tm
+                                  stopwords::stopwords(source = "smart")), # this is the default value
+                 lower = TRUE, # lowercase - this is the default value
+                 remove_punctuation = TRUE, # punctuation - this is the default
+                 remove_numbers = TRUE, # numbers - this is the default
+                 verbose = FALSE, # Turn off status bar for this demo
+                 cpus = 1) # by default, this will be the max number of cpus available
+
+dim(dtm) 
+nrow(dtm) 
+ncol(dtm) 
+head(colnames(dtm))
+head(rownames(dtm))
+
+# get counts of tokens across the corpus
+tf_mat <- TermDocFreq(dtm = dtm)
+
+str(tf_mat) 
+
+head(tf_mat[ order(tf_mat$term_freq, decreasing = TRUE) , ], 10)
+
+# look at the most frequent bigrams
+tf_bigrams <- tf_mat[ stringr::str_detect(tf_mat$term, "_") , ]
+head(tf_bigrams[ order(tf_bigrams$term_freq, decreasing = TRUE) , ], 10)
+
+# remove offending tokens from the DTM
+# most liley not needed as I do the cleaning myself beofre I load this into the model
+dtm <- dtm[ , ! stringr::str_detect(colnames(dtm),
+                                    "(^br$)|(_br$)|(^br_)") ]
+
+# re-construct tf_mat and tf_bigrams
+tf_mat <- TermDocFreq(dtm)
+
+tf_bigrams <- tf_mat[ stringr::str_detect(tf_mat$term, "_") , ]
+
+
+head(tf_mat[ order(tf_mat$term_freq, decreasing = TRUE) , ], 10)
+
+head(tf_bigrams[ order(tf_bigrams$term_freq, decreasing = TRUE) , ], 10)
+
+# We can also calculate how many tokens each document contains from the DTM. Note that this reflects the modifications we made in constructing the DTM (removing stop words, punctuation, numbers, etc.).
+
+# summary of document lengths
+doc_lengths <- rowSums(dtm)
+
+summary(doc_lengths)
+
+
+# remove any tokens that were in 3 or fewer documents
+dtm <- dtm[ , colSums(dtm > 0) > 3 ] # alternatively: dtm[ , tf_mat$term_freq > 3 ]
+
+tf_mat <- tf_mat[ tf_mat$term %in% colnames(dtm) , ]
+
+tf_bigrams <- tf_bigrams[ tf_bigrams$term %in% colnames(dtm) , ]
+
+
+# # what words are most associated with sentiment?
+  #not needed for this model 
+  #(https://cran.r-project.org/web/packages/textmineR/vignettes/a_start_here.html)
+
+# tf_sentiment <- list(positive = TermDocFreq(dtm[ quall_clean$sentiment == 1 , ]),
+#                      negative = TermDocFreq(dtm[ quall_clean$sentiment == 0 , ]))
+```
+
+
+```{r}
+
+dtm <- CreateDtm(doc_vec = quall_clean$clean, # character vector of documents
+                 doc_names = quall_clean$ID, # document names, optional
+                 ngram_window = c(1, 2), # minimum and maximum n-gram length
+                 stopword_vec = c(stopwords::stopwords("en"), # stopwords from tm
+                                  stopwords::stopwords(source = "smart")), # this is the default value
+                 lower = TRUE, # lowercase - this is the default value
+                 remove_punctuation = TRUE, # punctuation - this is the default
+                 remove_numbers = TRUE, # numbers - this is the default
+                 verbose = FALSE, # Turn off status bar for this demo
+                 cpus = 1) # by default, this will be the max number of cpus available
+
+tf_mat <- TermDocFreq(dtm)
+
+tfidf <- t(dtm[ , tf_mat$term ]) * tf_mat$idf
+
+tfidf <- t(tfidf)
+
+norms <- sqrt(rowSums(tfidf * tfidf))
+tfidf <- tfidf[norms > 0, ]
+
+csim <- tfidf / sqrt(rowSums(tfidf * tfidf))
+
+csim <- csim %*% t(csim)
+
+cdist <- as.dist(1 - csim)
+
+hc <- hclust(d = cdist, method = "ward.D2")
+
+clustering <- cutree(hc, 10)
+
+plot(hc, main = "Hierarchical clustering of quall_data",
+     ylab = "", xlab = "", yaxt = "n")
+
+rect.hclust(hc, 10, border = "red")
+
+p_words <- colSums(dtm) / sum(dtm)
+
+cluster_words <- lapply(unique(clustering), function(x){
+  rows <- dtm[ clustering == x , ]
+  
+  # for memory's sake, drop all words that don't appear in the cluster
+  rows <- rows[ , colSums(rows) > 0 ]
+  
+  colSums(rows) / sum(rows) - p_words[ colnames(rows) ]
+})
+
+
+
+#The code chunk below creates a summary table of clusters. Each cluster’s size and the top 5 words are represented.
+
+# create a summary table of the top 5 words defining each cluster
+cluster_summary <- data.frame(cluster = unique(clustering),
+                              size = as.numeric(table(clustering)),
+                              top_words = sapply(cluster_words, function(d){
+                                paste(
+                                  names(d)[ order(d, decreasing = TRUE) ][ 1:5 ], 
+                                  collapse = ", ")
+                              }),
+                              stringsAsFactors = FALSE)
+
+cluster_summary
+
+# plot a word cloud of one cluster as an example
+wordcloud::wordcloud(words = names(cluster_words[[ 2 ]]), 
+                     freq = cluster_words[[ 2 ]], 
+                     max.words = 50, 
+                     random.order = FALSE, 
+                     colors = c("red", "yellow", "blue"),
+                     main = "Top words in cluster 100")
+```
