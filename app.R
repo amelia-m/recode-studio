@@ -42,7 +42,8 @@ ui <- bslib::page_navbar(
       bslib::nav_panel("5. Spellcheck",      value = "spellcheck", mod_spellcheck_view_ui("spellcheck_view")),
       bslib::nav_panel("6. Text analysis",   value = "text",       mod_text_analysis_ui("text_analysis")),
       bslib::nav_panel("7. Recodes",         value = "recodes",    mod_recode_editor_ui("recode_editor")),
-      bslib::nav_panel("8. Preview & export", value = "export",
+      bslib::nav_panel("8. Recategorize",    value = "recat",      mod_recategorize_ui("recategorize")),
+      bslib::nav_panel("9. Preview & export", value = "export",
         mod_preview_export_ui("preview_export"),
         br(),
         mod_import_recodes_ui("import_recodes")
@@ -69,8 +70,13 @@ server <- function(input, output, session) {
     dataset_name = NULL
   )
 
-  # In-session rule set + proxy.
-  rv <- shiny::reactiveValues(rules = empty_recodes_tibble())
+  # In-session rule sets + proxies. Recategorization rules live in their OWN
+  # store: they derive a new column instead of rewriting values, so they share
+  # neither the schema nor the export path with the old->new recodes.
+  rv <- shiny::reactiveValues(
+    rules = empty_recodes_tibble(),
+    recat = empty_recat_tibble()
+  )
   rules_proxy <- list(
     get = shiny::reactive({ rv$rules }),
     add = function(new_rules) {
@@ -79,6 +85,15 @@ server <- function(input, output, session) {
       rv$rules <- dplyr::bind_rows(cur, new_rules)
     },
     set = function(new_rules) { rv$rules <- new_rules }
+  )
+  recat_proxy <- list(
+    get = shiny::reactive({ rv$recat }),
+    add = function(new_rules) {
+      cur <- rv$recat
+      cur <- cur[!(cur$recat_id %in% new_rules$recat_id), ]
+      rv$recat <- dplyr::bind_rows(cur, new_rules)
+    },
+    set = function(new_rules) { rv$recat <- new_rules }
   )
 
   mod_data_input_server("data_input", shared_state)
@@ -129,6 +144,21 @@ server <- function(input, output, session) {
   mod_text_analysis_server("text_analysis", shared_state, selected_var_r)
 
   mod_recode_editor_server("recode_editor", shared_state, rules_proxy)
+
+  # The exported recat script is meant to run AFTER the recode script, so the
+  # Recategorize tab previews against the recoded frame, not the raw one.
+  recode_basis_r <- shiny::reactive({
+    d <- shared_state$data
+    r <- rules_proxy$get()
+    if (is.null(d)) return(NULL)
+    if (nrow(r) == 0) return(list(df = d, n_rules = 0L))
+    df <- tryCatch(apply_recodes(d, r)$df, error = function(e) d)
+    list(df = df, n_rules = nrow(r))
+  })
+
+  mod_recategorize_server("recategorize", shared_state, recat_proxy,
+    seed_var_r = selected_var_r, recode_basis_r = recode_basis_r)
+
   mod_preview_export_server("preview_export", shared_state, rules_proxy)
   mod_import_recodes_server("import_recodes", shared_state, rules_proxy)
 }

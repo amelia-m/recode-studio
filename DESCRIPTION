@@ -22,6 +22,8 @@ Imports:
     tibble,
     purrr,
     tidyr,
+    ggplot2,
+    htmltools,
     stringdist,
     igraph,
     phonics,

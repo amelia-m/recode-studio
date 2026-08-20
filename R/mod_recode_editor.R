@@ -6,6 +6,13 @@
 # runs validate_recodes() and surfaces issues in a modal.
 # =============================================================================
 
+# Display column order for the editor table. The generated-markup "delete"
+# column MUST stay last: the DT below unescapes exactly one column
+# (`escape = -ncol(df)`), and every other column can hold raw dataset text.
+.RECODE_EDITOR_COLS <- c("variable", "old_value", "new_value", "action",
+                         "apply_to_siblings", "sibling_pattern", "match_type",
+                         "notes", "rule_id", "delete")
+
 mod_recode_editor_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::card(
@@ -41,15 +48,18 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
 
     table_data <- shiny::reactive({
       r <- rules_proxy$get()
-      if (nrow(r) == 0) return(r)
+      if (nrow(r) == 0) {
+        # Keep the display shape stable so the escape index below is always
+        # the "delete" column, even with no rules loaded.
+        r$delete <- character(0)
+        return(r[, .RECODE_EDITOR_COLS])
+      }
       ns <- session$ns
       r$delete <- vapply(seq_len(nrow(r)), function(i) {
         sprintf('<button class="btn btn-xs btn-outline-danger" onclick="Shiny.setInputValue(\'%s\', \'%s\', {priority: \'event\'})">Delete</button>',
                 ns("delete_row"), r$rule_id[i])
       }, character(1))
-      r[, c("variable", "old_value", "new_value", "action",
-            "apply_to_siblings", "sibling_pattern", "match_type",
-            "notes", "rule_id", "delete")]
+      r[, .RECODE_EDITOR_COLS]
     })
 
     output$tbl <- DT::renderDT({
@@ -57,7 +67,10 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
       DT::datatable(
         df,
         rownames  = FALSE,
-        escape    = FALSE,
+        # SECURITY: only the last column ("delete") is generated markup. Every
+        # other column can hold raw third-party dataset text (old_value /
+        # new_value) or free-text notes, so it must stay HTML-escaped.
+        escape    = -ncol(df),
         editable  = list(target = "cell",
                          disable = list(columns = c(0, 8, 9))),  # variable, rule_id, delete
         selection = "none",
@@ -69,10 +82,7 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
       info <- input$tbl_cell_edit
       r <- rules_proxy$get()
       if (nrow(r) == 0) return()
-      col_names <- c("variable", "old_value", "new_value", "action",
-                     "apply_to_siblings", "sibling_pattern", "match_type",
-                     "notes", "rule_id", "delete")
-      col <- col_names[info$col + 1]
+      col <- .RECODE_EDITOR_COLS[info$col + 1]
       row <- info$row
       val <- info$value
       if (col %in% c("delete", "rule_id", "variable")) return()  # locked

@@ -116,8 +116,8 @@ Without `renv`, install the direct dependencies manually:
 ```r
 install.packages(c(
   "shiny", "bslib", "DT", "dplyr", "stringr", "readr", "tibble", "purrr",
-  "tidyr", "stringdist", "igraph", "phonics", "hunspell", "readxl",
-  "clipr", "jsonlite", "rlang"
+  "tidyr", "ggplot2", "htmltools", "stringdist", "igraph", "phonics",
+  "hunspell", "readxl", "clipr", "jsonlite", "rlang"
 ))
 shiny::runApp()
 ```
@@ -152,7 +152,12 @@ immediately, or upload your own CSV/Excel.
    keyword-in-context search.
 7. **Recodes** — an editable grid of all rules with a validator (duplicate
    keys, rule chains, blanks, invalid enums/regex, stale rules).
-8. **Preview & export** — before/after diff with affected-cell counts;
+8. **Recategorize** — derive a *new* column from term logic across several
+   existing columns, instead of rewriting values in place. A row matches when
+   **any** of the rule's columns contains **any** include term and **none**
+   contains an exclude term; rules sharing an output column run in priority
+   order, first match wins. Exports its own CSV + R script.
+9. **Preview & export** — before/after diff with affected-cell counts;
    download the recode CSV and R script; import an existing CSV to merge.
 
 ## The recode CSV
@@ -182,8 +187,9 @@ NA round-trips as the literal `<NA>` so the file survives editing in Excel.
 
 ## The generated R
 
-The exported `recode_<dataset>.R` is a plain `dplyr::case_when()` block per
-(variable, sibling-pattern), e.g.:
+The exported `recode_<dataset>.R` is one `dplyr::case_when()` block per
+sibling-pattern — **all match types share the block**, so every arm is tested
+against the original column and the first matching arm wins:
 
 ```r
 df <- df |>
@@ -196,7 +202,9 @@ df <- df |>
   }))
 ```
 
-Run it against a data frame named `df` to apply the recodes.
+Run it against a data frame named `df` to apply the recodes. The script and the
+app's in-app preview are guaranteed to agree — a test evaluates the generated
+script and compares it cell-for-cell against the app's own `apply_recodes()`.
 
 ## Project layout
 
@@ -205,6 +213,8 @@ recode-studio/
   app.R                    # entry point
   R/                       # helpers + modules
     string_helpers.R       # cluster / validate / apply / codegen (pure R)
+    text_helpers.R         # long-text: tokens, n-grams, KWIC (pure R)
+    recat_helpers.R        # recategorization logic + codegen (pure R)
     data_loader.R          # read CSV/Excel + column metadata
     ui_helpers.R
     mod_data_input.R       # upload / example loader
@@ -212,7 +222,9 @@ recode-studio/
     mod_value_table.R
     mod_cluster_view.R
     mod_spellcheck_view.R
+    mod_text_analysis.R
     mod_recode_editor.R
+    mod_recategorize.R
     mod_preview_export.R
     mod_import_recodes.R
   dictionary/              # spellcheck tiers (seed / custom / user)
@@ -246,9 +258,10 @@ committed).
 
 ### Discipline dictionaries (optional)
 
-`dictionary/disciplines/` holds domain-specific word lists. `medical.txt`
-ships bundled. Any `.txt` file dropped in that folder appears as a selectable
-option on the Spellcheck tab.
+`dictionary/disciplines/` holds domain-specific word lists. `medical.txt`,
+`public_health.txt`, `public_policy.txt`, and `education.txt` ship bundled. Any
+`.txt` file dropped in that folder appears as a selectable option on the
+Spellcheck tab.
 
 To add a new discipline via the UI: use the **Import discipline dictionary**
 button on the Spellcheck tab — the file is copied into `dictionary/disciplines/`

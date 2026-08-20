@@ -54,7 +54,27 @@ list_discipline_dicts <- function() {
     .read_dict_terms(paths$user),
     unlist(lapply(discipline_paths, .read_dict_terms), use.names = FALSE)
   ))
-  hunspell::dictionary(lang = "en_US", add_words = extra_words)
+  tryCatch(
+    hunspell::dictionary(lang = "en_US", add_words = extra_words),
+    error = function(e_en) {
+      tryCatch(
+        hunspell::dictionary(add_words = extra_words),
+        error = function(e_default) {
+          stop(
+            sprintf(
+              paste0(
+                "Hunspell dictionary unavailable (en_US and default). ",
+                "en_US error: %s; default error: %s"
+              ),
+              conditionMessage(e_en),
+              conditionMessage(e_default)
+            ),
+            call. = FALSE
+          )
+        }
+      )
+    }
+  )
 }
 
 
@@ -168,6 +188,7 @@ mod_spellcheck_view_server <- function(id, shared_state,
   shiny::moduleServer(id, function(input, output, session) {
 
     dict_version <- shiny::reactiveVal(0L)
+    spellcheck_error <- shiny::reactiveVal(NULL)
 
     # Populate / refresh the discipline selector. Bumping dict_version after
     # an import re-scans the folder so the new file appears immediately.
@@ -211,13 +232,37 @@ mod_spellcheck_view_server <- function(id, shared_state,
 
     hun_r <- shiny::reactive({
       dict_version()
-      .build_hunspell(discipline_paths = input$disciplines %||% character(0))
+      tryCatch(
+        {
+          hun <- .build_hunspell(
+            discipline_paths = input$disciplines %||% character(0)
+          )
+          spellcheck_error(NULL)
+          hun
+        },
+        error = function(e) {
+          msg <- paste("Spellcheck unavailable:", conditionMessage(e))
+          if (!identical(spellcheck_error(), msg)) {
+            shiny::showNotification(msg, type = "warning", duration = 10)
+          }
+          spellcheck_error(msg)
+          NULL
+        }
+      )
     })
 
     flagged_r <- shiny::reactive({
       uv <- unique_values_r()
       hun <- hun_r()
       if (is.null(uv) || nrow(uv) == 0) return(NULL)
+      if (is.null(hun)) {
+        return(tibble::tibble(
+          value = character(0),
+          n = integer(0),
+          flagged_token = character(0),
+          suggestions = character(0)
+        ))
+      }
       tokens_per_value <- strsplit(tolower(uv$value), "[^a-z']+")
       flagged_tokens <- lapply(tokens_per_value, function(toks) {
         toks <- toks[nchar(toks) > 1]
@@ -248,8 +293,9 @@ mod_spellcheck_view_server <- function(id, shared_state,
     output$tbl <- DT::renderDT({
       df <- flagged_r()
       if (is.null(df) || nrow(df) == 0) {
+        msg <- spellcheck_error() %||% "No spellcheck flags."
         return(DT::datatable(
-          tibble::tibble(message = "No spellcheck flags."),
+          tibble::tibble(message = msg),
           rownames = FALSE, options = list(dom = "t")
         ))
       }
@@ -259,12 +305,16 @@ mod_spellcheck_view_server <- function(id, shared_state,
         function(i) .render_action_cell(i, df$suggestions[i], ns),
         character(1)
       )
+      # "action" MUST stay last: the DT below unescapes exactly one column.
       df <- df[, c("value", "n", "flagged_token", "action")]
 
       DT::datatable(
         df,
         rownames  = FALSE,
-        escape    = FALSE,
+        # SECURITY: only the last column ("action") is generated markup.
+        # "value" is a raw third-party dataset cell and "flagged_token" derives
+        # from it, so both must stay HTML-escaped.
+        escape    = -ncol(df),
         selection = "none",
         filter    = "top",
         options   = list(pageLength = 25, dom = "tip", autoWidth = FALSE,

@@ -7,6 +7,106 @@
 # Apply emits sibling-aware rules recoding the rest to that target.
 # =============================================================================
 
+# --- Target resolution (pure) ------------------------------------------------
+# These two helpers are plain R (no Shiny) so they can be unit-tested on their
+# own — see tests/testthat/test-cluster_target.R. They live here rather than in
+# string_helpers.R because they describe this tab's two-choice interaction.
+
+#' Decide what a cluster's members should be recoded to.
+#'
+#' The user makes two choices per cluster that can contradict each other: the
+#' value to keep (radio, or a typed custom value) and the members to exclude.
+#' Excluding the very value being kept is a contradiction, and the app must not
+#' resolve it by guessing — that case returns `status = "conflict"` and the
+#' caller refuses to emit any rules for the cluster.
+#'
+#' @param members  Character vector of cluster member values, most frequent
+#'                 first (the fallback target when nothing at all is chosen).
+#' @param radio    The keep radio's value, or NULL.
+#' @param custom   The custom-target text box, or NULL. Wins over `radio`.
+#' @param excluded Character vector of members ticked as excluded.
+#' @return list(status, target, chosen, origin, suggestion, message) where
+#'   status is "ok" (target usable), "conflict" (chosen target is also
+#'   excluded) or "empty" (nothing chosen and every member excluded).
+cluster_target_decision <- function(members, radio = NULL, custom = NULL,
+                                    excluded = character(0)) {
+  members  <- as.character(members)
+  excluded <- if (is.null(excluded)) character(0) else as.character(excluded)
+
+  usable <- function(x) {
+    !is.null(x) && length(x) == 1L && !is.na(x) && nzchar(trimws(x))
+  }
+  custom_t <- if (usable(custom)) trimws(custom) else NULL
+  radio_t  <- if (usable(radio))  radio          else NULL
+
+  chosen <- if (!is.null(custom_t)) custom_t else radio_t
+  origin <- if (!is.null(custom_t)) "custom"
+            else if (!is.null(radio_t)) "radio"
+            else "none"
+  remaining <- setdiff(members, excluded)   # keeps the caller's order
+
+  out <- function(status, target, origin, suggestion = NA_character_,
+                  message = NA_character_) {
+    list(status     = status,
+         target     = target,
+         chosen     = if (is.null(chosen)) NA_character_ else chosen,
+         origin     = origin,
+         suggestion = suggestion,
+         message    = message)
+  }
+
+  if (!is.null(chosen) && chosen %in% excluded) {
+    alt <- if (length(remaining)) remaining[1] else NA_character_
+    return(out(
+      "conflict", NA_character_, origin, alt,
+      paste0(
+        sprintf('"%s" is both the value you are keeping and ticked as ', chosen),
+        "excluded. Nothing was recoded, because those two choices contradict ",
+        "each other. Untick Exclude for it, or choose a different value to keep",
+        if (!is.na(alt)) sprintf(' (for example "%s")', alt) else "",
+        ".")))
+  }
+
+  if (is.null(chosen)) {
+    if (!length(remaining)) {
+      return(out("empty", NA_character_, origin, NA_character_,
+                 paste0("Every member of this cluster is excluded, so there ",
+                        "is nothing to recode.")))
+    }
+    return(out("ok", remaining[1], "fallback"))
+  }
+
+  out("ok", chosen, origin)
+}
+
+#' Old->new recode pairs for a similarity cluster, honouring exclusions.
+#'
+#' Every member that is neither the keep target nor excluded is recoded to
+#' `keep`. Excluded members produce no rule. `keep` need not be one of
+#' `members` (the correct spelling may be absent from the data). If `keep` is
+#' itself excluded it is defensively treated as excluded and nothing maps onto
+#' it — callers should resolve the contradiction first (see
+#' `cluster_target_decision()`).
+#'
+#' @param members  Character vector of cluster member values.
+#' @param keep     Scalar target value the others recode to.
+#' @param excluded Character vector of member values to drop from the recode set.
+#' @return Tibble(old_value, new_value); zero rows when nothing remains.
+cluster_recode_pairs <- function(members, keep, excluded = character(0)) {
+  members  <- as.character(members)
+  keep     <- as.character(keep)
+  excluded <- if (is.null(excluded)) character(0) else as.character(excluded)
+  # No valid target (missing, NA, or itself excluded) -> nothing maps onto it.
+  to_recode <- if (length(keep) == 0 || is.na(keep[1]) || keep[1] %in% excluded)
+                 character(0)
+               else setdiff(members, union(keep[1], excluded))
+  tibble::tibble(
+    old_value = to_recode,
+    new_value = if (length(to_recode)) rep(keep[1], length(to_recode))
+                else character(0)
+  )
+}
+
 mod_cluster_view_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::card(
@@ -45,8 +145,14 @@ mod_cluster_view_ui <- function(id) {
         shiny::tags$strong("Tip: "),
         "In each cluster below, click the member you want to keep — the others ",
         "are recoded to it. The most frequent value is pre-selected; pick a ",
-        "different one, or type your own target in the box."
+        "different one, or type your own target in the box. Tick ",
+        shiny::tags$em("Exclude"), " next to any member that does not belong: ",
+        "it is dropped from the recode group and no rule is generated for it. ",
+        "Excluding the value you chose to keep is a contradiction: Apply stops ",
+        "and asks you which you meant, rather than picking a different target ",
+        "for you."
       ),
+      shiny::uiOutput(ns("conflicts")),
       shiny::uiOutput(ns("clusters_ui"))
     )
   )
@@ -91,6 +197,37 @@ mod_cluster_view_server <- function(id, shared_state,
       )
     })
 
+    # Standing warning for any cluster whose keep target is also ticked as
+    # excluded, so the contradiction is visible before Apply is clicked (Apply
+    # itself refuses). One output over all clusters rather than one per card:
+    # the cards are re-rendered on every threshold change, and per-card outputs
+    # would pile up with them.
+    output$conflicts <- shiny::renderUI({
+      cl <- clusters_r()
+      if (is.null(cl) || nrow(cl) == 0) return(NULL)
+      sizes <- cl |> dplyr::count(cluster_id, name = "size")
+      cids  <- sort(sizes$cluster_id[sizes$size > 1])
+      hits <- character(0)
+      for (cid in cids) {
+        excluded <- input[[paste0("exclude_", cid)]]
+        if (is.null(excluded) || length(excluded) == 0) next
+        members <- cl[cl$cluster_id == cid, ]
+        members <- members[order(-members$n), ]
+        d <- cluster_target_decision(
+          members  = members$value,
+          radio    = input[[paste0("target_", cid)]],
+          custom   = input[[paste0("custom_", cid)]],
+          excluded = excluded)
+        if (identical(d$status, "ok")) next
+        hits <- c(hits, sprintf("Cluster %d: %s", cid, d$message))
+      }
+      if (length(hits) == 0) return(NULL)
+      shiny::div(
+        class = "alert alert-warning", style = "padding:.5em .8em;",
+        shiny::tags$strong("Sort this out before applying: "),
+        shiny::tags$ul(class = "mb-0", lapply(hits, shiny::tags$li)))
+    })
+
     output$clusters_ui <- shiny::renderUI({
       v <- selected_var_r()
       if (is.null(v)) return(shiny::tags$em("Pick a variable (Variable tab)."))
@@ -129,11 +266,23 @@ mod_cluster_view_server <- function(id, shared_state,
           ),
           bslib::card_body(
             fillable = FALSE,
-            shiny::radioButtons(
-              session$ns(paste0("target_", cid)),
-              "Recode the rest to:",
-              choices  = choices,
-              selected = modal),
+            # Two aligned columns over the same member list (same order): pick
+            # the keep target on the left, tick members to exclude on the right.
+            shiny::fluidRow(
+              shiny::column(7,
+                shiny::radioButtons(
+                  session$ns(paste0("target_", cid)),
+                  "Recode the rest to:",
+                  choices  = choices,
+                  selected = modal)
+              ),
+              shiny::column(5,
+                shiny::checkboxGroupInput(
+                  session$ns(paste0("exclude_", cid)),
+                  "Exclude from cluster:",
+                  choices = choices)
+              )
+            ),
             shiny::textInput(
               session$ns(paste0("custom_", cid)),
               label = NULL,
@@ -158,19 +307,39 @@ mod_cluster_view_server <- function(id, shared_state,
       if (is.null(cl) || is.null(v)) return()
       members <- cl[cl$cluster_id == .cid, ] |> dplyr::arrange(dplyr::desc(n))
 
-      # Target precedence: a non-empty custom value, else the selected radio,
-      # else the modal. A custom target need not be one of the members (the
-      # correct spelling may be absent from the data).
-      custom <- input[[paste0("custom_", .cid)]]
-      radio  <- input[[paste0("target_", .cid)]]
-      target <- if (!is.null(custom) && nzchar(trimws(custom))) trimws(custom)
-                else if (!is.null(radio) && nzchar(radio)) radio
-                else members$value[1]
+      # Members the user ticked to drop from this cluster. Excluded members get
+      # no rule and are left exactly as they are.
+      excluded <- input[[paste0("exclude_", .cid)]] %||% character(0)
 
-      to_recode <- setdiff(members$value, target)  # every member except target
+      # Target precedence: a non-empty custom value, else the selected radio,
+      # else the modal of the remaining members. A custom target need not be one
+      # of the members (the correct spelling may be absent from the data).
+      #
+      # Excluding the chosen target is refused, not silently worked around:
+      # falling through to the most frequent remaining member would emit rules
+      # pointing at a value the user never picked, with nothing on screen saying
+      # so. Which of the two contradictory choices was meant is theirs to say.
+      decision <- cluster_target_decision(
+        members  = members$value,
+        radio    = input[[paste0("target_", .cid)]],
+        custom   = input[[paste0("custom_", .cid)]],
+        excluded = excluded)
+      if (!identical(decision$status, "ok")) {
+        shiny::showNotification(
+          sprintf("Cluster %d: %s", .cid, decision$message),
+          type = "error", duration = NULL)
+        return()
+      }
+      target <- decision$target
+
+      # Old->new pairs for the non-excluded, non-target members.
+      pairs     <- cluster_recode_pairs(members$value, keep = target,
+                                        excluded = excluded)
+      to_recode <- pairs$old_value
       if (length(to_recode) == 0) {
-        shiny::showNotification("Nothing to recode — target is the only value.",
-                                type = "warning")
+        shiny::showNotification(
+          "Nothing to recode — no non-excluded members remain besides the target.",
+          type = "warning")
         return()
       }
       sib_on  <- isTRUE(input$apply_siblings)
