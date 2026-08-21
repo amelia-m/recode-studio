@@ -568,3 +568,76 @@ test_that("an unusable match_type emits a FALSE arm rather than a live one", {
   expect_silent(parse(text = code))
   expect_true(grepl("FALSE ~ \"A\"", code, fixed = TRUE))
 })
+
+test_that(".fingerprint_key standardizes word order and whitespace/punctuation", {
+  expect_equal(.fingerprint_key("Smith, John"), "john smith")
+  expect_equal(.fingerprint_key("John   Smith"), "john smith")
+  expect_equal(.fingerprint_key("  Oat  Milk, No Sugar! "), "milk no oat sugar")
+  expect_equal(.fingerprint_key("No Sugar, Oat Milk"), "milk no oat sugar")
+  expect_equal(.fingerprint_key(""), "")
+  expect_equal(.fingerprint_key(NA_character_), "")
+})
+
+test_that(".ngram_fingerprint_key extracts, deduplicates, and sorts n-grams", {
+  k1 <- .ngram_fingerprint_key("apple", n = 2)
+  k2 <- .ngram_fingerprint_key("apple apple", n = 2)
+  expect_equal(k1, k2)
+  expect_equal(.ngram_fingerprint_key(""), "")
+  expect_equal(.ngram_fingerprint_key(NA_character_), "")
+})
+
+test_that("cluster_strings with fingerprint algorithm groups word order swaps", {
+  values <- c("Oat Milk No Sugar", "no sugar, oat milk", "Regular Milk", "Latte")
+  out <- cluster_strings(values, algorithm = "fingerprint")
+  expect_equal(nrow(out), 4)
+  c1 <- out$cluster_id[out$value == "Oat Milk No Sugar"]
+  c2 <- out$cluster_id[out$value == "no sugar, oat milk"]
+  c3 <- out$cluster_id[out$value == "Regular Milk"]
+  expect_equal(c1, c2)
+  expect_false(c1 == c3)
+})
+
+test_that("cluster_strings with ngram_fingerprint groups permuted variations", {
+  values <- c("oat milk", "milk oat", "espresso")
+  out <- cluster_strings(values, algorithm = "ngram_fingerprint", q = 2)
+  c1 <- out$cluster_id[out$value == "oat milk"]
+  c2 <- out$cluster_id[out$value == "milk oat"]
+  c3 <- out$cluster_id[out$value == "espresso"]
+  expect_equal(c1, c2)
+  expect_false(c1 == c3)
+})
+
+test_that("match_taxonomy matches exact and fuzzy target standards", {
+  values <- c("NE", "Nebrska", "Californai", "Unknown State")
+  targets <- c("Nebraska", "California", "New York", "Texas")
+  
+  res <- match_taxonomy(values, targets, method = "jw", threshold = 0.70)
+  expect_equal(nrow(res), 4)
+  expect_named(res, c("value", "n", "matched_target", "similarity", "is_matched", "status"))
+  
+  # "Nebrska" should match "Nebraska"
+  neb_row <- res[res$value == "Nebrska", ]
+  expect_true(neb_row$is_matched)
+  expect_equal(neb_row$matched_target, "Nebraska")
+  expect_gte(neb_row$similarity, 0.85)
+  
+  # "Californai" should match "California"
+  cal_row <- res[res$value == "Californai", ]
+  expect_true(cal_row$is_matched)
+  expect_equal(cal_row$matched_target, "California")
+  
+  # "Unknown State" should be below threshold
+  unk_row <- res[res$value == "Unknown State", ]
+  expect_false(unk_row$is_matched)
+  expect_true(is.na(unk_row$matched_target))
+})
+
+test_that("match_taxonomy handles empty inputs and empty targets gracefully", {
+  expect_equal(nrow(match_taxonomy(character(0), c("A", "B"))), 0)
+  
+  res_notarget <- match_taxonomy(c("a", "b"), character(0))
+  expect_equal(nrow(res_notarget), 2)
+  expect_false(any(res_notarget$is_matched))
+  expect_equal(res_notarget$status, c("no_taxonomy_targets", "no_taxonomy_targets"))
+})
+

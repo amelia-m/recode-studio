@@ -18,13 +18,14 @@ It serves two kinds of users:
 Load any CSV or Excel file, pick a text column, and Recode Studio helps you:
 
 - **Browse** unique values alphabetically or grouped by string similarity.
+- **Cluster** with 10 algorithms (Jaro-Winkler, Levenshtein, OSA, Cosine, Jaccard, linear $O(N)$ Key-Collision Fingerprint, N-gram Fingerprint, Soundex, Metaphone) with built-in pros/cons reference guides.
+- **Match Taxonomies** against uploaded reference standard lists (e.g. ISO codes, state names, customer taxonomies).
 - **Spot** likely typos via Hunspell spellcheck and rare-member-in-cluster flags.
-- **Build** "old value → new value" recode rules, with optional propagation to
-  sibling columns (e.g. `cause1`, `cause2`, ...).
+- **Build** "old value → new value" recode rules, with optional propagation to sibling columns (e.g. `cause1`, `cause2`, ...).
+- **Recategorize** across multiple variables with conditional include/exclude rule priorities.
 - **Preview** exactly which cells change before committing.
 - **Export** a canonical recode CSV plus a copyable R script.
-- **Re-import** a previous recode CSV (even one edited in Excel) and merge it
-  with new work, so you never start from scratch on a new batch of data.
+- **Re-import** a previous recode CSV (even one edited in Excel) and merge it with new work, so you never start from scratch on a new batch of data.
 
 The app **never modifies your data file.** It produces a recode CSV and an R
 script that you run yourself.

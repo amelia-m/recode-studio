@@ -143,14 +143,16 @@ normalize_value <- function(x,
 
 # Supported clustering algorithms, single-sourced for the UI.
 CLUSTER_ALGORITHMS <- c(
-  "Jaro-Winkler"               = "jw",
-  "Optimal String Alignment"   = "osa",
-  "Levenshtein"                = "lv",
-  "Longest common substring"   = "lcs",
-  "Cosine (q-gram)"            = "cosine",
-  "Jaccard (q-gram)"           = "jaccard",
-  "Soundex (phonetic)"         = "soundex",
-  "Metaphone (phonetic)"       = "metaphone"
+  "Jaro-Winkler"                  = "jw",
+  "Optimal String Alignment"      = "osa",
+  "Levenshtein"                   = "lv",
+  "Longest common substring"      = "lcs",
+  "Cosine (q-gram)"               = "cosine",
+  "Jaccard (q-gram)"              = "jaccard",
+  "Key collision (fingerprint)"   = "fingerprint",
+  "N-gram fingerprint"            = "ngram_fingerprint",
+  "Soundex (phonetic)"            = "soundex",
+  "Metaphone (phonetic)"          = "metaphone"
 )
 
 # Normalization steps applied to a working copy of the values BEFORE distances
@@ -186,15 +188,59 @@ normalize_for_cluster <- function(x, methods = character(0)) {
   }, character(1), USE.NAMES = FALSE)
 }
 
+# OpenRefine key-collision fingerprint: lowercase -> strip punctuation ->
+# split tokens -> dedupe & sort -> join with single space. Linear O(N).
+.fingerprint_key <- function(x) {
+  vapply(x, function(s) {
+    if (is.na(s) || !nzchar(trimws(s))) return("")
+    s_clean <- tolower(trimws(s))
+    s_clean <- gsub("[^[:alnum:][:space:]]+", " ", s_clean)
+    s_clean <- stringr::str_squish(s_clean)
+    if (!nzchar(s_clean)) return("")
+    toks <- strsplit(s_clean, " ", fixed = TRUE)[[1]]
+    toks <- unique(toks[nzchar(toks)])
+    if (length(toks) == 0) return("")
+    paste(sort(toks), collapse = " ")
+  }, character(1), USE.NAMES = FALSE)
+}
+
+# OpenRefine n-gram fingerprint: lowercase -> strip punctuation ->
+# extract character n-grams per token -> dedupe & sort -> join. Linear O(N).
+.ngram_fingerprint_key <- function(x, n = 2) {
+  n <- max(1L, as.integer(n))
+  vapply(x, function(s) {
+    if (is.na(s) || !nzchar(trimws(s))) return("")
+    s_clean <- tolower(trimws(s))
+    s_clean <- gsub("[^[:alnum:][:space:]]+", " ", s_clean)
+    toks <- strsplit(stringr::str_squish(s_clean), " ", fixed = TRUE)[[1]]
+    toks <- unique(toks[nzchar(toks)])
+    if (length(toks) == 0) return("")
+    all_grams <- character(0)
+    for (t in toks) {
+      len <- nchar(t)
+      if (len < n) {
+        all_grams <- c(all_grams, t)
+      } else {
+        grams <- vapply(seq_len(len - n + 1),
+                        function(i) substr(t, i, i + n - 1),
+                        character(1))
+        all_grams <- c(all_grams, grams)
+      }
+    }
+    paste(sort(unique(all_grams)), collapse = "")
+  }, character(1), USE.NAMES = FALSE)
+}
+
 #' Cluster a character vector by string similarity.
 #'
 #' @param values      Character vector of unique values.
 #' @param frequencies Integer vector of counts. Defaults to 1 per value.
 #' @param threshold   Similarity cutoff (0..1, higher = more similar). Ignored
-#'                   by the phonetic algorithms (soundex/metaphone), which
-#'                   bucket by exact code equality.
+#'                   by the phonetic algorithms (soundex/metaphone) and key
+#'                   fingerprinting (fingerprint/ngram_fingerprint), which
+#'                   bucket by exact key equality in linear O(N) time.
 #' @param algorithm   One of CLUSTER_ALGORITHMS.
-#' @param q           q-gram size for the cosine / jaccard metrics.
+#' @param q           q-gram size for the cosine / jaccard / ngram_fingerprint metrics.
 #' @param normalize   Character vector of CLUSTER_NORMALIZERS keys applied to a
 #'                   working copy before distances are computed. The original
 #'                   strings are preserved in the output.
@@ -204,6 +250,7 @@ normalize_for_cluster <- function(x, methods = character(0)) {
 cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
                             algorithm = c("jw", "osa", "lv", "lcs",
                                           "cosine", "jaccard",
+                                          "fingerprint", "ngram_fingerprint",
                                           "soundex", "metaphone"),
                             q = 2, normalize = character(0)) {
   algorithm <- match.arg(algorithm)
@@ -226,6 +273,21 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
     else
       .metaphone_codes(keys)
     cluster_id <- as.integer(factor(codes))
+  } else if (algorithm %in% c("fingerprint", "ngram_fingerprint")) {
+    codes <- if (algorithm == "fingerprint")
+      .fingerprint_key(keys)
+    else
+      .ngram_fingerprint_key(keys, n = q)
+    empty_mask <- !nzchar(codes)
+    fac <- integer(length(codes))
+    if (any(!empty_mask)) {
+      fac[!empty_mask] <- as.integer(factor(codes[!empty_mask]))
+    }
+    if (any(empty_mask)) {
+      max_id <- if (any(!empty_mask)) max(fac[!empty_mask]) else 0L
+      fac[empty_mask] <- max_id + seq_len(sum(empty_mask))
+    }
+    cluster_id <- fac
   } else {
     # Metrics already in 0..1 (higher d = less similar): jw, cosine, jaccard.
     # Count metrics (osa, lv, lcs) are normalized by the longer string length.
@@ -261,6 +323,92 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
     dplyr::select(-.cluster_size, -.cluster_mass)
 
   out
+}
+
+#' Match a vector of values against an approved reference taxonomy list.
+#'
+#' For each unique input value, computes similarity scores against all target
+#' terms in `taxonomy_targets` using the chosen string metric. Proposes the
+#' highest-scoring target as the matched canonical value if similarity >= `threshold`.
+#'
+#' @param values           Character vector of values to match (e.g. from dataset column).
+#' @param taxonomy_targets Character vector of approved standard/taxonomy terms.
+#' @param frequencies      Optional integer vector of counts parallel to `values`.
+#' @param method           Distance method for `stringdist` ("jw", "osa", "lv", "cosine", "jaccard", "lcs").
+#' @param threshold        Minimum similarity cutoff (0..1) to accept a match.
+#' @param q                q-gram size for cosine/jaccard.
+#' @return Tibble with columns: `value`, `n`, `matched_target`, `similarity`, `is_matched`, `status`.
+match_taxonomy <- function(values, taxonomy_targets, frequencies = NULL,
+                           method = c("jw", "osa", "lv", "cosine", "jaccard", "lcs"),
+                           threshold = 0.75, q = 2) {
+  method <- match.arg(method)
+  values <- as.character(values)
+  tax_clean <- unique(as.character(taxonomy_targets))
+  tax_clean <- tax_clean[!is.na(tax_clean) & nzchar(trimws(tax_clean))]
+
+  if (is.null(frequencies)) frequencies <- rep(1L, length(values))
+  stopifnot(length(values) == length(frequencies))
+
+  if (length(values) == 0) {
+    return(tibble::tibble(
+      value          = character(0),
+      n              = integer(0),
+      matched_target = character(0),
+      similarity     = numeric(0),
+      is_matched     = logical(0),
+      status         = character(0)
+    ))
+  }
+
+  if (length(tax_clean) == 0) {
+    return(tibble::tibble(
+      value          = values,
+      n              = as.integer(frequencies),
+      matched_target = rep(NA_character_, length(values)),
+      similarity     = rep(0.0, length(values)),
+      is_matched     = rep(FALSE, length(values)),
+      status         = rep("no_taxonomy_targets", length(values))
+    ))
+  }
+
+  v_lower <- tolower(trimws(values))
+  tax_lower <- tolower(trimws(tax_clean))
+
+  if (method %in% c("jw", "cosine", "jaccard")) {
+    d <- stringdist::stringdistmatrix(v_lower, tax_lower, method = method, q = q)
+    sim <- 1 - d
+  } else {
+    d <- stringdist::stringdistmatrix(v_lower, tax_lower, method = method)
+    lens <- outer(nchar(v_lower), nchar(tax_lower), pmax)
+    lens[lens == 0] <- 1L
+    sim <- 1 - d / lens
+  }
+  sim[is.na(sim)] <- 0.0
+
+  best_idx <- max.col(sim, ties.method = "first")
+  best_sim <- sim[cbind(seq_along(values), best_idx)]
+  best_target <- tax_clean[best_idx]
+
+  exact_hits <- v_lower %in% tax_lower
+  for (i in which(exact_hits)) {
+    match_pos <- match(v_lower[i], tax_lower)
+    best_target[i] <- tax_clean[match_pos]
+    best_sim[i] <- 1.0
+  }
+
+  is_hit <- best_sim >= threshold
+
+  status <- ifelse(exact_hits, "exact",
+            ifelse(is_hit, "fuzzy_match", "below_threshold"))
+
+  tibble::tibble(
+    value          = values,
+    n              = as.integer(frequencies),
+    matched_target = ifelse(is_hit, best_target, NA_character_),
+    similarity     = round(best_sim, 3),
+    is_matched     = is_hit,
+    status         = status
+  )
 }
 
 
