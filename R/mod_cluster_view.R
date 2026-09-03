@@ -11,6 +11,21 @@
 # own — see tests/testthat/test-cluster_target.R.
 
 #' Decide what a cluster's members should be recoded to.
+#'
+#' The user makes two choices per cluster that can contradict each other: the
+#' value to keep (radio, or a typed custom value) and the members to exclude.
+#' Excluding the very value being kept is a contradiction, and the app must not
+#' resolve it by guessing — that case returns `status = "conflict"` and the
+#' caller refuses to emit any rules for the cluster.
+#'
+#' @param members  Character vector of cluster member values, most frequent
+#'                 first (the fallback target when nothing at all is chosen).
+#' @param radio    The keep radio's value, or NULL.
+#' @param custom   The custom-target text box, or NULL. Wins over `radio`.
+#' @param excluded Character vector of members ticked as excluded.
+#' @return list(status, target, chosen, origin, suggestion, message) where
+#'   status is "ok" (target usable), "conflict" (chosen target is also
+#'   excluded) or "empty" (nothing chosen and every member excluded).
 cluster_target_decision <- function(members, radio = NULL, custom = NULL,
                                     excluded = character(0)) {
   members  <- as.character(members)
@@ -63,10 +78,23 @@ cluster_target_decision <- function(members, radio = NULL, custom = NULL,
 }
 
 #' Old->new recode pairs for a similarity cluster, honouring exclusions.
+#'
+#' Every member that is neither the keep target nor excluded is recoded to
+#' `keep`. Excluded members produce no rule. `keep` need not be one of
+#' `members` (the correct spelling may be absent from the data). If `keep` is
+#' itself excluded it is defensively treated as excluded and nothing maps onto
+#' it — callers should resolve the contradiction first (see
+#' `cluster_target_decision()`).
+#'
+#' @param members  Character vector of cluster member values.
+#' @param keep     Scalar target value the others recode to.
+#' @param excluded Character vector of member values to drop from the recode set.
+#' @return Tibble(old_value, new_value); zero rows when nothing remains.
 cluster_recode_pairs <- function(members, keep, excluded = character(0)) {
   members  <- as.character(members)
   keep     <- as.character(keep)
   excluded <- if (is.null(excluded)) character(0) else as.character(excluded)
+  # No valid target (missing, NA, or itself excluded) -> nothing maps onto it.
   to_recode <- if (length(keep) == 0 || is.na(keep[1]) || keep[1] %in% excluded)
                  character(0)
                else setdiff(members, union(keep[1], excluded))
@@ -101,10 +129,10 @@ BUILTIN_TAXONOMIES <- list(
 
 mod_cluster_view_ui <- function(id) {
   ns <- shiny::NS(id)
-  
+
   bslib::navset_card_tab(
     id = ns("cluster_subtabs"),
-    
+
     # --- Sub-tab 1: Internal Similarity Clustering ---------------------------
     bslib::nav_panel(
       title = "Similarity Clustering",
@@ -134,7 +162,7 @@ mod_cluster_view_ui <- function(id) {
           )
         ),
         shiny::hr(),
-        
+
         # Accordion: Algorithm Reference Guide & Pros/Cons
         bslib::accordion(
           id = ns("guide_accordion"),
@@ -168,9 +196,9 @@ mod_cluster_view_ui <- function(id) {
                     shiny::tags$tr(
                       shiny::tags$td(shiny::tags$strong("N-gram fingerprint")),
                       shiny::tags$td(shiny::tags$span(class = "badge bg-success", "O(N) Linear")),
-                      shiny::tags$td("Transposed characters, compound words, small spelling permutations."),
-                      shiny::tags$td("Fast linear execution; catches character transpositions without quadratic distance matrices."),
-                      shiny::tags$td("May over-merge very short words if q is too small.")
+                      shiny::tags$td("Compound words and spacing differences ('Wal Mart' vs 'WalMart', 'e-mail' vs 'email'). At q = 1, transposed characters ('Krzysztof' vs 'Kryzysztof')."),
+                      shiny::tags$td("Ignores where the spaces fall, so it catches splits and joins that key collision cannot. Linear, no distance matrix."),
+                      shiny::tags$td("Word-order swaps are NOT caught at q >= 2 — use Key collision for those. Over-merges short values at q = 1.")
                     ),
                     shiny::tags$tr(
                       shiny::tags$td(shiny::tags$strong("Jaro-Winkler (Default)")),
@@ -214,13 +242,16 @@ mod_cluster_view_ui <- function(id) {
           "are recoded to it. The most frequent value is pre-selected; pick a ",
           "different one, or type your own target in the box. Tick ",
           shiny::tags$em("Exclude"), " next to any member that does not belong: ",
-          "it is dropped from the recode group and no rule is generated for it."
+          "it is dropped from the recode group and no rule is generated for it. ",
+          "Excluding the value you chose to keep is a contradiction: Apply stops ",
+          "and asks you which you meant, rather than picking a different target ",
+          "for you."
         ),
         shiny::uiOutput(ns("conflicts")),
         shiny::uiOutput(ns("clusters_ui"))
       )
     ),
-    
+
     # --- Sub-tab 2: Reference Taxonomy Matcher --------------------------------
     bslib::nav_panel(
       title = "Reference Taxonomy Matcher",
@@ -287,6 +318,9 @@ mod_cluster_view_ui <- function(id) {
   )
 }
 
+#' @param selected_var_r   reactive selected variable name
+#' @param unique_values_r  reactive tibble(value, n) for current var
+#' @param rules_proxy      list(add=, set=, get=)
 mod_cluster_view_server <- function(id, shared_state,
                                     selected_var_r,
                                     unique_values_r,
@@ -305,7 +339,7 @@ mod_cluster_view_server <- function(id, shared_state,
       } else if (alg == "ngram_fingerprint") {
         shiny::tags$small(shiny::tags$span(
           class = "text-success fw-bold",
-          "⚡ Linear O(N) n-gram fingerprint: groups strings with shared character pieces. Threshold is bypassed."
+          "⚡ Linear O(N) n-gram fingerprint: ignores where the spaces fall, so 'Wal Mart' and 'WalMart' group together. For word-order swaps use Key collision instead. Threshold is bypassed."
         ))
       } else if (alg %in% c("soundex", "metaphone")) {
         shiny::tags$small(shiny::tags$span(
@@ -362,6 +396,11 @@ mod_cluster_view_server <- function(id, shared_state,
       )
     })
 
+    # Standing warning for any cluster whose keep target is also ticked as
+    # excluded, so the contradiction is visible before Apply is clicked (Apply
+    # itself refuses). One output over all clusters rather than one per card:
+    # the cards are re-rendered on every threshold change, and per-card outputs
+    # would pile up with them.
     output$conflicts <- shiny::renderUI({
       cl <- clusters_r()
       if (is.null(cl) || nrow(cl) == 0) return(NULL)
@@ -408,8 +447,10 @@ mod_cluster_view_server <- function(id, shared_state,
       cards <- lapply(cluster_sizes$cluster_id, function(cid) {
         members <- cl[cl$cluster_id == cid, ] |>
           dplyr::arrange(dplyr::desc(n))
-        modal <- members$value[1]
+        modal <- members$value[1]   # most frequent = default suggested target
 
+        # Radio choices = the cluster members, labelled with frequency and a
+        # rare flag. Value is the raw string; default selection is the modal.
         choice_labels <- vapply(seq_len(nrow(members)), function(i)
           sprintf("%s  —  %d%s", members$value[i], members$n[i],
                   if (isTRUE(members$is_rare[i])) "  (rare)" else ""),
@@ -424,6 +465,8 @@ mod_cluster_view_server <- function(id, shared_state,
           ),
           bslib::card_body(
             fillable = FALSE,
+            # Two aligned columns over the same member list (same order): pick
+            # the keep target on the left, tick members to exclude on the right.
             shiny::fluidRow(
               shiny::column(7,
                 shiny::radioButtons(
@@ -453,6 +496,8 @@ mod_cluster_view_server <- function(id, shared_state,
       do.call(shiny::tagList, cards)
     })
 
+    # Single handler for all cluster recode buttons (avoids observer accumulation
+    # from the old observe+loop pattern that grew unbounded on threshold changes).
     shiny::observeEvent(input$recode_cluster_clicked, ignoreNULL = TRUE, {
       payload <- input$recode_cluster_clicked
       .cid <- payload$cid
@@ -461,8 +506,18 @@ mod_cluster_view_server <- function(id, shared_state,
       if (is.null(cl) || is.null(v)) return()
       members <- cl[cl$cluster_id == .cid, ] |> dplyr::arrange(dplyr::desc(n))
 
+      # Members the user ticked to drop from this cluster. Excluded members get
+      # no rule and are left exactly as they are.
       excluded <- input[[paste0("exclude_", .cid)]] %||% character(0)
 
+      # Target precedence: a non-empty custom value, else the selected radio,
+      # else the modal of the remaining members. A custom target need not be one
+      # of the members (the correct spelling may be absent from the data).
+      #
+      # Excluding the chosen target is refused, not silently worked around:
+      # falling through to the most frequent remaining member would emit rules
+      # pointing at a value the user never picked, with nothing on screen saying
+      # so. Which of the two contradictory choices was meant is theirs to say.
       decision <- cluster_target_decision(
         members  = members$value,
         radio    = input[[paste0("target_", .cid)]],
@@ -476,6 +531,7 @@ mod_cluster_view_server <- function(id, shared_state,
       }
       target <- decision$target
 
+      # Old->new pairs for the non-excluded, non-target members.
       pairs     <- cluster_recode_pairs(members$value, keep = target,
                                         excluded = excluded)
       to_recode <- pairs$old_value
@@ -515,7 +571,7 @@ mod_cluster_view_server <- function(id, shared_state,
     # --- Reference Taxonomy Server Logic --------------------------------------
 
     uploaded_tax_df <- shiny::reactive({
-      req(input$tax_source_type == "file")
+      shiny::req(input$tax_source_type == "file")
       f <- input$tax_file
       if (is.null(f)) return(NULL)
       ext <- tolower(tools::file_ext(f$name))
@@ -587,7 +643,7 @@ mod_cluster_view_server <- function(id, shared_state,
       n_total   <- nrow(m)
       n_matched <- sum(m$is_matched, na.rm = TRUE)
       pct       <- round(100 * n_matched / max(1, n_total), 1)
-      
+
       shiny::div(
         class = "alert alert-info", style = "padding:.5em .8em;",
         shiny::tags$strong("Match Summary: "),
@@ -605,11 +661,15 @@ mod_cluster_view_server <- function(id, shared_state,
         ))
       }
 
+      # Similarity stays NUMERIC here and is formatted by DT at render time.
+      # Pre-formatting it with sprintf("%.1f%%") makes the column a string, and
+      # the default sort below then orders it lexicographically -- "9.0%" above
+      # "85.0%" above "100.0%" -- putting the worst matches on top.
       display_df <- data.frame(
         `Original Value` = m$value,
         `Count (N)`      = m$n,
         `Matched Target` = ifelse(is.na(m$matched_target), "—", m$matched_target),
-        `Similarity`     = sprintf("%.1f%%", m$similarity * 100),
+        `Similarity`     = m$similarity,
         `Status`         = ifelse(m$status == "exact", "Exact Match",
                            ifelse(m$status == "fuzzy_match", "Fuzzy Match", "Below Threshold")),
         stringsAsFactors = FALSE,
@@ -623,10 +683,11 @@ mod_cluster_view_server <- function(id, shared_state,
         escape    = TRUE,
         options   = list(
           pageLength = 15,
-          order = list(list(3, "desc")),
+          order = list(list(3, "desc")),   # 0-based with rownames = FALSE -> Similarity
           dom = "frtip"
         )
-      )
+      ) |>
+        DT::formatPercentage("Similarity", digits = 1)
     })
 
     shiny::observeEvent(input$apply_tax_rules, {
@@ -640,9 +701,11 @@ mod_cluster_view_server <- function(id, shared_state,
       # Filter to matched items where original value differs from matched target
       hits <- m[m$is_matched & !is.na(m$matched_target) & m$value != m$matched_target, ]
       if (nrow(hits) == 0) {
+        # showNotification's type is match.arg'd against
+        # c("default", "message", "warning", "error") -- anything else throws.
         shiny::showNotification(
           "All matched values are already identical to the standard targets (or below threshold).",
-          type = "information")
+          type = "message")
         return()
       }
 

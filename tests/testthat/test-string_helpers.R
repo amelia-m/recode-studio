@@ -578,12 +578,31 @@ test_that(".fingerprint_key standardizes word order and whitespace/punctuation",
   expect_equal(.fingerprint_key(NA_character_), "")
 })
 
-test_that(".ngram_fingerprint_key extracts, deduplicates, and sorts n-grams", {
-  k1 <- .ngram_fingerprint_key("apple", n = 2)
-  k2 <- .ngram_fingerprint_key("apple apple", n = 2)
-  expect_equal(k1, k2)
+test_that(".ngram_fingerprint_key n-grams the whole string, whitespace stripped", {
+  # Whitespace and punctuation are removed BEFORE gramming, so n-grams span
+  # what used to be word boundaries. This is what distinguishes the key from
+  # .fingerprint_key() instead of duplicating it.
+  expect_equal(.ngram_fingerprint_key("new york", n = 2),
+               .ngram_fingerprint_key("newyork", n = 2))
+  expect_equal(.ngram_fingerprint_key("Wal Mart", n = 2),
+               .ngram_fingerprint_key("WalMart", n = 2))
+  expect_equal(.ngram_fingerprint_key("e-mail", n = 2),
+               .ngram_fingerprint_key("email", n = 2))
+
+  # Grams are deduplicated and sorted: "abab" -> {ab, ba, ab} -> "ab" + "ba".
+  expect_equal(.ngram_fingerprint_key("abab", n = 2), "abba")
+
+  # A string shorter than n falls back to the cleaned string itself.
+  expect_equal(.ngram_fingerprint_key("a", n = 2), "a")
+
+  # At n = 1 the key is the distinct-character set, so it is invariant to
+  # transposition and duplication (OpenRefine's Krzysztof example).
+  expect_equal(.ngram_fingerprint_key("Krzysztof", n = 1),
+               .ngram_fingerprint_key("Kryzysztof", n = 1))
+
   expect_equal(.ngram_fingerprint_key(""), "")
   expect_equal(.ngram_fingerprint_key(NA_character_), "")
+  expect_equal(.ngram_fingerprint_key("!!!"), "")
 })
 
 test_that("cluster_strings with fingerprint algorithm groups word order swaps", {
@@ -597,35 +616,63 @@ test_that("cluster_strings with fingerprint algorithm groups word order swaps", 
   expect_false(c1 == c3)
 })
 
-test_that("cluster_strings with ngram_fingerprint groups permuted variations", {
-  values <- c("oat milk", "milk oat", "espresso")
+test_that("cluster_strings with ngram_fingerprint groups compound-word variants", {
+  # The case key collision CANNOT reach: the token sets differ, so only a
+  # whole-string n-gram key collapses these.
+  values <- c("Wal Mart", "WalMart", "espresso")
   out <- cluster_strings(values, algorithm = "ngram_fingerprint", q = 2)
-  c1 <- out$cluster_id[out$value == "oat milk"]
-  c2 <- out$cluster_id[out$value == "milk oat"]
+  expect_equal(nrow(out), 3)
+  c1 <- out$cluster_id[out$value == "Wal Mart"]
+  c2 <- out$cluster_id[out$value == "WalMart"]
   c3 <- out$cluster_id[out$value == "espresso"]
   expect_equal(c1, c2)
   expect_false(c1 == c3)
 })
 
+test_that("cluster_strings with ngram_fingerprint groups transpositions at q = 1", {
+  values <- c("Krzysztof", "Kryzysztof", "espresso")
+  out <- cluster_strings(values, algorithm = "ngram_fingerprint", q = 1)
+  c1 <- out$cluster_id[out$value == "Krzysztof"]
+  c2 <- out$cluster_id[out$value == "Kryzysztof"]
+  c3 <- out$cluster_id[out$value == "espresso"]
+  expect_equal(c1, c2)
+  expect_false(c1 == c3)
+})
+
+test_that("ngram_fingerprint and fingerprint cover complementary cases", {
+  # Documents the deliberate trade, so a future "simplification" back to
+  # per-token n-grams (which would make this algorithm a fuzzier restatement
+  # of key collision) fails loudly here.
+  swap <- c("oat milk", "milk oat")
+
+  fp <- cluster_strings(swap, algorithm = "fingerprint")
+  expect_equal(fp$cluster_id[fp$value == "oat milk"],
+               fp$cluster_id[fp$value == "milk oat"])
+
+  ng <- cluster_strings(swap, algorithm = "ngram_fingerprint", q = 2)
+  expect_false(ng$cluster_id[ng$value == "oat milk"] ==
+               ng$cluster_id[ng$value == "milk oat"])
+})
+
 test_that("match_taxonomy matches exact and fuzzy target standards", {
   values <- c("NE", "Nebrska", "Californai", "Unknown State")
   targets <- c("Nebraska", "California", "New York", "Texas")
-  
+
   res <- match_taxonomy(values, targets, method = "jw", threshold = 0.70)
   expect_equal(nrow(res), 4)
   expect_named(res, c("value", "n", "matched_target", "similarity", "is_matched", "status"))
-  
+
   # "Nebrska" should match "Nebraska"
   neb_row <- res[res$value == "Nebrska", ]
   expect_true(neb_row$is_matched)
   expect_equal(neb_row$matched_target, "Nebraska")
   expect_gte(neb_row$similarity, 0.85)
-  
+
   # "Californai" should match "California"
   cal_row <- res[res$value == "Californai", ]
   expect_true(cal_row$is_matched)
   expect_equal(cal_row$matched_target, "California")
-  
+
   # "Unknown State" should be below threshold
   unk_row <- res[res$value == "Unknown State", ]
   expect_false(unk_row$is_matched)
@@ -634,7 +681,7 @@ test_that("match_taxonomy matches exact and fuzzy target standards", {
 
 test_that("match_taxonomy handles empty inputs and empty targets gracefully", {
   expect_equal(nrow(match_taxonomy(character(0), c("A", "B"))), 0)
-  
+
   res_notarget <- match_taxonomy(c("a", "b"), character(0))
   expect_equal(nrow(res_notarget), 2)
   expect_false(any(res_notarget$is_matched))

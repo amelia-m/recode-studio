@@ -54,6 +54,8 @@ Single-purpose Shiny app (no multi-section shell — that was agency-specific).
 app.R                    # entry: sources R/, builds ui + server, shinyApp()
 R/
   string_helpers.R       # PURE R core (no Shiny). cluster/validate/apply/codegen
+                         #   + match_taxonomy() (fuzzy match a column against an
+                         #   approved standard list)
   text_helpers.R         # PURE R. long-text: tokenize, classify_text_length,
                          #   top_tokens / top_ngrams / kwic, count_sentences
   recat_helpers.R        # PURE R. recategorization: match/apply/codegen/IO
@@ -63,9 +65,12 @@ R/
   mod_data_input.R       # upload / example loader (ONLY module that WRITES state)
   mod_variable_picker.R  # DT table of columns; returns selected variable reactive
   mod_value_table.R      # frequency table + "create rule from selected rows"
-  mod_cluster_view.R     # similarity clusters; target + exclude + conflict refusal
+  mod_cluster_view.R     # TWO sub-tabs: "Similarity Clustering" (target +
+                         #   exclude + conflict refusal + algorithm guide) and
+                         #   "Reference Taxonomy Matcher" (match a column against
+                         #   a standard list, then emit recode rules)
                          #   also defines PURE cluster_target_decision() +
-                         #   cluster_recode_pairs() at top level
+                         #   cluster_recode_pairs() and BUILTIN_TAXONOMIES
   mod_spellcheck_view.R  # hunspell flags + clickable suggestions + dictionaries
   mod_text_analysis.R    # long-text columns: length dist, token/n-gram freq, KWIC
   mod_recode_editor.R    # editable DT of rules + Validate
@@ -86,7 +91,8 @@ tests/testthat/        # test-string_helpers, -data_loader, -text_helpers,
 UI tab order: 1 Data, 2 Variable, 3 Browse values, 4 Clusters, 5 Spellcheck,
 6 Text analysis, 7 Recodes, 8 Recategorize, 9 Preview & export. Tab 9 hosts
 BOTH `mod_preview_export` and `mod_import_recodes` — import has no tab of its
-own.
+own. Tab 4 is itself split into two sub-tabs (Similarity Clustering /
+Reference Taxonomy Matcher), both served by `mod_cluster_view`.
 
 ### State + data flow
 
@@ -259,6 +265,25 @@ aborts Apply & Export. Don't remove the scrub.
   agency coded-value-twin convention, not a general one — in a domain-neutral tool
   `product_label` / `warning_label` is plausibly real free text, and there is no
   manual override yet. Pinned by a test; don't "fix" it.
+- **The two fingerprint algorithms are complements, not variants.**
+  `.fingerprint_key()` (key collision) sorts the deduped TOKEN set, so it is
+  word-order invariant but blind to where the spaces fall.
+  `.ngram_fingerprint_key()` strips whitespace entirely and n-grams the WHOLE
+  string, so it collapses `Wal Mart`/`WalMart` and `e-mail`/`email` — which key
+  collision cannot — but at q >= 2 it does NOT group word-order swaps. At q = 1
+  the key degenerates to the distinct-character set (`Krzysztof`/`Kryzysztof`).
+  An earlier version n-grammed per token, which made it a fuzzier restatement of
+  key collision and contradicted both its own docstring and the in-app guide.
+  A test in `test-string_helpers.R` pins the complementary behaviour; don't
+  "simplify" it back.
+- **`shiny::showNotification(type=)` is `match.arg`'d** against
+  `c("default", "message", "warning", "error")`. Anything else (`"information"`,
+  `"success"`, `"info"`) throws at runtime, in a handler that may only fire on a
+  rare branch. Was a live bug in the taxonomy apply handler.
+- **Don't pre-format a numeric DT column with `sprintf()`.** It becomes a
+  string and DT then sorts it lexicographically — `"9.0%"` above `"85.0%"` above
+  `"100.0%"`. Keep the column numeric and use `DT::formatPercentage()` /
+  `formatRound()`. Was a live bug in the taxonomy match table.
 
 ## Dictionaries
 
@@ -282,13 +307,13 @@ Run a single file with
 
 | file | covers | assertions |
 |---|---|---|
-| `test-string_helpers.R` | schema, normalize, cluster, CSV round-trip, validate (regex/enum/stale), apply (siblings/delete/regex/NA), codegen, **apply↔codegen agreement**, rule-order independence | 116 |
+| `test-string_helpers.R` | schema, normalize, cluster (incl. fingerprint / n-gram fingerprint), taxonomy matching, CSV round-trip, validate (regex/enum/stale), apply (siblings/delete/regex/NA), codegen, **apply↔codegen agreement**, rule-order independence | 154 |
 | `test-recat_helpers.R` | recat match/apply/priority/codegen/IO + the three worked examples end-to-end against the bundled CSV | 144 |
 | `test-data_loader.R` | metadata + classifiers (`build_meta`, `column_group`, `suggest_sibling_pattern` incl. metachar escaping, date/numeric/id detection, `read_dataset`) + example-dataset regression | 53 |
 | `test-cluster_target.R` | `cluster_target_decision()`, exclusion pair-building, `testServer` wiring for the Apply refusal | 50 |
 | `test-text_helpers.R` | sentences, length classification, tokens, n-grams, KWIC | 20 |
 
-383 total. Tests `source()` the pure-R files by relative path — no `mod_*.R`
+421 total. Tests `source()` the pure-R files by relative path — no `mod_*.R`
 except `mod_cluster_view.R` (which is Shiny-free at load time because every
 `shiny::` call sits inside a function body). CI runs them on every push/PR via
 `.github/workflows/tests.yml` (r-lib/actions + DESCRIPTION-driven deps).
@@ -317,9 +342,6 @@ a dependency — exports are CSV + R script only.
   approaches: `cld2`/`cld3` (compiled, accurate) or `textcat` (pure-R, heavier).
 - **Peer tokenization review** — Tokenization/cleaning reference script identified and
   archived at `ext/tokenization_reference.Rmd` (see spec in `docs/superpowers/specs/2026-08-13-text-normalization.md`).
-- **`origin/copilot/code-review-robustness-install`** — superseded; hunspell
-  `tryCatch` fallback hardening applied to `R/mod_spellcheck_view.R` and `DESCRIPTION`
-  dependencies already present on `main`. Remote branch can be safely deleted.
 - **Report `escape = FALSE` upstream** — the DT escaping defect fixed
   here also exists in upstream's `mod_recode_editor.R` and `mod_spellcheck_view.R`.
 - Optional: `mod_import_recodes`-style import for recat CSVs. `read_recat()`

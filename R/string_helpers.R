@@ -204,30 +204,35 @@ normalize_for_cluster <- function(x, methods = character(0)) {
   }, character(1), USE.NAMES = FALSE)
 }
 
-# OpenRefine n-gram fingerprint: lowercase -> strip punctuation ->
-# extract character n-grams per token -> dedupe & sort -> join. Linear O(N).
+# OpenRefine n-gram fingerprint: lowercase -> strip punctuation AND whitespace
+# -> extract character n-grams across the WHOLE remaining string -> dedupe &
+# sort -> join. Linear O(N).
+#
+# The whitespace strip is the point, and it is what separates this from
+# .fingerprint_key() rather than duplicating it. Because n-grams span what used
+# to be word boundaries, "Wal Mart" / "WalMart" and "e-mail" / "email" collide
+# here and cannot collide under key collision (their token sets differ). The
+# trade is the mirror image: at n >= 2 a word-order swap changes the boundary
+# n-grams, so "oat milk" / "milk oat" do NOT collide here - key collision is
+# the right tool for that, and it is one entry up in the dropdown.
+#
+# At n = 1 the key degenerates to the distinct-character set, which is
+# invariant to transposition and duplication ("Krzysztof" / "Kryzysztof").
+# Do not "optimize" this back to per-token n-grams: that silently reverts the
+# algorithm to a fuzzier restatement of key collision.
 .ngram_fingerprint_key <- function(x, n = 2) {
   n <- max(1L, as.integer(n))
   vapply(x, function(s) {
     if (is.na(s) || !nzchar(trimws(s))) return("")
     s_clean <- tolower(trimws(s))
-    s_clean <- gsub("[^[:alnum:][:space:]]+", " ", s_clean)
-    toks <- strsplit(stringr::str_squish(s_clean), " ", fixed = TRUE)[[1]]
-    toks <- unique(toks[nzchar(toks)])
-    if (length(toks) == 0) return("")
-    all_grams <- character(0)
-    for (t in toks) {
-      len <- nchar(t)
-      if (len < n) {
-        all_grams <- c(all_grams, t)
-      } else {
-        grams <- vapply(seq_len(len - n + 1),
-                        function(i) substr(t, i, i + n - 1),
-                        character(1))
-        all_grams <- c(all_grams, grams)
-      }
-    }
-    paste(sort(unique(all_grams)), collapse = "")
+    s_clean <- gsub("[^[:alnum:]]+", "", s_clean)
+    len <- nchar(s_clean)
+    if (len == 0) return("")
+    if (len < n) return(s_clean)
+    grams <- vapply(seq_len(len - n + 1),
+                    function(i) substr(s_clean, i, i + n - 1),
+                    character(1))
+    paste(sort(unique(grams)), collapse = "")
   }, character(1), USE.NAMES = FALSE)
 }
 
@@ -384,6 +389,10 @@ match_taxonomy <- function(values, taxonomy_targets, frequencies = NULL,
     sim <- 1 - d / lens
   }
   sim[is.na(sim)] <- 0.0
+  # lv/osa distance is bounded by the longer string, so those land in 0..1.
+  # lcs is not (it counts insertions AND deletions, up to len_a + len_b), so
+  # 1 - d/max_len can go negative and would surface as "-100.0%" in the UI.
+  sim[sim < 0] <- 0.0
 
   best_idx <- max.col(sim, ties.method = "first")
   best_sim <- sim[cbind(seq_along(values), best_idx)]
