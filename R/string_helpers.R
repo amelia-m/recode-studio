@@ -332,17 +332,28 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
 
 #' Match a vector of values against an approved reference taxonomy list.
 #'
-#' For each unique input value, computes similarity scores against all target
-#' terms in `taxonomy_targets` using the chosen string metric. Proposes the
+#' For each input value, computes similarity scores against all target terms in
+#' `taxonomy_targets` using the chosen string metric. Proposes the
 #' highest-scoring target as the matched canonical value if similarity >= `threshold`.
 #'
+#' `values` is NOT deduplicated: the result has one row per element, in the
+#' input order, so it stays parallel to `frequencies`. Callers that want one row
+#' per distinct value pass an already-unique vector (the Reference Taxonomy
+#' Matcher passes `unique_values_r()`).
+#'
 #' @param values           Character vector of values to match (e.g. from dataset column).
+#'                         One output row per element; duplicates are kept.
 #' @param taxonomy_targets Character vector of approved standard/taxonomy terms.
+#'                         Deduplicated, and blank/NA terms are dropped.
 #' @param frequencies      Optional integer vector of counts parallel to `values`.
 #' @param method           Distance method for `stringdist` ("jw", "osa", "lv", "cosine", "jaccard", "lcs").
 #' @param threshold        Minimum similarity cutoff (0..1) to accept a match.
 #' @param q                q-gram size for cosine/jaccard.
-#' @return Tibble with columns: `value`, `n`, `matched_target`, `similarity`, `is_matched`, `status`.
+#' @return Tibble with columns: `value`, `n`, `matched_target`, `similarity`,
+#'   `is_matched`, `status`. `status` is one of `"exact"` (case/whitespace-
+#'   insensitive equality), `"fuzzy_match"`, `"below_threshold"`, or
+#'   `"no_taxonomy_targets"`. `matched_target` is NA unless `is_matched`;
+#'   `similarity` always carries the best score found, clamped to 0..1.
 match_taxonomy <- function(values, taxonomy_targets, frequencies = NULL,
                            method = c("jw", "osa", "lv", "cosine", "jaccard", "lcs"),
                            threshold = 0.75, q = 2) {

@@ -319,7 +319,7 @@ except `mod_cluster_view.R` (which is Shiny-free at load time because every
 `.github/workflows/tests.yml` (r-lib/actions + DESCRIPTION-driven deps).
 
 **Dependencies:** this repo uses `renv` (renv 1.2.4; `renv.lock` pins
-101 packages on R 4.6.1). `.Rprofile` activates renv on session start, so a
+106 packages on R 4.6.1). `.Rprofile` activates renv on session start, so a
 bare `Rscript` from the repo root uses the project library — no `R_LIBS`
 workaround. On a fresh clone, run `renv::restore()` first. `DESCRIPTION`
 (Imports) and the README install line list the direct deps — keep all three in
