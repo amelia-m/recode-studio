@@ -318,6 +318,17 @@ except `mod_cluster_view.R` (which is Shiny-free at load time because every
 `shiny::` call sits inside a function body). CI runs them on every push/PR via
 `.github/workflows/tests.yml` (r-lib/actions + DESCRIPTION-driven deps).
 
+CI sets `RENV_CONFIG_AUTOLOADER_ENABLED: "false"` at job level, and it must stay.
+`setup-r-dependencies` runs `Rscript` without `--vanilla`, so `.Rprofile` would
+activate renv, set `RENV_PROJECT`, and make `.libPaths()[1]` the renv library
+(`~/.cache/R/renv/library/<project>-<hash>/...`). The action branches on
+`RENV_PROJECT` and installs there, but points `actions/cache` at
+`$R_LIBS_USER/*` plus a repo-relative `renv/library` — and this project's renv
+library is in neither place. Both cache paths are then empty, so the run logs
+"Path(s) specified in the action for caching do(es) not exist", saves nothing,
+and rebuilds every package from source (6-9 min instead of ~1). CI resolves deps
+from DESCRIPTION by design, so renv has no role there.
+
 **Dependencies:** this repo uses `renv` (renv 1.2.4; `renv.lock` pins
 106 packages on R 4.6.1). `.Rprofile` activates renv on session start, so a
 bare `Rscript` from the repo root uses the project library — no `R_LIBS`

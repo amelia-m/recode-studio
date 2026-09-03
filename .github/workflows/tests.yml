@@ -14,6 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      # Keep renv out of CI. `.Rprofile` sources renv/activate.R, and
+      # setup-r-dependencies runs `Rscript` WITHOUT --vanilla, so renv would
+      # activate, set RENV_PROJECT, and make .libPaths()[1] the renv library
+      # (~/.cache/R/renv/library/<project>-<hash>/...). Dependencies then get
+      # installed there, while actions/cache is pointed at `$R_LIBS_USER/*` and
+      # a repo-relative `renv/library` — neither of which exists. Result:
+      # "Path(s) specified in the action for caching do(es) not exist", no cache
+      # saved or restored, and every run rebuilds from source (6-9 min).
+      #
+      # CI resolves deps from DESCRIPTION via pak by design (see the step
+      # below), so renv has no job here. With the autoloader off, packages land
+      # in R_LIBS_USER, which is exactly what the cache covers.
+      RENV_CONFIG_AUTOLOADER_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
 
