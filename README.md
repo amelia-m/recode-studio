@@ -112,6 +112,11 @@ renv::restore()   # installs the pinned package versions from renv.lock
 shiny::runApp()   # run from the repo root
 ```
 
+> **If `shiny::runApp()` says "there is no package called ..."** right after a
+> successful restore, run `renv::repair()` and try again. Don't click the
+> editor's "Install" button in the error pane - it installs outside `renv` and
+> hides the real problem.
+
 Without `renv`, install the direct dependencies manually:
 
 ```r

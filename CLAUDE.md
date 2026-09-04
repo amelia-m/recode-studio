@@ -330,7 +330,7 @@ and rebuilds every package from source (6-9 min instead of ~1). CI resolves deps
 from DESCRIPTION by design, so renv has no role there.
 
 **Dependencies:** this repo uses `renv` (renv 1.2.4; `renv.lock` pins
-106 packages on R 4.6.1). `.Rprofile` activates renv on session start, so a
+105 packages on R 4.6.1). `.Rprofile` activates renv on session start, so a
 bare `Rscript` from the repo root uses the project library — no `R_LIBS`
 workaround. On a fresh clone, run `renv::restore()` first. `DESCRIPTION`
 (Imports) and the README install line list the direct deps — keep all three in
