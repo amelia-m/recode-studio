@@ -1,0 +1,51 @@
+# Deliberate misspellings used as EXAMPLES in docs, docstrings and fixtures.
+#
+# This is a tool for fixing typos, so its own documentation is full of them on
+# purpose. They are illustrations, not defects. Do not "correct" them:
+# several are load-bearing (the README worked examples mirror the generated
+# case_when() arms, and the clustering fixtures depend on the exact strings).
+#
+# The example dataset itself (inst/extdata/example_messy.csv) is excluded
+# wholesale via ignorePaths in cspell.json - its typos are pinned by the
+# regression test in tests/testthat/test-data_loader.R.
+#
+# One word per line.
+
+# README: sibling-column recode worked example
+ascphyxiation
+asphyziation
+
+# string_helpers.R: docstring explaining the single-pass invariant
+# (the rule pair `asain -> Asian` / `Asian -> Asian or PI`)
+asain
+
+# string_helpers.R: n-gram fingerprint docstring, q = 1 degenerate case
+# (Krzysztof / Kryzysztof share a character set)
+Kryzysztof
+
+# tests/testthat/*.R and vignettes/*.Rmd: messy-input fixtures.
+# The clustering, taxonomy and classifier tests assert on these exact strings.
+americanno
+capccino
+cappucino
+capuccino
+esspresso
+expresso
+macchiatto
+machiato
+moccha
+asfixiation
+ashphxiation
+asphyxation
+asphyzia
+drowining
+wond
+Californai
+Nebrska
+newyork
+linclon
+Smtih
+
+# test-string_helpers.R: deliberately INVALID match_type, to exercise
+# validate_recodes()$invalid_enum. Not a misspelling of anything real.
+regx

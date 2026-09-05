@@ -226,6 +226,26 @@ aborts Apply & Export. Don't remove the scrub.
   files cannot use `%||%`, which lives in `ui_helpers.R`.)
 - Module files define `mod_<name>_ui(id)` + `mod_<name>_server(id, ...)`.
 - **Markdown links:** Always use standard relative paths (e.g. `[README](README.md)`, `[.agents/constitution.md](.agents/constitution.md)`) in `.md` files. Never commit `file:///` URIs or host-specific absolute paths.
+- **Editor spellcheck is `cspell.json` + `.cspell/example-typos.txt`.** Run it
+  with `npx cspell lint "**/*.{R,Rmd,md,json}"`; it is clean, keep it clean.
+  Four exclusions are deliberate, don't "tidy" them away:
+  - `inst/extdata/*.csv` is ignored wholesale. Its misspellings ARE the fixture
+    for the classifier regression test - a spellcheck "fix" there breaks
+    `test-data_loader.R`.
+  - `.cspell/example-typos.txt` holds the deliberate misspellings that appear
+    in docstrings, the README worked examples and the test fixtures. Read its
+    header before touching it; several entries are load-bearing.
+  - `ext/**` and `docs/superpowers/**` are archived third-party reference and
+    plan docs. Their vocabulary is not ours to allowlist.
+  - `dictionary/disciplines/*.txt` are wired in via an `overrides` block scoped
+    to `dictionary/**`, NOT enabled repo-wide. They exist so those word lists
+    don't self-flag; enabling them globally would silently accept ~400
+    clinical terms in R source. They are runtime data dictionaries for the
+    app's hunspell tiers, not source vocabulary - different job.
+
+  `addWords` is `false` on every definition so the editor's "Add word" action
+  can't write into the app's runtime dictionaries; those are populated only by
+  the app's own "Add to dictionary -> Project" button.
 
 ## Gotchas (learned the hard way — don't reintroduce)
 
