@@ -5,11 +5,12 @@ Authors@R:
     person("Amelia", "Miramonti", role = c("aut", "cre"),
            email = "amelia.miramonti@gmail.com")
 Description: A dataset-agnostic Shiny application for cleaning messy string
-    variables. Load any CSV or Excel file, browse unique values alphabetically
-    or as string-similarity clusters, spellcheck with Hunspell, build recode
-    rules with optional sibling-column propagation, and export a canonical
-    recode CSV plus a runnable dplyr script. The app never modifies the source
-    data.
+    variables. Load any CSV or Excel file, normalize whole columns, browse
+    unique values alphabetically or as string-similarity clusters, spellcheck
+    with Hunspell, build recode rules with optional sibling-column
+    propagation, and export canonical rule files plus a runnable dplyr script,
+    or a cleaned copy of the data bundled with its provenance and the rules
+    applied. The app never modifies the source data file.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Imports:

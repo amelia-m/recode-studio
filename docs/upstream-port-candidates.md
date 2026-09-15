@@ -120,9 +120,8 @@ This repo only:
    handler wraps `file.copy()` in a `tryCatch` that always returns TRUE, and
    `file.copy()` can fail silently on Windows. Check `file.exists()` on the
    destination instead.
-7. **The taxonomy matcher's empty state** is still a one-column DT with a
-   "Message" header (`R/mod_cluster_view.R`). The same pattern was replaced by
-   plain text elsewhere during the September port.
+7. ~~**The taxonomy matcher's empty state** was a one-column DT with a
+   "Message" header.~~ Fixed 2026-09-15: now `empty_state()`.
 
 ## 5. Decisions from the September 2026 upstream sync
 
@@ -177,33 +176,6 @@ This repo only:
    - Re-selecting an existing value on Browse values resets that rule's
      `new_value` to the old value (in place, but it overwrites the edit).
    - The Variable tab's empty state is still a one-column "message" table.
-   - Help popovers were not added to the Clusters tab.
-7. **Pending docs update for the September sync** (CLAUDE.md and README.md
-   not yet updated):
-   - Architecture tree: `R/rule_proxies.R`, `R/rule_warnings.R`,
-     `R/mod_normalize.R`, and the new test files.
-   - Tab order is now 1 Data, 2 Variable, 3 Normalize, 4 Browse values,
-     5 Clusters, 6 Spellcheck, 7 Text analysis, 8 Recodes, 9 Recategorize,
-     10 Preview & export (which hosts import).
-   - State: `rv$norms` and `norms_proxy` (one rule per column);
-     `make_rules_proxy(rv, norms_r, data_cols_r)` stamps `norm_spec` on
-     `add()` only, and editor edits and imports use `set()` to keep stamps.
-   - Ordering invariant: normalize, then recode, then recat, everywhere;
-     Text analysis deliberately reads raw values.
-   - Recode schema is 14 columns with `norm_spec` last (`""` means no
-     normalization, NA means unstamped; not part of the key; 13-column files
-     still read). Normalizations schema and `normalizations_master.csv`.
-   - The agreement test now covers normalize-then-recode.
-   - Gotchas: tidyselect `matches()` case sensitivity; help layer helpers;
-     `merge_recode_rules()` and in-place proxy semantics; the variable banner
-     is built statically to avoid dropped first-render updates.
-   - New warning kinds and the "rules that did nothing" panel.
-   - Lessons recorded upstream that apply here: dplyr data-mask shadowing of
-     local helpers named like dplyr exports; empty states as plain text;
-     Shiny's 300px input container width; DT column widths jumping on sort;
-     `renderUI` inputs dropping early updates; known-harmless console noise
-     (httpuv, jsonlite keep_vec_names, bslib JS copy under antivirus).
-   - README: the Normalize tab, lossy-first semantics, `exact`/`regex` rules
-     that may stop matching after normalization, the new CSV, the cleaned-data
-     export bundle, and removal of the "only exports rules" promise.
-   - Test table counts (1031 at the normalizations commit).
+7. **Docs updated for the September sync** (2026-09-15): CLAUDE.md and
+   README.md now cover normalizations, the rule warnings, the variable banner
+   and the cleaned data export bundle.
