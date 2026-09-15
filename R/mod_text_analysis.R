@@ -1,5 +1,5 @@
 # =============================================================================
-# Text analysis — tools for long-text columns (sentences / paragraphs), where
+# Text analysis: tools for long-text columns (sentences / paragraphs), where
 # similarity clustering and spellcheck are not useful. Length distribution,
 # token + n-gram frequency, and keyword-in-context search.
 # =============================================================================
@@ -84,7 +84,7 @@ mod_text_analysis_server <- function(id, shared_state, selected_var_r) {
       lg <- is_long()
       if (isTRUE(lg))
         shiny::div(class = "alert alert-success", style = "padding:.3em .8em;",
-          shiny::strong(v), " looks like long text — these tools apply.")
+          shiny::strong(v), " looks like long text: these tools apply.")
       else
         shiny::div(class = "alert alert-secondary", style = "padding:.3em .8em;",
           shiny::strong(v), " is short text. These tools still work, but ",

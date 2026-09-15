@@ -1,5 +1,5 @@
 # =============================================================================
-# Recode Studio — Recategorization ("recat") Helpers
+# Recode Studio - Recategorization ("recat") Helpers
 # =============================================================================
 #
 # Pure R helpers (no Shiny). Safe to source from scripts as well as the app.
@@ -11,7 +11,7 @@
 #      AND NONE of `vars` contains ANY `exclude_terms`   (AND-NOT, rule-wide)
 #   then the row's `out_col` becomes `category`.
 #
-# This never rewrites a source cell — unlike the old->new recodes in
+# This never rewrites a source cell, unlike the old->new recodes in
 # string_helpers.R, which edit values in place.
 #
 # Rules sharing an `out_col` are applied in ascending `priority` (NA last, then
@@ -132,7 +132,7 @@ recat_rule_id <- function(out_col, category, vars, include_terms,
 #' see that five of the six contribute nothing, or that the hits are all coming
 #' from a column you did not intend to include.
 #'
-#' @return tibble(column, include_hits, exclude_hits, kept) — counts per
+#' @return tibble(column, include_hits, exclude_hits, kept): counts per
 #'   column, where `kept` is rows this column includes that the rule's exclude
 #'   terms do not veto ANYWHERE. Zero rows when the rule selects no columns.
 recat_rule_hits_by_col <- function(df, rule) {

@@ -44,8 +44,8 @@ mk_rule <- function(out_col, category, vars,
 #
 # The eval(parse()) here is deliberate and test-only: the whole point of these
 # tests is that the script generate_recat_R() emits really does produce the same
-# column apply_recat() does. The input is not user data — it is code this test
-# just generated from its own fixtures — and it runs in a throwaway env.
+# column apply_recat() does. The input is not user data: it is code this test
+# just generated from its own fixtures, and it runs in a throwaway env.
 eval_generated <- function(df, rules, data_cols = names(df)) {
   code <- generate_recat_R(rules, dataset_id = "example_messy",
                            data_cols = data_cols)

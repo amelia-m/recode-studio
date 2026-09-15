@@ -83,7 +83,7 @@ source_file_meta <- function(path, file_name = path, sheet = NULL,
 #' Build column metadata for a dataset.
 #'
 #' A column is a free-text candidate iff ALL hold:
-#'   - its NAME does not end in `id` / `_id` (case-insensitive) — identifier
+#'   - its NAME does not end in `id` / `_id` (case-insensitive). Identifier
 #'     columns are keys, not text to recode, and high-cardinality alphanumeric
 #'     ids (e.g. "AB123456") otherwise sail past every content heuristic
 #'   - median non-empty value length > 3

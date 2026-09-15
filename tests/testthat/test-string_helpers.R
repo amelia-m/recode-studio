@@ -358,7 +358,7 @@ synthetic_rules <- function() {
 }
 
 # The eval() here runs code this test just produced from its own in-test rule
-# table (no external or user input) — that IS the thing under test.
+# table (no external or user input); that IS the thing under test.
 eval_generated_recodes <- function(df, rules, dataset_id = "synthetic") {
   code <- generate_recode_R(rules, dataset_id = dataset_id)
   env  <- new.env(parent = globalenv())

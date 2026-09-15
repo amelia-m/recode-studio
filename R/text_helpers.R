@@ -1,5 +1,5 @@
 # =============================================================================
-# Recode Studio — Long-text analysis helpers (pure R, no Shiny)
+# Recode Studio - Long-text analysis helpers (pure R, no Shiny)
 # =============================================================================
 # Tools for columns that hold sentences / paragraphs rather than short labels:
 # length classification, tokenization, token + n-gram frequency, and
@@ -96,7 +96,7 @@ top_ngrams <- function(values, ngram = 2, n = 25,
 
 #' Keyword-in-context: matches of `term` with surrounding word windows.
 #'
-#' @return tibble(before, keyword, after) — at most `max` rows.
+#' @return tibble(before, keyword, after), at most `max` rows.
 kwic <- function(values, term, window = 6, ignore_case = TRUE, max = 100) {
   empty <- tibble::tibble(before = character(0), keyword = character(0),
                           after = character(0))

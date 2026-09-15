@@ -1,5 +1,5 @@
 # =============================================================================
-# Recode Studio — String / Recode Helpers
+# Recode Studio - String / Recode Helpers
 # =============================================================================
 #
 # Pure R helpers (no Shiny). Safe to source from scripts as well as the app.
@@ -87,8 +87,8 @@ normalize_value <- function(x,
 #' compared for equality. A match REPLACES THE WHOLE CELL (regex does not do
 #' partial substitution / backreferences).
 #'
-#' NA handling: an NA `old_value` — which is how the CSV's `<NA>` sentinel
-#' round-trips — targets the MISSING cells of the column. It used to produce an
+#' NA handling: an NA `old_value` (which is how the CSV's `<NA>` sentinel
+#' round-trips) targets the MISSING cells of the column. It used to produce an
 #' all-NA hit vector, which made the caller's `if (any(hit))` throw "missing
 #' value where TRUE/FALSE needed" and abort Apply & Export. The returned vector
 #' is now always a plain logical with no NAs, whatever the inputs. An
@@ -283,8 +283,8 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
     ))
   }
 
-  v    <- as.character(values)            # original — displayed / recoded
-  keys <- normalize_for_cluster(v, normalize)  # working copy — clustered on
+  v    <- as.character(values)            # original: displayed / recoded
+  keys <- normalize_for_cluster(v, normalize)  # working copy: clustered on
 
   if (algorithm %in% c("soundex", "metaphone")) {
     codes <- if (algorithm == "soundex")
@@ -700,8 +700,8 @@ validate_recodes <- function(rules, data = NULL) {
 #' Apply a rule set to a data frame.
 #'
 #' SEMANTICS (single pass). Every rule is matched against the ORIGINAL column
-#' values, and the FIRST rule to claim a cell wins; a later rule never sees —
-#' and so never re-recodes — a value an earlier rule just wrote.
+#' values, and the FIRST rule to claim a cell wins; a later rule never sees
+#' (and so never re-recodes) a value an earlier rule just wrote.
 #'
 #' This used to be a cascade: rules were applied one after another to the
 #' progressively-rewritten frame, so a rule set containing both

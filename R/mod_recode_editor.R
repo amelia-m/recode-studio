@@ -44,7 +44,7 @@ mod_recode_editor_ui <- function(id) {
           shiny::tags$small(shiny::tags$em(
             "Edit any cell directly. Use the delete buttons to remove rules. 'Validate' surfaces conflicts. ",
             shiny::tags$br(),
-            "match_type ∈ {exact, exact_ci, trimmed_ci, regex}; action ∈ {recode, delete} — invalid entries are rejected."
+            "match_type ∈ {exact, exact_ci, trimmed_ci, regex}; action ∈ {recode, delete}. Invalid entries are rejected."
           ))
         ),
         shiny::column(4, align = "right",
@@ -199,7 +199,7 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
         ))
       }
       if (length(msg) == 0) {
-        msg <- shiny::p(badge("All good", "green"), " — no issues detected.")
+        msg <- shiny::p(badge("All good", "green"), ": no issues detected.")
       }
       shiny::showModal(shiny::modalDialog(
         title = "Validation report", msg, size = "l", easyClose = TRUE

@@ -8,14 +8,14 @@
 
 # --- Target resolution (pure) ------------------------------------------------
 # These helpers are plain R (no Shiny) so they can be unit-tested on their
-# own — see tests/testthat/test-cluster_target.R.
+# own (see tests/testthat/test-cluster_target.R).
 
 #' Decide what a cluster's members should be recoded to.
 #'
 #' The user makes two choices per cluster that can contradict each other: the
 #' value to keep (radio, or a typed custom value) and the members to exclude.
 #' Excluding the very value being kept is a contradiction, and the app must not
-#' resolve it by guessing — that case returns `status = "conflict"` and the
+#' resolve it by guessing: that case returns `status = "conflict"` and the
 #' caller refuses to emit any rules for the cluster.
 #'
 #' @param members  Character vector of cluster member values, most frequent
@@ -83,7 +83,7 @@ cluster_target_decision <- function(members, radio = NULL, custom = NULL,
 #' `keep`. Excluded members produce no rule. `keep` need not be one of
 #' `members` (the correct spelling may be absent from the data). If `keep` is
 #' itself excluded it is defensively treated as excluded and nothing maps onto
-#' it — callers should resolve the contradiction first (see
+#' it; callers should resolve the contradiction first (see
 #' `cluster_target_decision()`).
 #'
 #' @param members  Character vector of cluster member values.
@@ -244,6 +244,20 @@ cluster_member_table <- function(members, target_id, exclude_id,
         shiny::tags$tbody(rows))))
 }
 
+#' Title line with a help_btn() for one Clusters sub-tab.
+#'
+#' Both sub-tabs sit inside one navset card whose header is the tab strip, so
+#' there is no per-sub-tab card header to hang help on. This gives each its
+#' own header-styled line instead.
+#'
+#' @param title sub-tab title, also the popover title.
+#' @param ... help_btn() content.
+cluster_subtab_heading <- function(title, ...) {
+  shiny::div(
+    class = "fw-semibold mb-2",
+    shiny::span(title, help_btn(..., title = title)))
+}
+
 mod_cluster_view_ui <- function(id) {
   ns <- shiny::NS(id)
 
@@ -255,6 +269,18 @@ mod_cluster_view_ui <- function(id) {
       title = "Similarity Clustering",
       bslib::card_body(
         fillable = FALSE,
+        # The sub-tabs share one card, so each gets its own title line to hold
+        # the help button that other tabs put in their card header.
+        cluster_subtab_heading(
+          "Similarity clusters",
+          shiny::p("Groups values in the selected column that are spelled ",
+                   "almost the same, so you can fix a whole group at once ",
+                   "instead of one value at a time."),
+          shiny::p("In each group, choose the value to keep and click Apply. ",
+                   "The other values get rules on the Recodes tab that change ",
+                   "them to it. Lower the similarity threshold to catch looser ",
+                   "matches, or raise it if unrelated values end up together.")
+        ),
         shiny::fluidRow(
           shiny::column(4,
             shiny::selectInput(ns("algorithm"), "Algorithm:",
@@ -315,7 +341,7 @@ mod_cluster_view_ui <- function(id) {
                       shiny::tags$td(shiny::tags$span(class = "badge bg-success", "O(N) Linear")),
                       shiny::tags$td("Compound words and spacing differences ('Wal Mart' vs 'WalMart', 'e-mail' vs 'email'). At q = 1, transposed characters ('Krzysztof' vs 'Kryzysztof')."),
                       shiny::tags$td("Ignores where the spaces fall, so it catches splits and joins that key collision cannot. Linear, no distance matrix."),
-                      shiny::tags$td("Word-order swaps are NOT caught at q >= 2 — use Key collision for those. Over-merges short values at q = 1.")
+                      shiny::tags$td("Word-order swaps are NOT caught at q >= 2; use Key collision for those. Over-merges short values at q = 1.")
                     ),
                     shiny::tags$tr(
                       shiny::tags$td(shiny::tags$strong("Jaro-Winkler (Default)")),
@@ -357,7 +383,7 @@ mod_cluster_view_ui <- function(id) {
         shiny::div(
           class = "alert alert-info", style = "padding:.5em .8em;",
           shiny::tags$strong("Tip: "),
-          "In each cluster below, click the member you want to keep — the others ",
+          "In each cluster below, click the member you want to keep; the others ",
           "are recoded to it. The most frequent value is pre-selected; pick a ",
           "different one, or type your own target in the box. Tick ",
           shiny::tags$em("Exclude"), " next to any member that does not belong: ",
@@ -376,6 +402,16 @@ mod_cluster_view_ui <- function(id) {
       title = "Reference Taxonomy Matcher",
       bslib::card_body(
         fillable = FALSE,
+        cluster_subtab_heading(
+          "Reference taxonomy matcher",
+          shiny::p("Compares each value in the selected column with a list of ",
+                   "correct values that you supply (a built-in list, an ",
+                   "uploaded file, or pasted text) and shows the closest match."),
+          shiny::p("Check the matches in the table, adjust the minimum ",
+                   "similarity cutoff, then click \"Create Recode Rules from ",
+                   "Matches\" to add rules on the Recodes tab. Values below the ",
+                   "cutoff are left alone.")
+        ),
         shiny::div(
           class = "alert alert-secondary", style = "padding:.6em 1em; margin-bottom:1em;",
           shiny::tags$strong("Reference Taxonomy Standardizer: "),
@@ -432,6 +468,7 @@ mod_cluster_view_ui <- function(id) {
         ),
         shiny::hr(),
         shiny::uiOutput(ns("tax_summary_banner")),
+        shiny::uiOutput(ns("tax_empty")),
         DT::dataTableOutput(ns("tax_match_table"))
       )
     )
@@ -640,7 +677,7 @@ mod_cluster_view_server <- function(id, shared_state,
       to_recode <- pairs$old_value
       if (length(to_recode) == 0) {
         shiny::showNotification(
-          "Nothing to recode — no non-excluded members remain besides the target.",
+          "Nothing to recode: no non-excluded members remain besides the target.",
           type = "warning")
         return()
       }
@@ -755,14 +792,17 @@ mod_cluster_view_server <- function(id, shared_state,
       )
     })
 
+    # Shown instead of the match table while there is nothing to match; the
+    # table renders NULL in the same state (see empty_state()).
+    output$tax_empty <- shiny::renderUI({
+      m <- taxonomy_matches_r()
+      if (!is.null(m) && nrow(m) > 0) return(NULL)
+      empty_state("No taxonomy targets or dataset values available to match.")
+    })
+
     output$tax_match_table <- DT::renderDataTable({
       m <- taxonomy_matches_r()
-      if (is.null(m) || nrow(m) == 0) {
-        return(DT::datatable(
-          data.frame(Message = "No taxonomy targets or dataset values available to match."),
-          options = list(dom = "t")
-        ))
-      }
+      if (is.null(m) || nrow(m) == 0) return(NULL)
 
       # Similarity stays NUMERIC here and is formatted by DT at render time.
       # Pre-formatting it with sprintf("%.1f%%") makes the column a string, and
@@ -771,7 +811,7 @@ mod_cluster_view_server <- function(id, shared_state,
       display_df <- data.frame(
         `Original Value` = m$value,
         `Count (N)`      = m$n,
-        `Matched Target` = ifelse(is.na(m$matched_target), "—", m$matched_target),
+        `Matched Target` = ifelse(is.na(m$matched_target), "-", m$matched_target),
         `Similarity`     = m$similarity,
         `Status`         = ifelse(m$status == "exact", "Exact Match",
                            ifelse(m$status == "fuzzy_match", "Fuzzy Match", "Below Threshold")),

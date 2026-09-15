@@ -110,7 +110,7 @@ mod_data_input_server <- function(id, shared_state) {
         shiny::p(shiny::strong("Dimensions: "),
                  sprintf("%d rows x %d cols", nrow(d), ncol(d))),
         shiny::p(shiny::strong("Free-text candidates: "),
-                 if (is.null(m)) "—" else as.character(sum(m$is_free_text_candidate)))
+                 if (is.null(m)) "-" else as.character(sum(m$is_free_text_candidate)))
       )
     })
   })

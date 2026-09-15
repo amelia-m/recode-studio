@@ -34,7 +34,7 @@ mod_recategorize_ui <- function(id) {
 
       warning_banner(paste0(
         "These rules DERIVE a new category column from cross-variable term ",
-        "logic — they never overwrite your source values. As everywhere else ",
+        "logic; they never overwrite your source values. As everywhere else ",
         "in this app, nothing is written to your data file: export the CSV ",
         "and the R script instead."
       )),
@@ -89,20 +89,20 @@ mod_recategorize_ui <- function(id) {
           shiny::tags$ol(
             class = "mb-2",
             shiny::tags$li(shiny::HTML(paste0(
-              "<strong>Espresso-based drinks</strong> &mdash; across the ",
+              "<strong>Espresso-based drinks</strong>: across the ",
               "<code>drink1</code>/<code>drink2</code> family, INCLUDE ",
               "<code>espresso</code> OR <code>macchiato</code> OR ",
               "<code>americano</code> OR <code>cortado</code> plus their common ",
               "misspellings (literal) &rarr; <code>drink_family</code> = ",
               "<code>Espresso-based</code>. Shows OR across sibling columns."))),
             shiny::tags$li(shiny::HTML(paste0(
-              "<strong>Milk-based drinks</strong> &mdash; same columns, one ",
+              "<strong>Milk-based drinks</strong>: same columns, one ",
               "regex <code>ca[bp]+u?c+ino|latt|moc+[ah]+|flat ?white</code> ",
               "covering every spelling variant &rarr; ",
               "<code>drink_family</code> = <code>Milk-based</code> at priority ",
               "20. Shows regex, and first-match-wins against example 1."))),
             shiny::tags$li(shiny::HTML(paste0(
-              "<strong>Reviews needing follow-up</strong> &mdash; over ",
+              "<strong>Reviews needing follow-up</strong>: over ",
               "<code>review</code>, INCLUDE <code>slow</code>, ",
               "<code>lukewarm</code>, <code>burnt</code>, <code>watery</code>, ",
               "<code>cold</code>&hellip; but EXCLUDE <code>cold brew</code>, so ",
@@ -149,7 +149,7 @@ mod_recategorize_ui <- function(id) {
             shiny::actionLink(ns("add_siblings"),
               "Add sibling family of the first selected variable"),
             shiny::tags$small(shiny::tags$em(
-              " — e.g. all drink1 / drink2 columns"))
+              " - e.g. all drink1 / drink2 columns"))
           ),
           shiny::br(),
 
@@ -159,11 +159,11 @@ mod_recategorize_ui <- function(id) {
             selected = "literal"),
 
           shiny::textAreaInput(ns("include_terms"),
-            "INCLUDE terms — matches if ANY appears (OR)",
+            "INCLUDE terms: matches if ANY appears (OR)",
             rows = 2,
             placeholder = "one term per line, e.g.\nespresso\nmacchiato"),
           shiny::textAreaInput(ns("exclude_terms"),
-            "EXCLUDE terms — excluded if ANY appears (NOT)",
+            "EXCLUDE terms: excluded if ANY appears (NOT)",
             rows = 2,
             placeholder = "one term per line, e.g.\ncold brew"),
 
@@ -229,7 +229,7 @@ mod_recategorize_ui <- function(id) {
 #' Recategorization module server.
 #'
 #' @param shared_state   reactiveValues(data, meta, dataset_name). Read only.
-#' @param recat_proxy    list(get = reactive, add = fn, set = fn) — the recat
+#' @param recat_proxy    list(get = reactive, add = fn, set = fn), the recat
 #'   rule store owned by server(). Separate from the old->new `rules_proxy`.
 #' @param seed_var_r optional reactive giving the single variable picked on
 #'   the Variable tab (the one the other tabs work on). Used ONLY to seed this
@@ -365,7 +365,7 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       } else {
         shiny::showNotification(
           sprintf(paste0("Loaded '%s' example. No columns matching '%s' in ",
-                         "this dataset — pick the source variables by hand."),
+                         "this dataset. Pick the source variables by hand."),
                   ex$category, ex$var_pattern),
           type = "warning", duration = 5)
       }
@@ -433,7 +433,7 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       d_raw <- shared_state$data
       if (is.null(d_raw)) {
         output$preview_out <- shiny::renderUI(
-          shiny::tags$em("No data loaded — load a dataset on the Data tab."))
+          shiny::tags$em("No data loaded. Load a dataset on the Data tab."))
         return()
       }
       basis <- if (is.null(recode_basis_r)) NULL
@@ -487,7 +487,7 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
           shiny::tags$small(
             class = "d-block text-muted mb-2",
             if (is.na(n_recodes))
-              paste0("Counted on the RAW data — no recode rules were available ",
+              paste0("Counted on the RAW data: no recode rules were available ",
                      "to apply first. Recodes run before recat, so the export ",
                      "may match fewer rows than this.")
             else if (n_recodes == 0 && n_norms > 0)

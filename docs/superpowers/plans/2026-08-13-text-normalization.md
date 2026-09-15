@@ -16,13 +16,13 @@
 - `string_helpers.R`, `text_helpers.R`, `recat_helpers.R`, `data_loader.R`, and every new `*_helpers.R` stay **Shiny-free**. Consequence: they cannot use `%||%`, which lives in `ui_helpers.R`.
 - Module files define `mod_<name>_ui(id)` + `mod_<name>_server(id, ...)`.
 - `case_when`, never `case_match` (deprecated in dplyr 1.2.0).
-- `isTRUE()` is not vectorised — use `!is.na(x) & x`.
+- `isTRUE()` is not vectorised - use `!is.na(x) & x`.
 - Every `bslib::card` sets `fill = FALSE` and its `card_body` sets `fillable = FALSE`.
 - **Never `escape = FALSE` on a DT holding dataset content.** Use `escape = -ncol(df)` with the generated-markup column LAST.
 - Test runner: `Rscript -e "testthat::test_dir('tests/testthat')"`
 - Baseline before this plan: **383 assertions, 0 failures.** Every task must leave the suite green.
 - Tests `source()` pure-R files by relative path, e.g. `source(file.path("..", "..", "R", "text_helpers.R"))`. Follow `tests/testthat/test-text_helpers.R`.
-- Do not edit the external upstream data pipeline — read-only reference.
+- Do not edit the external upstream data pipeline - read-only reference.
 - The bundled example `inst/extdata/example_messy.csv` must keep classifying `drink1, drink2, city, notes, review` as free-text candidates and `order_id, size, price, order_date` as non-candidates.
 
 ---
@@ -53,8 +53,8 @@
 **Interfaces:**
 - Consumes: nothing
 - Produces:
-  - `detect_languages(values, min_chars = 20) -> character` — ISO-639-1 code or `NA_character_`, one per input element, same length as input.
-  - `language_summary(values, min_chars = 20) -> tibble(language chr, n int, share dbl)` — undetected values bucketed as `"(undetected)"`, sorted by `n` descending.
+  - `detect_languages(values, min_chars = 20) -> character`: ISO-639-1 code or `NA_character_`, one per input element, same length as input.
+  - `language_summary(values, min_chars = 20) -> tibble(language chr, n int, share dbl)`: undetected values bucketed as `"(undetected)"`, sorted by `n` descending.
 
 - [ ] **Step 1: Install the new dependency**
 
@@ -116,7 +116,7 @@ test_that("language_summary counts and shares sum to 1", {
 Rscript -e "testthat::test_file('tests/testthat/test-text_helpers.R')"
 ```
 
-Expected: FAIL — `could not find function "detect_languages"`.
+Expected: FAIL - `could not find function "detect_languages"`.
 
 - [ ] **Step 4: Implement**
 
@@ -187,7 +187,7 @@ git commit -m "feat(text): per-value language detection via cld2"
 
 **Interfaces:**
 - Consumes: `detect_languages()` from Task 1
-- Produces: `build_meta(df)` gains a `lang_share_en` numeric column — share of non-missing values detected as `"en"`, or `NA_real_` when nothing was detectable. Computed only for columns where `is_free_text_candidate` is TRUE; `NA_real_` otherwise.
+- Produces: `build_meta(df)` gains a `lang_share_en` numeric column - share of non-missing values detected as `"en"`, or `NA_real_` when nothing was detectable. Computed only for columns where `is_free_text_candidate` is TRUE; `NA_real_` otherwise.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -227,7 +227,7 @@ test_that("build_meta lang_share_en is a share between 0 and 1 when detected", {
 Rscript -e "testthat::test_file('tests/testthat/test-data_loader.R')"
 ```
 
-Expected: FAIL — `"lang_share_en" %in% names(m)` is FALSE.
+Expected: FAIL - `"lang_share_en" %in% names(m)` is FALSE.
 
 - [ ] **Step 3: Implement**
 
@@ -255,7 +255,7 @@ lang_share_en <- if (is_candidate) .lang_share_en(col_values) else NA_real_
 and add `lang_share_en = lang_share_en` to the tibble row the loop builds.
 
 > Adapt `col_values` to whatever the loop already calls the current column's
-> vector — read the surrounding code rather than assuming the name.
+> vector - read the surrounding code rather than assuming the name.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -447,7 +447,7 @@ test_that("add_stopword creates a missing tier file", {
 Rscript -e "testthat::test_file('tests/testthat/test-stopword_helpers.R')"
 ```
 
-Expected: FAIL — cannot open `R/stopword_helpers.R`.
+Expected: FAIL - cannot open `R/stopword_helpers.R`.
 
 - [ ] **Step 3: Implement the helper file**
 
@@ -455,7 +455,7 @@ Create `R/stopword_helpers.R`:
 
 ```r
 # =============================================================================
-# Recode Studio — Stopword tiers (pure R, no Shiny)
+# Recode Studio - Stopword tiers (pure R, no Shiny)
 # =============================================================================
 # Mirrors the spellcheck dictionary tier system. A token is a stopword if any
 # ACTIVE tier lists it.
@@ -575,7 +575,7 @@ git commit -m "feat(stopwords): editable stopword tiers mirroring dictionary tie
 
 **Interfaces:**
 - Consumes: `active_stopwords()`, `add_stopword()` from Task 4
-- Produces: `top_tokens(values, n, remove_stopwords, min_chars, stopwords = EN_STOPWORDS)` and `top_ngrams(values, ngram, n, remove_stopwords, min_chars, stopwords = EN_STOPWORDS)` — new trailing argument, defaulting to the current behavior so existing callers and tests are unaffected.
+- Produces: `top_tokens(values, n, remove_stopwords, min_chars, stopwords = EN_STOPWORDS)` and `top_ngrams(values, ngram, n, remove_stopwords, min_chars, stopwords = EN_STOPWORDS)` - new trailing argument, defaulting to the current behavior so existing callers and tests are unaffected.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -606,7 +606,7 @@ test_that("top_ngrams honours a custom stopword list", {
 Rscript -e "testthat::test_file('tests/testthat/test-text_helpers.R')"
 ```
 
-Expected: FAIL — `unused argument (stopwords = ...)`.
+Expected: FAIL - `unused argument (stopwords = ...)`.
 
 - [ ] **Step 3: Implement**
 
@@ -654,7 +654,7 @@ Add a reactive near the top of the server function:
     })
 ```
 
-Pass it through both frequency outputs — in `output$tokens`:
+Pass it through both frequency outputs - in `output$tokens`:
 
 ```r
         top_tokens(v, n = input$topn %||% 25,
@@ -723,7 +723,7 @@ Add the tier target radio to the UI controls row:
 
 > `stopwords_r()` reads `input$sw_tiers`, so re-setting it in the observer is
 > what invalidates the frequency tables after a write. Do not replace this with
-> a manual `reactiveVal` counter — the tier list is already the dependency.
+> a manual `reactiveVal` counter - the tier list is already the dependency.
 
 - [ ] **Step 6: Run the suite and parse check**
 
@@ -752,8 +752,8 @@ git commit -m "feat(text-analysis): stopword tier selection and + Stop control"
 - Consumes: `.tokens_of()`, `EN_STOPWORDS` from `R/text_helpers.R`
 - Produces:
   - `token_vocabulary(values, remove_stopwords = TRUE, min_chars = 3, stopwords = EN_STOPWORDS) -> tibble(token chr, n int)` sorted by `n` descending
-  - `.suffix_stem(x) -> character` — pure suffix-stripping fallback
-  - `stem_groups(tokens, counts = NULL, min_size = 2) -> tibble(stem chr, token chr, n int)` — only groups with `min_size` or more distinct tokens, sorted by group total descending then `n` descending
+  - `.suffix_stem(x) -> character`: pure suffix-stripping fallback
+  - `stem_groups(tokens, counts = NULL, min_size = 2) -> tibble(stem chr, token chr, n int)`: only groups with `min_size` or more distinct tokens, sorted by group total descending then `n` descending
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -823,7 +823,7 @@ test_that("stem_groups returns an empty tibble for no input", {
 Rscript -e "testthat::test_file('tests/testthat/test-token_helpers.R')"
 ```
 
-Expected: FAIL — cannot open `R/token_helpers.R`.
+Expected: FAIL - cannot open `R/token_helpers.R`.
 
 - [ ] **Step 3: Implement**
 
@@ -831,7 +831,7 @@ Create `R/token_helpers.R`:
 
 ```r
 # =============================================================================
-# Recode Studio — Token vocabulary + stem grouping (pure R, no Shiny)
+# Recode Studio - Token vocabulary + stem grouping (pure R, no Shiny)
 # =============================================================================
 # Feeds the token-normalization UI: instead of hand-writing
 #   str_replace_all(x, "duties", "duty")
@@ -937,7 +937,7 @@ Rscript -e "testthat::test_dir('tests/testthat')"
 
 Expected: PASS, 0 failures.
 
-> If `.suffix_stem("making")` does not return `"mak"`, check rule order — `ing$`
+> If `.suffix_stem("making")` does not return `"mak"`, check rule order - `ing$`
 > must be tried before `s$`. Adjust the test only if the spec's expected value
 > is genuinely wrong, and say so.
 
@@ -950,7 +950,7 @@ git commit -m "feat(tokens): token vocabulary and stem grouping helpers"
 
 ---
 
-## Task 7: The `token` match_type — matching, application, validation
+## Task 7: The `token` match_type (matching, application, validation)
 
 **Files:**
 - Modify: `R/string_helpers.R`
@@ -960,12 +960,12 @@ git commit -m "feat(tokens): token vocabulary and stem grouping helpers"
 - Consumes: `.rule_hits()`, `apply_recodes()`, `validate_recodes()`, `.recode_cols()`
 - Produces:
   - `RECODE_MATCH_TYPES` gains `"token"` (now 5 values)
-  - `.token_pattern(tokens) -> character` — a single `\\b(a|b|c)\\b` alternation with each token regex-escaped
-  - `.apply_token_map(values, map) -> character` — one-pass token rewrite
-  - `validate_recodes()$invalid_token` — new issue tibble
+  - `.token_pattern(tokens) -> character`: a single `\\b(a|b|c)\\b` alternation with each token regex-escaped
+  - `.apply_token_map(values, map) -> character`: one-pass token rewrite
+  - `validate_recodes()$invalid_token`: new issue tibble
   - `apply_recodes()` applies token rules after whole-cell rules, per column
 
-**Design — read before writing code.** A `token` rule rewrites a word *inside*
+**Design: read before writing code.** A `token` rule rewrites a word *inside*
 a cell rather than replacing the cell. Unlike whole-cell rules, token rules must
 **compose**: twenty stem rules all land on the same comment. The resolution is
 one pass over an alternation of every token, with a function replacement, so
@@ -1080,7 +1080,7 @@ test_that("a valid single-word token rule is not flagged", {
 Rscript -e "testthat::test_file('tests/testthat/test-string_helpers.R')"
 ```
 
-Expected: FAIL — `"token" %in% RECODE_MATCH_TYPES` is FALSE.
+Expected: FAIL - `"token" %in% RECODE_MATCH_TYPES` is FALSE.
 
 - [ ] **Step 3: Add the enum and the two token primitives**
 
@@ -1216,7 +1216,7 @@ Declare the three accumulators next to `claimed`, before the whole-cell loop:
 ```
 
 Then, where the summary tibble is built, fold the token counts in for rules
-whose `match_type` is `"token"` — read the existing summary construction and add
+whose `match_type` is `"token"` - read the existing summary construction and add
 the token rule's counts from `tok_matched[[rid]]` / `tok_changed[[rid]]` /
 `tok_shadowed[[rid]]`, defaulting each to `0L` when the rule matched no column.
 
@@ -1326,7 +1326,7 @@ test_that("token rules expand across sibling columns in the script", {
 
 Then extend the EXISTING agreement test's rule table with two token rules over
 one of its text columns, so the canonical multi-match-type fixture covers
-`token` too. Do not create a parallel fixture — add to the one that is there.
+`token` too. Do not create a parallel fixture - add to the one that is there.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1334,7 +1334,7 @@ one of its text columns, so the canonical multi-match-type fixture covers
 Rscript -e "testthat::test_file('tests/testthat/test-string_helpers.R')"
 ```
 
-Expected: FAIL — the generated script leaves token rules unapplied, so the
+Expected: FAIL - the generated script leaves token rules unapplied, so the
 frames differ.
 
 - [ ] **Step 3: Implement the codegen**
@@ -1391,7 +1391,7 @@ Call it after the `case_when` block for the group:
     gc <- g[ is.na(g$match_type) | g$match_type != "token", , drop = FALSE]
 ```
 
-— build the existing `case_when` block from `gc` (skipping it when
+Then build the existing `case_when` block from `gc` (skipping it when
 `nrow(gc) == 0`), then `if (nrow(gt) > 0) blocks <- c(blocks, make_token_block(gt, pattern, single_col))`,
 reusing whatever the surrounding code already computes for the
 single-column-vs-`across` decision.
@@ -1626,7 +1626,7 @@ git commit -m "feat(text-analysis): stem-group token normalization emitting toke
 
 ## Task 10: Manual verification of the token workflow
 
-**Files:** none modified — this is a gate before the optional feature E.
+**Files:** none modified; this is a gate before the optional feature E.
 
 - [ ] **Step 1: Launch and drive the app**
 
@@ -1648,7 +1648,7 @@ shiny::runApp()
 - [ ] **Step 3: Record the result**
 
 Note anything that misbehaves in the task's review notes. Do not proceed to
-Task 11 with a broken token workflow — E is independent and can be dropped, but
+Task 11 with a broken token workflow - E is independent and can be dropped, but
 B/C is the point of the plan.
 
 ---
@@ -1663,8 +1663,8 @@ B/C is the point of the plan.
 - Consumes: `.tokens_of()`, `EN_STOPWORDS` from `R/text_helpers.R`
 - Produces:
   - `build_dtm(values, remove_stopwords = TRUE, min_chars = 3, min_docs = 1, stopwords = EN_STOPWORDS) -> Matrix` (documents × terms, dimnames set)
-  - `tfidf_matrix(dtm) -> Matrix` — L2-row-normalized TF-IDF
-  - `cluster_documents(tfidf, k) -> integer` — cluster id per document, named by rownames
+  - `tfidf_matrix(dtm) -> Matrix`: L2-row-normalized TF-IDF
+  - `cluster_documents(tfidf, k) -> integer`: cluster id per document, named by rownames
   - `cluster_top_terms(dtm, clustering, n = 5) -> tibble(cluster int, size int, top_terms chr)`
 
 - [ ] **Step 1: Write the failing tests**
@@ -1737,7 +1737,7 @@ test_that("cluster_documents errors clearly when k exceeds the document count", 
 Rscript -e "testthat::test_file('tests/testthat/test-doc_cluster_helpers.R')"
 ```
 
-Expected: FAIL — cannot open `R/doc_cluster_helpers.R`.
+Expected: FAIL - cannot open `R/doc_cluster_helpers.R`.
 
 - [ ] **Step 3: Implement**
 
@@ -1745,7 +1745,7 @@ Create `R/doc_cluster_helpers.R`:
 
 ```r
 # =============================================================================
-# Recode Studio — Document clustering (pure R, no Shiny)
+# Recode Studio - Document clustering (pure R, no Shiny)
 # =============================================================================
 # Clusters ROWS (documents) by content, as opposed to mod_cluster_view which
 # clusters unique VALUES by string similarity. Analysis only - produces no
@@ -1958,13 +1958,13 @@ git commit -m "feat(text-analysis): document clustering with per-cluster top ter
 - [ ] **Step 1: Update CLAUDE.md**
 
 - Architecture tree: add `stopword_helpers.R`, `token_helpers.R`, `doc_cluster_helpers.R`, and the `stopwords/` directory.
-- "Generated R shape" table: add the `token` row — `str_replace_all(<col>, regex("\\b(a|b)\\b", ignore_case = TRUE), function(.m) .tok_map[tolower(.m)])`.
+- "Generated R shape" table: add the `token` row - `str_replace_all(<col>, regex("\\b(a|b)\\b", ignore_case = TRUE), function(.m) .tok_map[tolower(.m)])`.
 - "The single-pass invariant" section: add the paragraph explaining that token rules compose *within* a cell but are still single-pass across rules, that the token pass runs after whole-cell rules, and that the agreement test now covers `token`.
-- "match_type semantics": document `token` — word-boundary anchored, case-insensitive, replaces only the token, and `validate_recodes()$invalid_token` rejects multi-word or metacharacter tokens.
+- "match_type semantics": document `token` - word-boundary anchored, case-insensitive, replaces only the token, and `validate_recodes()$invalid_token` rejects multi-word or metacharacter tokens.
 - New "Stopwords" section mirroring the "Dictionaries" section.
 - Testing table: add the three new test files with their assertion counts, and update the total.
 - Open/TODO: strike the "Peer code review" and "language detection" items, replacing them with a line recording what the reference script turned out to be (`ext/tokenization_reference.Rmd`, tokenization/normalization pipeline) and that both are now implemented.
-- Gotchas: add "`cld2` is an OPTIONAL runtime dependency — `detect_languages()` returns all-NA when it is missing, and the UI shows an install hint. Don't make it a hard requirement."
+- Gotchas: add "`cld2` is an OPTIONAL runtime dependency - `detect_languages()` returns all-NA when it is missing, and the UI shows an install hint. Don't make it a hard requirement."
 
 - [ ] **Step 2: Update README.md**
 
@@ -1997,10 +1997,10 @@ git commit -m "docs: token normalization, stopword tiers, language detection, do
 
 **Known risks, called out rather than hidden:**
 
-1. **Task 7 Step 6 is the hardest edit in the plan.** It modifies `apply_recodes()`, whose correctness is load-bearing and was only just repaired. The plan deliberately says "read the existing loop before editing" rather than showing a full replacement, because the surrounding variable names must be matched exactly. If the summary-assembly folding proves awkward, the fallback is to build the token summary rows separately and `dplyr::rows_update()` them into the existing summary — but try the direct route first.
+1. **Task 7 Step 6 is the hardest edit in the plan.** It modifies `apply_recodes()`, whose correctness is load-bearing and was only just repaired. The plan deliberately says "read the existing loop before editing" rather than showing a full replacement, because the surrounding variable names must be matched exactly. If the summary-assembly folding proves awkward, the fallback is to build the token summary rows separately and `dplyr::rows_update()` them into the existing summary - but try the direct route first.
 
-2. **Task 8's `make_token_block()` string assembly is fiddly.** The `%COL%` placeholder for the single-column branch is a shortcut; if it fights the surrounding code, build the two branches independently instead. The agreement test is the arbiter — if it passes, the emitted code is right.
+2. **Task 8's `make_token_block()` string assembly is fiddly.** The `%COL%` placeholder for the single-column branch is a shortcut; if it fights the surrounding code, build the two branches independently instead. The agreement test is the arbiter - if it passes, the emitted code is right.
 
 3. **`.suffix_stem()` expected values in Task 6 are asserted, not derived.** `"making" -> "mak"` is what the listed rule order produces. If hunspell is available, `.lemma_of()` will usually override it with `"make"`, so the fallback's exact output rarely surfaces. Tests target `.suffix_stem()` directly to keep it pinned.
 
-4. **Feature E's `DC_MAX_DOCS <- 2000` is a guess.** Cosine similarity builds an n×n dense matrix — 2000 documents is ~32 MB, which is fine; 10000 would be ~800 MB, which is not. The limit is enforced with an explicit message rather than silent truncation.
+4. **Feature E's `DC_MAX_DOCS <- 2000` is a guess.** Cosine similarity builds an n×n dense matrix - 2000 documents is ~32 MB, which is fine; 10000 would be ~800 MB, which is not. The limit is enforced with an explicit message rather than silent truncation.
