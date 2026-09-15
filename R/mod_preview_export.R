@@ -2,7 +2,9 @@
 # Preview + export
 # =============================================================================
 # Diff view (before / after / affected cells), download buttons for the
-# master CSVs + recode R script, copy-to-clipboard for the R.
+# master CSVs + recode R script, copy-to-clipboard for the R, and a second
+# card that downloads the cleaned data bundle (a zip built by
+# R/export_bundle.R: cleaned CSV, rule files, one script, provenance).
 #
 # Everything here follows the export order: column normalizations first, then
 # the recodes (on the normalized data), then recat. The normalization summary
@@ -131,7 +133,7 @@ rule_warnings_ui <- function(warnings) {
 
 mod_preview_export_ui <- function(id) {
   ns <- shiny::NS(id)
-  bslib::card(
+  card <- bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
     card_header_help(
@@ -147,7 +149,7 @@ mod_preview_export_ui <- function(id) {
     ),
     bslib::card_body(
       fillable = FALSE,
-      warning_banner("This app does NOT modify your data file. It exports rule CSVs and an R script you run yourself."),
+      warning_banner("This app does NOT modify your data file. It exports rule CSVs, an R script you run yourself and, if you ask for it below, a cleaned copy of the data as a separate download."),
       help_line(
         "Each rule reports three counts, taken against your data. ",
         shiny::strong("Matched"), " = cells the rule hit. ",
@@ -183,6 +185,37 @@ mod_preview_export_ui <- function(id) {
       shiny::hr(),
       shiny::h5("Generated R (read-only preview)"),
       shiny::verbatimTextOutput(ns("r_preview"))
+    )
+  )
+  shiny::tagList(card, shiny::br(), .bundle_card_ui(ns))
+}
+
+# The "Download cleaned data" card (R/export_bundle.R builds the zip).
+.bundle_card_ui <- function(ns) {
+  bslib::card(
+    full_screen = FALSE,
+    fill        = FALSE,
+    card_header_help(
+      "Download cleaned data",
+      shiny::p("Downloads one zip file. Your original data file is not changed."),
+      shiny::p("Inside: a cleaned copy of the data as CSV, the three rule files, ",
+               "one R script that repeats the cleaning on your original file, ",
+               "and a provenance record (provenance.txt to read, ",
+               "provenance.json for software) saying which file was cleaned, ",
+               "when, with how many rules, and any warnings."),
+      shiny::p("Cleaning runs in a fixed order: normalizations, then recodes, ",
+               "then recategorization.")
+    ),
+    bslib::card_body(
+      fillable = FALSE,
+      help_line(
+        "The zip holds a cleaned COPY of the loaded data (missing values as ",
+        "empty cells), the normalization, recode and recategorization rule ",
+        "files, a script that rebuilds the copy from your original file, and ",
+        "provenance.txt explaining it all."
+      ),
+      shiny::uiOutput(ns("bundle_summary")),
+      shiny::uiOutput(ns("bundle_button"))
     )
   )
 }
@@ -370,6 +403,86 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
     output$dl_r <- shiny::downloadHandler(
       filename = function() sprintf("recode_%s.R", dataset_id()),
       content  = function(file) writeLines(script_r(), file)
+    )
+
+    # --- Cleaned data bundle (R/export_bundle.R) ---------------------------
+
+    app_version <- app_version_from_description("DESCRIPTION")
+
+    recat_r <- shiny::reactive({
+      rc <- if (is.null(recat_proxy)) NULL else recat_proxy$get()
+      if (is.null(rc)) empty_recat_tibble() else rc
+    })
+
+    bundle_id <- shiny::reactive({
+      sm <- shared_state$source_meta
+      bundle_dataset_id(if (!is.null(sm$file_name)) sm$file_name
+                        else shared_state$dataset_name %||% "dataset")
+    })
+
+    # The load-time description of the file; a minimal one (name only) when
+    # the state carries none.
+    source_meta_r <- function() {
+      sm <- shared_state$source_meta
+      if (!is.null(sm)) return(sm)
+      list(file_name = shared_state$dataset_name %||% NA_character_)
+    }
+
+    # The cleaned result for the summary line. An error is returned, not
+    # thrown, so the card can say what went wrong.
+    bundle_preview_r <- shiny::reactive({
+      d <- shared_state$data
+      if (is.null(d)) return(NULL)
+      tryCatch(
+        build_cleaned_dataset(d, rules_proxy$get(), recat_r(), norms_r()),
+        error = function(e) e)
+    })
+
+    output$bundle_summary <- shiny::renderUI({
+      d <- shared_state$data
+      if (is.null(d)) {
+        return(empty_state(
+          "No data loaded. Load a dataset on the Data tab to download a cleaned copy."))
+      }
+      res <- bundle_preview_r()
+      if (inherits(res, "error")) {
+        return(help_line(shiny::strong("Cannot build the cleaned copy: "),
+                         conditionMessage(res)))
+      }
+      n_w <- nrow(res$warnings)
+      help_line(sprintf(paste0(
+        "%s rows. Columns: %d before, %d after. Rules applied: %d ",
+        "normalization%s, %d recode%s, %d recategorization%s. %d warning%s."),
+        format(nrow(res$df), big.mark = ","), ncol(d), ncol(res$df),
+        nrow(norms_r()), if (nrow(norms_r()) == 1) "" else "s",
+        nrow(rules_proxy$get()), if (nrow(rules_proxy$get()) == 1) "" else "s",
+        nrow(recat_r()), if (nrow(recat_r()) == 1) "" else "s",
+        n_w, if (n_w == 1) "" else "s"))
+    })
+
+    output$bundle_button <- shiny::renderUI({
+      if (is.null(shared_state$data)) return(NULL)
+      shiny::downloadButton(session$ns("dl_bundle"),
+                            "Download cleaned data (zip)",
+                            class = "btn btn-sm btn-primary")
+    })
+
+    # Builds in a fresh tempfile() directory and zips to `file`; nothing is
+    # written anywhere else. Named so tests can call it directly.
+    bundle_content <- function(file) {
+      d <- shared_state$data
+      if (is.null(d)) stop("No dataset loaded.", call. = FALSE)
+      export_bundle_zip(file, d, source_meta_r(), rules_proxy$get(),
+                        recat_r(), norms_r(), app_version = app_version)
+    }
+
+    output$dl_bundle <- shiny::downloadHandler(
+      filename = function() {
+        sprintf("%s_cleaned_bundle_%s.zip", bundle_id(),
+                format(Sys.time(), "%Y%m%d-%H%M%S"))
+      },
+      content = bundle_content,
+      contentType = "application/zip"
     )
 
     shiny::observeEvent(input$copy_r, {

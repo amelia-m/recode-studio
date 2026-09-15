@@ -15,7 +15,8 @@ mod_data_input_ui <- function(id) {
       "Load data",
       shiny::p("Choose a CSV or Excel file to clean. The app reads a copy and ",
                "never writes to your file: at the end you download a list of ",
-               "rules and a script instead."),
+               "rules and a script, and if you like a cleaned copy of the data ",
+               "as a separate file."),
       shiny::p("No file to hand? Load the bundled example to try every tab.")
     ),
     bslib::card_body(
@@ -51,11 +52,15 @@ mod_data_input_server <- function(id, shared_state) {
     load_df <- function(path, name, sheet = 1) {
       shiny::withProgress(message = sprintf("Loading %s ...", name), value = 0.4, {
         df <- read_dataset(path, sheet = sheet)
+        # Size and checksum now, while `path` exists: an upload's temp file
+        # does not outlast the upload. Only the base name is kept.
+        src <- source_file_meta(path, file_name = name, sheet = sheet)
         shiny::incProgress(0.4, detail = "building metadata ...")
         meta <- build_meta(df)
         shared_state$data         <- df
         shared_state$meta         <- meta
         shared_state$dataset_name <- name
+        shared_state$source_meta  <- src
         shiny::incProgress(0.2, detail = "done")
       })
     }

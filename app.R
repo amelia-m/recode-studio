@@ -69,12 +69,15 @@ ui <- bslib::page_navbar(
 
 server <- function(input, output, session) {
 
-  # App-wide state. mod_data_input writes data/meta/dataset_name; everything
-  # else reads.
+  # App-wide state. mod_data_input writes data/meta/dataset_name/source_meta;
+  # everything else reads. `source_meta` describes the loaded file (base name,
+  # sheet, size, SHA-256, load time; source_file_meta()) for the export
+  # bundle's provenance record.
   shared_state <- shiny::reactiveValues(
     data         = NULL,
     meta         = NULL,
-    dataset_name = NULL
+    dataset_name = NULL,
+    source_meta  = NULL
   )
 
   # In-session rule sets + proxies. Recategorization rules live in their OWN

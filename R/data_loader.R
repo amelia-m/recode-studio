@@ -35,6 +35,51 @@ dataset_sheets <- function(path) {
   if (ext %in% c("xlsx", "xls")) readxl::excel_sheets(path) else character(0)
 }
 
+#' Strip any directory part from a file name, on either separator.
+#'
+#' `basename()` only splits on the host's separators, so on Linux a Windows
+#' style "C:\\dir\\file.csv" would keep its folders. This splits on both.
+file_base_name <- function(name) {
+  if (length(name) == 0 || is.na(name[1])) return(NA_character_)
+  sub("^.*[/\\\\]", "", as.character(name[1]))
+}
+
+#' Describe the file a dataset was loaded from, for the export provenance.
+#'
+#' Computed at LOAD time: an uploaded file lives in a temp path that does not
+#' outlast the upload, so its size and checksum cannot be taken later.
+#'
+#' @param path      Where the bytes are now (an upload's temp `datapath`).
+#' @param file_name The name the user knows the file by (an upload's `name`).
+#'   Only its base name is kept, never a folder.
+#' @param sheet     Excel sheet name or index; ignored for CSV. An index is
+#'   resolved to the sheet's name.
+#' @param loaded_at Load time (POSIXct). Defaults to now.
+#' @return list(file_name, sheet, file_size_bytes, sha256, loaded_at).
+#'   `sheet` is NA for a CSV.
+source_file_meta <- function(path, file_name = path, sheet = NULL,
+                             loaded_at = Sys.time()) {
+  is_excel <- tolower(tools::file_ext(path)) %in% c("xlsx", "xls") ||
+    tolower(tools::file_ext(file_name)) %in% c("xlsx", "xls")
+  sheet_name <- NA_character_
+  if (is_excel) {
+    s <- if (is.null(sheet) || length(sheet) == 0 || is.na(sheet[1])) 1 else sheet[1]
+    if (is.numeric(s)) {
+      sheets <- tryCatch(readxl::excel_sheets(path), error = function(e) character(0))
+      sheet_name <- if (length(sheets) >= s) sheets[[s]] else as.character(s)
+    } else {
+      sheet_name <- as.character(s)
+    }
+  }
+  list(
+    file_name       = file_base_name(file_name),
+    sheet           = sheet_name,
+    file_size_bytes = as.numeric(file.size(path)),
+    sha256          = digest::digest(file = path, algo = "sha256"),
+    loaded_at       = loaded_at
+  )
+}
+
 #' Build column metadata for a dataset.
 #'
 #' A column is a free-text candidate iff ALL hold:
