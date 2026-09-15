@@ -46,6 +46,12 @@ Rank these above any feature.
 7. **Sibling pattern not escaped.** Upstream builds `^<stem>[0-9]+$` without
    escaping, so a stem `a.b` also matches `axb3` and a stem with `(` errors.
    Latent upstream. Fix here: `suggest_sibling_pattern()` in `R/data_loader.R`.
+8. **Generated script matches sibling columns case-insensitively.**
+   tidyselect `matches()` ignores case by default, while `apply_recodes()`
+   uses case-sensitive `grep()`, so a sibling pattern like `^drink[0-9]+$`
+   also rewrites a `Drink3` column in the script but not in the app. Found and
+   fixed here (`ignore.case = FALSE`) while porting normalizations. Upstream's
+   generator uses the same construct; not yet confirmed there by running it.
 
 ## 2. Features and robustness here that upstream lacks
 
@@ -159,3 +165,45 @@ This repo only:
 5. **Empty string values.** Upstream keeps `""` in the unique-values list; this
    repo drops them, so an empty string cannot be targeted from Browse values.
    Unconfirmed whether that difference is deliberate.
+6. **Loose ends found during the normalizations port** (not fixed):
+   - A recode or normalization rule on a column missing from the data makes
+     the generated script error (the recode case predates the port).
+   - Sibling patterns in the generated script go through tidyselect's regex
+     engine, which may differ from base `grep()` on unusual patterns.
+   - An imported normalization with an invalid regex makes
+     `apply_normalizations()` error; the app falls back to raw values, but
+     `validate_normalizations()` has no invalid-regex issue class.
+   - Editing `old_value` in the Recodes table keeps the old `norm_spec` stamp.
+   - Re-selecting an existing value on Browse values resets that rule's
+     `new_value` to the old value (in place, but it overwrites the edit).
+   - The Variable tab's empty state is still a one-column "message" table.
+   - Help popovers were not added to the Clusters tab.
+7. **Pending docs update for the September sync** (CLAUDE.md and README.md
+   not yet updated):
+   - Architecture tree: `R/rule_proxies.R`, `R/rule_warnings.R`,
+     `R/mod_normalize.R`, and the new test files.
+   - Tab order is now 1 Data, 2 Variable, 3 Normalize, 4 Browse values,
+     5 Clusters, 6 Spellcheck, 7 Text analysis, 8 Recodes, 9 Recategorize,
+     10 Preview & export (which hosts import).
+   - State: `rv$norms` and `norms_proxy` (one rule per column);
+     `make_rules_proxy(rv, norms_r, data_cols_r)` stamps `norm_spec` on
+     `add()` only, and editor edits and imports use `set()` to keep stamps.
+   - Ordering invariant: normalize, then recode, then recat, everywhere;
+     Text analysis deliberately reads raw values.
+   - Recode schema is 14 columns with `norm_spec` last (`""` means no
+     normalization, NA means unstamped; not part of the key; 13-column files
+     still read). Normalizations schema and `normalizations_master.csv`.
+   - The agreement test now covers normalize-then-recode.
+   - Gotchas: tidyselect `matches()` case sensitivity; help layer helpers;
+     `merge_recode_rules()` and in-place proxy semantics; the variable banner
+     is built statically to avoid dropped first-render updates.
+   - New warning kinds and the "rules that did nothing" panel.
+   - Lessons recorded upstream that apply here: dplyr data-mask shadowing of
+     local helpers named like dplyr exports; empty states as plain text;
+     Shiny's 300px input container width; DT column widths jumping on sort;
+     `renderUI` inputs dropping early updates; known-harmless console noise
+     (httpuv, jsonlite keep_vec_names, bslib JS copy under antivirus).
+   - README: the Normalize tab, lossy-first semantics, `exact`/`regex` rules
+     that may stop matching after normalization, the new CSV, the cleaned-data
+     export bundle, and removal of the "only exports rules" promise.
+   - Test table counts (1031 at the normalizations commit).
