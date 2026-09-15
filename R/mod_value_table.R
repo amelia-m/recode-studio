@@ -10,7 +10,16 @@ mod_value_table_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Browse values"),
+    card_header_help(
+      "Browse values",
+      shiny::p("Every distinct value in the selected column, with how many ",
+               "rows hold it. Sort by value to spot near-duplicates next to ",
+               "each other, or by count to find the odd ones out."),
+      shiny::p("Click the rows you want to fix, then \"Create recode rule ",
+               "for selected rows\". Each gets a rule on the Recodes tab, ",
+               "where you type the value it should become. Nothing changes ",
+               "in your data file.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       # Case-insensitive matching already exists (every rule minted here is

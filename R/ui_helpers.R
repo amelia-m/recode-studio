@@ -15,12 +15,134 @@ warning_banner <- function(text) {
   )
 }
 
+# --- Help layer ----------------------------------------------------------------
+# Three sizes of in-app guidance, smallest first:
+#   help_line()  one muted line under or next to a control
+#   help_btn()   a small "?" in a card header that opens a short popover
+#   guide_note() a collapsed <details> block for longer "how this works" text
+# All user-visible text passed in goes through htmltools, so it is escaped
+# unless the caller deliberately wraps it in HTML().
+
 #' One line of small muted help text under or next to a control.
 #'
 #' For when a control's effect is not obvious but a full banner would be
 #' overkill.
 help_line <- function(...) {
-  shiny::div(class = "small text-muted mb-2", ...)
+  shiny::div(class = "small text-muted mb-2 rs-help-line", ...)
+}
+
+#' Shared CSS + JS for help_btn() and guide_note().
+#'
+#' Emitted once per page via shiny::singleton(), so every help component can
+#' include it without duplicating the block.
+#'
+#' The script closes an open help popover on a click anywhere outside it.
+#' bslib popovers otherwise close only on a second click of the trigger, or on
+#' Esc, which bslib already handles. While a Bootstrap popover is open its
+#' trigger carries `aria-describedby`, so `.rs-help-btn[aria-describedby]` is
+#' exactly the set of open help popovers; other popovers are left alone. It
+#' listens in the capture phase so a widget that stops propagation still
+#' dismisses.
+guide_css <- function() {
+  shiny::singleton(shiny::tags$head(
+    shiny::tags$style(shiny::HTML("
+      .rs-help-btn { display: inline-block; margin-left: .35rem;
+        color: var(--bs-secondary-color, #6c757d); opacity: .75;
+        cursor: pointer; font-size: .85em; line-height: 1;
+        vertical-align: baseline; }
+      .rs-help-btn:hover, .rs-help-btn:focus-visible {
+        color: var(--bs-primary, #2c3e50); opacity: 1; }
+      .rs-help-btn:focus-visible {
+        outline: 2px solid var(--bs-primary, #2c3e50); outline-offset: 2px;
+        border-radius: 50%; }
+      .rs-help-popover { font-size: .85rem; }
+      .rs-guide-note { border: 1px solid var(--bs-border-color, #dee2e6);
+        border-radius: .4rem; margin-bottom: .75rem;
+        background: var(--bs-body-bg, #fff); }
+      .rs-guide-note > summary { cursor: pointer; padding: .45rem .7rem;
+        font-size: .85rem; font-weight: 600;
+        color: var(--bs-secondary-color, #6c757d);
+        background: var(--bs-secondary-bg, #eef1f4);
+        border-radius: .35rem; }
+      .rs-guide-note > summary:hover {
+        background: var(--bs-tertiary-bg, #e2e6ea);
+        color: var(--bs-body-color, #212529); }
+      .rs-guide-note > summary:focus-visible {
+        outline: 2px solid var(--bs-primary, #2c3e50); outline-offset: 1px; }
+      .rs-guide-note[open] > summary {
+        border-bottom: 1px solid var(--bs-border-color, #dee2e6);
+        border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+      .rs-guide-note-body { padding: .5rem .75rem .65rem; font-size: .85rem; }
+    ")),
+    shiny::tags$script(shiny::HTML("
+      (function() {
+        if (window.rsHelpDismissBound) { return; }
+        window.rsHelpDismissBound = true;
+        document.addEventListener('click', function(ev) {
+          if (!window.bootstrap || !window.bootstrap.Popover) { return; }
+          var open = document.querySelectorAll('.rs-help-btn[aria-describedby]');
+          for (var i = 0; i < open.length; i++) {
+            var trig = open[i];
+            if (trig.contains(ev.target)) { continue; }
+            var pop = document.getElementById(trig.getAttribute('aria-describedby'));
+            if (pop && pop.contains(ev.target)) { continue; }
+            var inst = window.bootstrap.Popover.getInstance(trig);
+            if (inst) { inst.hide(); }
+          }
+        }, true);
+      })();
+    "))
+  ))
+}
+
+#' Small "?" trigger that opens a popover with short help text.
+#'
+#' Put it in a card header next to the title. The trigger is keyboard
+#' reachable (`tabindex="0"`), announced as a button (`role="button"`) and
+#' labelled for screen readers (`aria-label`). Click or press Enter to open;
+#' click it again, click elsewhere, or press Esc to close.
+#'
+#' @param ... popover content (text and/or tags). Plain strings are escaped.
+#' @param title optional popover header; also used in the aria-label.
+help_btn <- function(..., title = NULL) {
+  trigger <- shiny::tags$span(
+    class        = "rs-help-btn",
+    role         = "button",
+    tabindex     = "0",
+    `aria-label` = if (is.null(title)) "Help" else paste("Help:", title),
+    shiny::icon("circle-question")
+  )
+  body <- shiny::div(class = "rs-help-popover", ...)
+  shiny::tagList(guide_css(), bslib::popover(trigger, body, title = title))
+}
+
+#' Collapsed "how this works" block.
+#'
+#' A styled <details>/<summary>: closed by default, so it costs one line until
+#' the user opens it. The summary is keyboard focusable by default and gets a
+#' visible focus ring.
+#'
+#' @param ... block content (text and/or tags). Plain strings are escaped.
+#' @param title summary line shown while collapsed.
+#' @param icon Font Awesome icon name for the summary line.
+#' @param open TRUE to render expanded. Default FALSE.
+guide_note <- function(..., title = "How this works", icon = "circle-info",
+                       open = FALSE) {
+  det <- shiny::tags$details(
+    class = "rs-guide-note",
+    shiny::tags$summary(shiny::icon(icon, class = "me-1"), title),
+    shiny::div(class = "rs-guide-note-body", ...)
+  )
+  if (isTRUE(open)) det$attribs$open <- "open"
+  shiny::tagList(guide_css(), det)
+}
+
+#' Card header text with a help_btn() next to it.
+#'
+#' @param title header text.
+#' @param ... help_btn() content.
+card_header_help <- function(title, ...) {
+  bslib::card_header(shiny::span(title, help_btn(..., title = title)))
 }
 
 #' Muted placeholder shown instead of a table that has nothing to show.

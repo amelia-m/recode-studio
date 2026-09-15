@@ -1,5 +1,5 @@
 # =============================================================================
-# Recode Studio — standalone Shiny app
+# Recode Studio - standalone Shiny app
 # =============================================================================
 # A dataset-agnostic tool for cleaning string variables: load any CSV/Excel,
 # pick a text column, browse values alphabetically or as similarity clusters,
@@ -32,7 +32,7 @@ ui <- bslib::page_navbar(
 
   bslib::nav_panel(
     title = "Recode Studio",
-    uiOutput("selected_var_banner"),
+    mod_variable_banner_ui("variable_banner"),
     bslib::navset_card_tab(
       id = "studio_tabs",
       bslib::nav_panel("1. Data",            value = "data",       mod_data_input_ui("data_input")),
@@ -77,45 +77,19 @@ server <- function(input, output, session) {
     rules = empty_recodes_tibble(),
     recat = empty_recat_tibble()
   )
-  rules_proxy <- list(
-    get = shiny::reactive({ rv$rules }),
-    add = function(new_rules) {
-      cur <- rv$rules
-      cur <- cur[!(cur$rule_id %in% new_rules$rule_id), ]
-      rv$rules <- dplyr::bind_rows(cur, new_rules)
-    },
-    set = function(new_rules) { rv$rules <- new_rules }
-  )
-  recat_proxy <- list(
-    get = shiny::reactive({ rv$recat }),
-    add = function(new_rules) {
-      cur <- rv$recat
-      cur <- cur[!(cur$recat_id %in% new_rules$recat_id), ]
-      rv$recat <- dplyr::bind_rows(cur, new_rules)
-    },
-    set = function(new_rules) { rv$recat <- new_rules }
-  )
+  # add() replaces a colliding rule IN PLACE (see R/rule_proxies.R): rules are
+  # first-match-wins by row order, so moving an edited rule to the end could
+  # change the output.
+  rules_proxy <- make_rules_proxy(rv)
+  recat_proxy <- make_recat_proxy(rv)
 
   mod_data_input_server("data_input", shared_state)
 
-  selected_var_r <- mod_variable_picker_server("variable_picker", shared_state)
-
-  output$selected_var_banner <- shiny::renderUI({
-    v <- selected_var_r()
-    grp <- if (!is.null(v)) column_group(v) else ""
-    shiny::div(
-      class = "alert alert-info",
-      style = "padding: .35em .8em; margin: .6em 0;",
-      shiny::strong("Recoding: "),
-      if (is.null(v))
-        shiny::tags$em("(no variable selected — load data on tab 1, pick a column on tab 2)")
-      else
-        shiny::tagList(
-          shiny::tags$code(v),
-          if (grp != "(none)") shiny::tags$small(sprintf(" — group: %s", grp))
-        )
-    )
-  })
+  # The variable being recoded: one shared selection, changed from the table on
+  # tab 2 or the "Recoding:" banner above the tabs (R/mod_variable_picker.R).
+  # Every per-variable module reads selected_var_r.
+  selected_var_r <- variable_selection_server(shared_state,
+    picker_id = "variable_picker", banner_id = "variable_banner")
 
   unique_values_r <- shiny::reactive({
     v <- selected_var_r()
@@ -159,7 +133,8 @@ server <- function(input, output, session) {
   mod_recategorize_server("recategorize", shared_state, recat_proxy,
     seed_var_r = selected_var_r, recode_basis_r = recode_basis_r)
 
-  mod_preview_export_server("preview_export", shared_state, rules_proxy)
+  mod_preview_export_server("preview_export", shared_state, rules_proxy,
+    recat_proxy = recat_proxy)
   mod_import_recodes_server("import_recodes", shared_state, rules_proxy)
 }
 

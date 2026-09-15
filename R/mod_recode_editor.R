@@ -18,7 +18,15 @@ mod_recode_editor_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Recode rules"),
+    card_header_help(
+      "Recode rules",
+      shiny::p("Every rule made on the other tabs, in one editable table. ",
+               "Each rule says: where this column holds the old value, put ",
+               "the new value instead (or blank it, for action \"delete\")."),
+      shiny::p("Double-click a cell to edit it. Press Validate before ",
+               "exporting: it flags duplicates, rules that feed into each ",
+               "other, and rules whose value is no longer in the data.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       help_line(

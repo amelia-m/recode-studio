@@ -9,7 +9,16 @@ mod_text_analysis_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Text analysis (long-text columns)"),
+    card_header_help(
+      "Text analysis (long-text columns)",
+      shiny::p("For columns holding sentences or paragraphs, where every value ",
+               "is different and clustering or spellcheck are not much use. ",
+               "Shows how long the entries are and which words and phrases ",
+               "come up most."),
+      shiny::p("Type a word under \"Keyword in context\" to read it inside ",
+               "the entries that use it. This tab only looks; it creates no ",
+               "rules.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       shiny::uiOutput(ns("kind_note")),

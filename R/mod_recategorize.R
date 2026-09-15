@@ -20,7 +20,15 @@ mod_recategorize_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Recategorize"),
+    card_header_help(
+      "Recategorize",
+      shiny::p("Make a NEW column that sorts rows into categories, based on ",
+               "words found in one or more existing columns. Your original ",
+               "columns are not changed."),
+      shiny::p("Example: put \"Espresso-based\" in a drink_family column for ",
+               "any row whose drink columns mention espresso or macchiato. ",
+               "Open \"How recategorization works\" below for the full rules.")
+    ),
     bslib::card_body(
       fillable = FALSE,
 
@@ -31,15 +39,13 @@ mod_recategorize_ui <- function(id) {
         "and the R script instead."
       )),
 
-      # --- How it works -------------------------------------------------------
-      shiny::div(
-        class = "alert alert-info",
-        role  = "alert",
-        shiny::tags$h6(shiny::tags$strong("How recategorization works")),
+      # --- How it works (collapsed by default) --------------------------------
+      guide_note(
+        title = "How recategorization works",
         shiny::p(
           "A rule reads across one or more text variables and derives a ",
           shiny::tags$strong("new category column"),
-          " — it never edits your source values. Rows that match get the ",
+          ": it never edits your source values. Rows that match get the ",
           "category you choose; everything else stays blank (NA)."
         ),
         shiny::tags$ul(
@@ -66,7 +72,7 @@ mod_recategorize_ui <- function(id) {
             "says so."))),
           shiny::tags$li(shiny::HTML(paste0(
             "<strong>Export:</strong> this tab writes a recat CSV and a ",
-            "runnable R script — the app never touches your data file.")))
+            "runnable R script. The app never touches your data file.")))
         )
       ),
 

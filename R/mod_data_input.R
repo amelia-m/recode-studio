@@ -11,7 +11,13 @@ mod_data_input_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Load data"),
+    card_header_help(
+      "Load data",
+      shiny::p("Choose a CSV or Excel file to clean. The app reads a copy and ",
+               "never writes to your file: at the end you download a list of ",
+               "rules and a script instead."),
+      shiny::p("No file to hand? Load the bundled example to try every tab.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       shiny::p(

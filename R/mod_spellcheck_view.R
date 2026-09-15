@@ -94,7 +94,15 @@ mod_spellcheck_view_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Spellcheck"),
+    card_header_help(
+      "Spellcheck",
+      shiny::p("Lists values containing words the dictionary does not ",
+               "recognise, with suggested spellings. Click a suggestion, or ",
+               "type your own, to create a rule that fixes that value."),
+      shiny::p("If a flagged word is actually correct (a name, a product, a ",
+               "field term), add it to a dictionary so it stops being ",
+               "flagged, or pick a discipline dictionary that already has it.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       shiny::tags$small(shiny::tags$em(

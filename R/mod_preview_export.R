@@ -43,13 +43,59 @@ preview_diff_table <- function(rules, summary = NULL) {
   out
 }
 
+#' Render the "rules that did nothing" panel.
+#'
+#' Pure (tags only, no reactivity) so it can be unit tested.
+#'
+#' @param warnings a tibble in the `empty_rule_warnings()` schema (see
+#'   R/rule_warnings.R), or NULL when there is nothing to check: no data
+#'   loaded, or no rules of either kind in the session.
+#' @return NULL when `warnings` is NULL; a quiet "No problems found" line when
+#'   it has no rows; otherwise a warning box listing every item in plain
+#'   language.
+rule_warnings_ui <- function(warnings) {
+  if (is.null(warnings)) return(NULL)
+  n <- nrow(warnings)
+  if (n == 0) {
+    return(shiny::div(
+      class = "small text-muted mb-2 rs-rule-warnings-ok",
+      "No problems found: every recode rule matches at least one cell, and ",
+      "no recategorization rule loses rows to the recodes."
+    ))
+  }
+  n_recat <- sum(warnings$kind == "recat_terms_recoded_away")
+  shiny::div(
+    class = "alert alert-warning rs-rule-warnings",
+    role  = "alert",
+    shiny::strong(sprintf("%d rule%s did less than expected.",
+                          n, if (n == 1) "" else "s")),
+    shiny::tags$ul(
+      class = "mb-1",
+      lapply(warnings$message, function(m) shiny::tags$li(m))
+    ),
+    if (n_recat > 0) shiny::tags$small(shiny::tags$em(
+      "Recodes are applied first and recategorization second, so ",
+      "recategorization terms must describe the values as the recodes ",
+      "leave them."))
+  )
+}
+
 
 mod_preview_export_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Preview & export"),
+    card_header_help(
+      "Preview & export",
+      shiny::p("Check what your rules would do to the loaded data, then ",
+               "download them. Nothing here changes your data file."),
+      shiny::p("The recodes CSV is the list of rules; keep it to reload or ",
+               "share them. The R script applies the rules to the data when ",
+               "you run it. A yellow box lists any rule that matched nothing, ",
+               "or that the recodes stopped from matching, so you can fix it ",
+               "before you export.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       warning_banner("This app does NOT modify your data file. It exports a recode CSV and an R script you run yourself."),
@@ -68,6 +114,7 @@ mod_preview_export_ui <- function(id) {
         shiny::column(6, shiny::uiOutput(ns("summary"))),
         shiny::column(6, shiny::uiOutput(ns("buttons")))
       ),
+      shiny::uiOutput(ns("rule_warnings")),
       shiny::hr(),
       shiny::h5("Before / after diff"),
       dt_truncate_css(),
@@ -82,7 +129,11 @@ mod_preview_export_ui <- function(id) {
 }
 
 #' @param rules_proxy list(add=, set=, get=)
-mod_preview_export_server <- function(id, shared_state, rules_proxy) {
+#' @param recat_proxy optional list(add=, set=, get=) over the recat rules.
+#'   Used only to check recat rules for matches lost to the recodes; when NULL
+#'   that check is skipped.
+mod_preview_export_server <- function(id, shared_state, rules_proxy,
+                                      recat_proxy = NULL) {
   shiny::moduleServer(id, function(input, output, session) {
 
     dataset_id <- shiny::reactive({
@@ -120,6 +171,30 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy) {
         shiny::p(shiny::strong("Dataset: "), shared_state$dataset_name %||% "(none)")
       )
     })
+
+    # Rules that did nothing (R/rule_warnings.R). Built from diff_r(), which
+    # has already applied the recodes once, instead of collect_rule_warnings(),
+    # which would apply them a second time; the result is the same.
+    rule_warnings_r <- shiny::reactive({
+      d <- shared_state$data
+      if (is.null(d)) return(NULL)
+      r     <- rules_proxy$get()
+      recat <- if (is.null(recat_proxy)) empty_recat_tibble()
+               else recat_proxy$get()
+      if (is.null(recat)) recat <- empty_recat_tibble()
+      if (nrow(r) == 0 && nrow(recat) == 0) return(NULL)
+      tryCatch({
+        diff <- diff_r()
+        dplyr::bind_rows(
+          empty_rule_warnings(),
+          .warn_recodes_no_match_from_summary(d, r, diff$summary),
+          warn_recat_terms_recoded_away(d, diff$df_after, recat)
+        )},
+        error = function(e) NULL
+      )
+    })
+
+    output$rule_warnings <- shiny::renderUI(rule_warnings_ui(rule_warnings_r()))
 
     output$buttons <- shiny::renderUI({
       shiny::div(style = "text-align:right;",

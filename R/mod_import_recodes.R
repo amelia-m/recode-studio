@@ -95,7 +95,15 @@ mod_import_recodes_ui <- function(id) {
   bslib::card(
     full_screen = FALSE,
     fill        = FALSE,
-    bslib::card_header("Import / merge an existing recodes CSV"),
+    card_header_help(
+      "Import / merge an existing recodes CSV",
+      shiny::p("Load a recodes CSV exported earlier (by you or a colleague) ",
+               "and add its rules to this session, so you can pick up where ",
+               "you left off."),
+      shiny::p("When both have a rule for the same value, choose which one ",
+               "wins: the one already here, the one in the file, or ",
+               "whichever was edited most recently.")
+    ),
     bslib::card_body(
       fillable = FALSE,
       shiny::fileInput(ns("file"), "Upload recodes_master.csv", accept = c(".csv")),
