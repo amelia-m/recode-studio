@@ -51,7 +51,7 @@ Rank these above any feature.
 
 - **Key-collision and n-gram fingerprint clustering** (`R/string_helpers.R`).
   Linear time; word-order invariant and whitespace invariant respectively.
-  Suited to free-text place and cause fields.
+  Suited to short free-text fields with inconsistent spacing or word order.
 - **Reference Taxonomy Matcher** (`match_taxonomy()`, second sub-tab of
   Clusters). Match a column against an approved list and emit rules. An
   in-state county or state list would be the obvious built-in upstream.
@@ -114,3 +114,48 @@ This repo only:
    handler wraps `file.copy()` in a `tryCatch` that always returns TRUE, and
    `file.copy()` can fail silently on Windows. Check `file.exists()` on the
    destination instead.
+7. **The taxonomy matcher's empty state** is still a one-column DT with a
+   "Message" header (`R/mod_cluster_view.R`). The same pattern was replaced by
+   plain text elsewhere during the September port.
+
+## 5. Decisions from the September 2026 upstream sync
+
+- **Git history is not being rewritten** (decided 2026-09-15). Earlier commits
+  carry test fixtures that combined real US place names with violent-death
+  vocabulary. There is no agreement prohibiting disclosure of the partner, so
+  fixing the current tree is enough. The published history has no program
+  names, paths, usernames or person names.
+- **Column normalizations: port.** Whole-column trim/squish/case rules that
+  run before recodes, with the `norm_spec` column in the rule CSV.
+- **Upstream layout rework (numbered left rail, collapsible settings, warnings
+  sidebar): skipped for now.**
+- **Cleaned data export: add it.** This changes the app's promise that it
+  only exports rules and a script. The export bundles the cleaned data, a
+  provenance record (original data file name, row and column counts and
+  similar), and the rules that were applied.
+- **Not ported, deliberately:** upstream's rename of `recodes_master.csv` to
+  `recode_rules.csv` (churn for no behaviour change), and its removal of the
+  per-user dictionary tier (fits a shared team review, not a general tool).
+
+## 6. Open questions and follow-ups
+
+1. **cspell could not be run.** It is not installed on the development machine
+   and no agent was allowed to install it, so the repo's "cspell is clean" rule
+   is unverified for everything added in September. New test fixtures
+   deliberately use misspellings that may need entries in
+   `.cspell/example-typos.txt`. Needs a decision on installing cspell (via npx
+   or globally) to check.
+2. **Should the shared defects in section 4 be fixed in this repo?** They are
+   not upstream ports, so the sync did not touch them. Item 1 (regex
+   metacharacters in a variable name breaking apply/codegen agreement) and
+   item 2 (stale `rule_id` after editing a key column) are silent
+   wrong-output bugs.
+3. **Report the escape defect upstream.** Upstream still renders dataset text
+   as HTML in four tables; see section 1, item 1.
+4. **Text normalization plan** (`docs/superpowers/plans/2026-08-13-text-normalization.md`):
+   the execution approach (subagent-driven or inline) was never chosen, and the
+   plan has not been built. It overlaps partly with the column normalizations
+   port above; reconcile before building either further.
+5. **Empty string values.** Upstream keeps `""` in the unique-values list; this
+   repo drops them, so an empty string cannot be targeted from Browse values.
+   Unconfirmed whether that difference is deliberate.
