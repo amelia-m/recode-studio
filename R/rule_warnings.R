@@ -3,16 +3,20 @@
 # =============================================================================
 #
 # Pure R helpers (no Shiny). Requires string_helpers.R (apply_recodes(),
-# .recode_cols_from_names()) and recat_helpers.R (recat_rule_hits(),
-# empty_recat_tibble()) to be sourced first.
+# apply_normalizations(), recode_norm_specs(), .recode_cols_from_names()) and
+# recat_helpers.R (recat_rule_hits(), empty_recat_tibble()) to be sourced
+# first.
 #
 # These checks look for rules that will quietly do less than their author
 # expects, and describe each one in plain language for someone who does not
 # read R. They never change data or rules; they only report.
 #
-# ORDER OF OPERATIONS, and why the second check exists: on export, the recode
-# rules run FIRST (single pass, first match wins) and the recategorization
-# (recat) rules run SECOND, on the already-recoded data. A recat rule's include
+# ORDER OF OPERATIONS: column normalizations run FIRST, the recode rules run
+# SECOND (single pass, first match wins) and the recategorization (recat)
+# rules run THIRD, on the normalized and recoded data. Recodes are therefore
+# checked against the NORMALIZED data.
+#
+# Why the recat check exists: recat runs after the recodes. A recat rule's include
 # terms are therefore searched for in the RECODED values, not in the values the
 # author saw when writing the rule. If a recode rewrites the wording a recat
 # term looks for (for example "cappucino" -> "cappuccino" when the recat term
@@ -20,23 +24,45 @@
 # compares each recat rule's matches on the raw data with its matches on the
 # recoded data and reports any rule that lost rows.
 #
+# Why the normalization checks exist: a recode rule is written against values
+# as the normalizations leave them, and each rule is stamped with the
+# normalization in force when it was made (`norm_spec`). If the normalization
+# changes afterwards, the value the rule looks for may no longer exist. The
+# drift check compares each stamp with the current normalization and needs no
+# data at all. A normalization that changes nothing, or reaches no column, is
+# reported too.
+#
 # Public functions:
 #   empty_rule_warnings()                      zero-row warnings scaffold
 #   warn_recodes_no_match(df, rules)           recode rules matching no cell
 #   warn_recat_terms_recoded_away(df_raw, df_recoded, recat)
 #                                              recat rules that lost rows to
 #                                              the recodes
-#   collect_rule_warnings(df, rules, recat)    both checks, recodes applied once
+#   .warn_normalizations(normalizations, summary)
+#                                              normalizations that reach no
+#                                              column or change nothing
+#   .warn_norm_spec_drift(rules, normalizations, data_cols)
+#                                              recode rules written under a
+#                                              different normalization
+#   collect_rule_warnings(df, rules, recat, normalizations = NULL)
+#                                              every check, each step applied
+#                                              once
 #
 # Warning columns:
-#   kind     : "recode_no_match" or "recat_terms_recoded_away"
-#   id       : the rule's rule_id (recodes) or recat_id (recat)
-#   target   : the recode's variable, or "out_col = category" for recat
+#   kind     : "normalize_no_target", "normalize_no_change",
+#              "recode_no_match", "norm_spec_drift", "norm_spec_unstamped" or
+#              "recat_terms_recoded_away"
+#   id       : norm_id (normalizations), rule_id (recodes) or recat_id (recat)
+#   target   : the rule's variable (or sibling pattern for a family
+#              normalization), or "out_col = category" for recat
 #   message  : plain-language explanation
 #   n_before : recode_no_match - cells matched (always 0);
-#              recat_terms_recoded_away - rows matched on the raw data
-#   n_after  : recode_no_match - NA;
-#              recat_terms_recoded_away - rows matched on the recoded data
+#              recat_terms_recoded_away - rows matched before the recodes;
+#              normalize_no_target / normalize_no_change - columns reached;
+#              norm_spec_* - NA
+#   n_after  : recat_terms_recoded_away - rows matched after the recodes;
+#              normalize_no_change - cells changed (always 0);
+#              everything else - NA
 # =============================================================================
 
 #' Zero-row tibble with the rule warnings schema.
@@ -123,7 +149,7 @@ warn_recodes_no_match <- function(df, rules) {
 #' first-match-wins between recat rules), once on `df_raw` and once on
 #' `df_recoded`. A rule is reported when the recoded count is lower.
 #'
-#' @param df_raw     The data before recodes.
+#' @param df_raw     The data before recodes (after any normalizations).
 #' @param df_recoded The same data after `apply_recodes()`.
 #' @param recat      Recat rule tibble.
 #' @return Tibble in the `empty_rule_warnings()` schema, one row per rule.
@@ -156,20 +182,196 @@ warn_recat_terms_recoded_away <- function(df_raw, df_recoded, recat) {
   dplyr::bind_rows(rows)
 }
 
-#' Run every rule check, applying the recodes once.
+# --- Normalizations -------------------------------------------------------------
+
+# Short op wording for messages, keyed by op.
+.NORMALIZE_OP_PHRASES <- c(
+  trim      = "trim spaces",
+  squish    = "collapse spaces",
+  lowercase = "lower case",
+  uppercase = "UPPER CASE",
+  titlecase = "Title Case"
+)
+
+# "collapse spaces + Title Case"; "no changes selected" when there are none.
+.ops_phrase <- function(ops) {
+  ops <- .norm_ops_ordered(ops)
+  if (length(ops) == 0) return("no changes selected")
+  paste(unname(.NORMALIZE_OP_PHRASES[ops]), collapse = " + ")
+}
+
+# TRUE when a normalization rule targets a sibling family.
+.norm_is_family <- function(rule) {
+  length(rule$apply_to_siblings) == 1 &&
+    !is.na(rule$apply_to_siblings) && rule$apply_to_siblings &&
+    !is.na(rule$sibling_pattern)
+}
+
+# What a normalization rule targets, in words.
+.normalization_target_phrase <- function(rule) {
+  if (.norm_is_family(rule)) sprintf("columns matching `%s`", rule$sibling_pattern)
+  else sprintf("`%s`", rule$variable)
+}
+
+# A norm_spec stamp in words: "`drink1`: UPPER CASE; `drink2`: UPPER CASE",
+# or "no normalization" for "".
+.norm_spec_phrase <- function(spec) {
+  if (is.na(spec) || !nzchar(spec)) return("no normalization")
+  parts <- strsplit(spec, "|", fixed = TRUE)[[1]]
+  txt <- vapply(parts, function(p) {
+    eq <- regexpr("=", p, fixed = TRUE)
+    if (eq < 1) return(p)
+    sprintf("`%s`: %s", substr(p, 1, eq - 1),
+            .ops_phrase(substr(p, eq + 1, nchar(p))))
+  }, character(1), USE.NAMES = FALSE)
+  paste(txt, collapse = "; ")
+}
+
+#' Normalizations that reach no column, or change no cell.
+#'
+#' @param normalizations Normalization rule tibble.
+#' @param summary `apply_normalizations()$summary` for those rules, in the same
+#'   row order.
+#' @return Tibble in the `empty_rule_warnings()` schema.
+.warn_normalizations <- function(normalizations, summary) {
+  if (is.null(normalizations) || !is.data.frame(normalizations) ||
+      nrow(normalizations) == 0 || is.null(summary) || nrow(summary) == 0) {
+    return(empty_rule_warnings())
+  }
+  rows <- list()
+  for (i in seq_len(min(nrow(normalizations), nrow(summary)))) {
+    r   <- normalizations[i, ]
+    s   <- summary[i, ]
+    tgt <- .normalization_target_phrase(r)
+    ops <- .ops_phrase(r$ops)
+    target <- if (.norm_is_family(r)) as.character(r$sibling_pattern)
+              else as.character(r$variable)
+    if (is.na(s$n_cols) || s$n_cols == 0L) {
+      rows[[length(rows) + 1L]] <- tibble::tibble(
+        kind     = "normalize_no_target",
+        id       = as.character(s$norm_id),
+        target   = target,
+        message  = sprintf(paste0(
+          "The normalization of %s (%s) did nothing: no column in this data ",
+          "matches it. Check the column name, or remove the rule if it no ",
+          "longer applies."), tgt, ops),
+        n_before = 0L,
+        n_after  = NA_integer_)
+    } else if (!is.na(s$cells_changed) && s$cells_changed == 0L) {
+      rows[[length(rows) + 1L]] <- tibble::tibble(
+        kind     = "normalize_no_change",
+        id       = as.character(s$norm_id),
+        target   = target,
+        message  = sprintf(paste0(
+          "The normalization of %s (%s) did nothing: every value is already ",
+          "written that way."), tgt, ops),
+        n_before = as.integer(s$n_cols),
+        n_after  = 0L)
+    }
+  }
+  if (length(rows) == 0) return(empty_rule_warnings())
+  dplyr::bind_rows(rows)
+}
+
+#' Recode rules written under a different normalization than the current one.
+#'
+#' Normalizations run before the recodes, so a recode rule is written against
+#' normalized values. Each rule carries the normalization in force when it was
+#' made (`norm_spec`, stamped by the rules proxy). This compares that stamp
+#' with the normalization in force now:
+#'
+#'   norm_spec_drift     - the rule carries a stamp and it differs from now.
+#'   norm_spec_unstamped - the rule carries no stamp (NA, e.g. from a file
+#'                         made before stamps existed) and a normalization
+#'                         does apply to its columns now, so what it was
+#'                         written against is unknown.
+#'
+#' Silent for an unstamped rule no normalization touches: there is nothing for
+#' it to have shifted under. Decidable from the two rule tables alone;
+#' `data_cols` only resolves sibling rules.
+#'
+#' @param rules Recode rule tibble (a missing `norm_spec` column counts as NA).
+#' @param normalizations Normalization rule tibble (may be NULL / empty).
+#' @param data_cols Column names of the loaded data, or NULL.
+#' @return Tibble in the `empty_rule_warnings()` schema.
+.warn_norm_spec_drift <- function(rules, normalizations, data_cols = NULL) {
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0) {
+    return(empty_rule_warnings())
+  }
+  current <- recode_norm_specs(rules, normalizations, data_cols)
+  stored  <- if ("norm_spec" %in% names(rules)) as.character(rules$norm_spec)
+             else rep(NA_character_, nrow(rules))
+
+  rule_txt <- function(i) {
+    old <- rules$old_value[i]
+    sprintf("The rule that changes %s in `%s`",
+            if (is.na(old)) "a blank (missing) cell" else sprintf("\"%s\"", old),
+            rules$variable[i])
+  }
+
+  rows <- list()
+  for (i in seq_len(nrow(rules))) {
+    cur <- current[i]
+    st  <- stored[i]
+    if (is.na(st)) {
+      if (!nzchar(cur)) next
+      rows[[length(rows) + 1L]] <- tibble::tibble(
+        kind     = "norm_spec_unstamped",
+        id       = as.character(rules$rule_id[i]),
+        target   = as.character(rules$variable[i]),
+        message  = sprintf(paste0(
+          "%s does not record which normalization it was written under (it ",
+          "may come from an older file), and its column is now normalized ",
+          "(%s). Normalizations run before recodes, so check that the value ",
+          "it looks for still appears on the Browse values tab."),
+          rule_txt(i), .norm_spec_phrase(cur)),
+        n_before = NA_integer_,
+        n_after  = NA_integer_)
+      next
+    }
+    if (identical(st, cur)) next
+    rows[[length(rows) + 1L]] <- tibble::tibble(
+      kind     = "norm_spec_drift",
+      id       = as.character(rules$rule_id[i]),
+      target   = as.character(rules$variable[i]),
+      message  = sprintf(paste0(
+        "%s was written when its column had %s, but it now has %s. ",
+        "Normalizations run before recodes, so the value this rule looks for ",
+        "may no longer be in the column. Check the rule against the values on ",
+        "the Browse values tab, and re-create it if needed."),
+        rule_txt(i), .norm_spec_phrase(st), .norm_spec_phrase(cur)),
+      n_before = NA_integer_,
+      n_after  = NA_integer_)
+  }
+  if (length(rows) == 0) return(empty_rule_warnings())
+  dplyr::bind_rows(rows)
+}
+
+#' Run every rule check, applying each step once.
+#'
+#' Normalizations are applied to `df` first, the recodes to that result, and
+#' recat is checked on the frame before and after the recodes, which is the
+#' order the export uses.
 #'
 #' @param df    The raw data.
 #' @param rules Recode rule tibble.
 #' @param recat Recat rule tibble (default: none).
-#' @return Tibble in the `empty_rule_warnings()` schema: recode warnings first,
-#'   then recat warnings.
-collect_rule_warnings <- function(df, rules, recat = empty_recat_tibble()) {
+#' @param normalizations Normalization rule tibble (default: none).
+#' @return Tibble in the `empty_rule_warnings()` schema: normalization
+#'   warnings, then recode warnings (no match, then stamp drift), then recat
+#'   warnings.
+collect_rule_warnings <- function(df, rules, recat = empty_recat_tibble(),
+                                  normalizations = NULL) {
   if (is.null(rules)) rules <- empty_recodes_tibble()
   if (is.null(recat)) recat <- empty_recat_tibble()
-  rec <- apply_recodes(df, rules)
+  nres <- apply_normalizations(df, normalizations)
+  df_n <- nres$df
+  rec  <- apply_recodes(df_n, rules)
   dplyr::bind_rows(
     empty_rule_warnings(),
-    .warn_recodes_no_match_from_summary(df, rules, rec$summary),
-    warn_recat_terms_recoded_away(df, rec$df, recat)
+    .warn_normalizations(normalizations, nres$summary),
+    .warn_recodes_no_match_from_summary(df_n, rules, rec$summary),
+    .warn_norm_spec_drift(rules, normalizations, names(df)),
+    warn_recat_terms_recoded_away(df_n, rec$df, recat)
   )
 }

@@ -16,8 +16,12 @@
 #   validate_recodes(rules, data = NULL)  duplicates, chains, blanks, stale
 #   apply_recodes(df, rules)            single pass, first match wins;
 #                                       returns list(df, summary)
-#   generate_recode_R(rules, dataset_id, source_csv_path = NULL)
+#   generate_recode_R(rules, dataset_id, source_csv_path = NULL,
+#                     normalizations = NULL)
 #                                       emit copyable R script content
+#
+# Column normalizations (whole-column case / whitespace tidying, applied
+# BEFORE the recodes) have their own section at the end of this file.
 # =============================================================================
 
 # --- Schema ------------------------------------------------------------------
@@ -41,7 +45,15 @@ empty_recodes_tibble <- function() {
     author            = character(0),
     created_at        = character(0),
     updated_at        = character(0),
-    source_dataset    = character(0)
+    source_dataset    = character(0),
+    # The column-normalization policy in force for this rule's target columns
+    # when the rule was written (normalization_spec_string()). Normalizations
+    # run BEFORE the recodes, so a rule is authored against NORMALIZED values;
+    # if the normalization later changes, the rule's meaning changes with it.
+    # The stamp is what makes that detectable (warn_norm_spec_drift() in
+    # R/rule_warnings.R). "" = no normalization applied; NA = never stamped
+    # (a file written before this column existed). Not part of the rule key.
+    norm_spec         = character(0)
   )
 }
 
@@ -470,7 +482,8 @@ match_taxonomy <- function(values, taxonomy_targets, frequencies = NULL,
 #' then errored on the missing column.
 #'
 #' @param df A data frame of recode rules (any column types).
-#' @return A tibble with the 13 schema columns first, then any extras.
+#' @return A tibble with the schema columns first, then any extras. A file
+#'   written before `norm_spec` existed reads back with an NA stamp.
 .conform_recodes_schema <- function(df) {
   schema <- empty_recodes_tibble()
   schema_cols <- names(schema)
@@ -494,8 +507,8 @@ match_taxonomy <- function(values, taxonomy_targets, frequencies = NULL,
 #'
 #' @param path    Path to the CSV. A missing file reads as the empty schema.
 #' @param conform When TRUE (default), every column is read as character and
-#'   the result is passed through `.conform_recodes_schema()`: all 13 schema
-#'   columns present, in order, typed, with any extra columns kept after them.
+#'   the result is passed through `.conform_recodes_schema()`: every schema
+#'   column present, in order, typed, with any extra columns kept after them.
 #'   When FALSE, the file is read raw with the schema's column types, exactly
 #'   as before this option existed (columns the file lacks are simply absent,
 #'   and readr warns). Callers that must inspect the raw columns first, such as
@@ -514,32 +527,42 @@ read_recodes <- function(path, conform = TRUE) {
 }
 
 # The unconformed read: schema column types, no column added or reordered.
+#
+# `norm_spec` is typed only when the file carries it. It is the one OPTIONAL
+# schema column (files written before it existed lack it), and naming it in the
+# spec of a file without it would make readr warn about a column that is not
+# missing in any sense that matters.
 .read_recodes_raw <- function(path) {
+  header <- names(readr::read_csv(path, n_max = 0, show_col_types = FALSE,
+                                  col_types = readr::cols(
+                                    .default = readr::col_character())))
+  spec <- list(
+    rule_id           = readr::col_character(),
+    variable          = readr::col_character(),
+    apply_to_siblings = readr::col_logical(),
+    sibling_pattern   = readr::col_character(),
+    match_type        = readr::col_character(),
+    old_value         = readr::col_character(),
+    new_value         = readr::col_character(),
+    action            = readr::col_character(),
+    notes             = readr::col_character(),
+    author            = readr::col_character(),
+    created_at        = readr::col_character(),
+    updated_at        = readr::col_character(),
+    source_dataset    = readr::col_character()
+  )
+  if ("norm_spec" %in% header) spec$norm_spec <- readr::col_character()
   readr::read_csv(
     path,
     na = "<NA>",
     show_col_types = FALSE,
-    col_types = readr::cols(
-      rule_id           = readr::col_character(),
-      variable          = readr::col_character(),
-      apply_to_siblings = readr::col_logical(),
-      sibling_pattern   = readr::col_character(),
-      match_type        = readr::col_character(),
-      old_value         = readr::col_character(),
-      new_value         = readr::col_character(),
-      action            = readr::col_character(),
-      notes             = readr::col_character(),
-      author            = readr::col_character(),
-      created_at        = readr::col_character(),
-      updated_at        = readr::col_character(),
-      source_dataset    = readr::col_character()
-    )
+    col_types = do.call(readr::cols, spec)
   )
 }
 
 #' Write a recodes tibble with explicit NA encoding.
 #'
-#' The rule set is conformed first and exactly the 13 schema columns are
+#' The rule set is conformed first and exactly the schema columns are
 #' written, in schema order. Extra columns (kept by `read_recodes()`) are not
 #' written, so the file on disk always matches the schema.
 write_recodes <- function(rules, path) {
@@ -758,7 +781,17 @@ apply_recodes <- function(df, rules) {
 #'
 #' The generated script expects `df` to be your data frame already in scope.
 #' It uses dplyr::case_when() with `.default` to leave unmatched values intact.
-generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
+#'
+#' @param normalizations Optional column-normalization rules
+#'   (`empty_normalizations_tibble()` schema). Their mutate blocks are emitted
+#'   BEFORE the recode blocks, which is the order the app applies them in
+#'   (`apply_normalizations()` then `apply_recodes()`), so the recode arms
+#'   compare against columns the normalization blocks have already rewritten,
+#'   exactly as the app does. Carrying them in this one file keeps the script
+#'   the whole cleaning rather than half of it.
+generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
+                              normalizations = NULL) {
+  norm_blocks <- .normalize_blocks(normalizations)
   header <- c(
     "# =============================================================================",
     sprintf("# Auto-generated recode script -- dataset: %s", dataset_id),
@@ -778,7 +811,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
   )
 
   if (nrow(rules) == 0) {
-    return(paste(c(header, "# No recode rules defined.", ""),
+    return(paste(c(header, norm_blocks, "# No recode rules defined.", ""),
                  collapse = "\n"))
   }
 
@@ -871,7 +904,10 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
     } else {
       block <- c(
         "df <- df |>",
-        sprintf("  mutate(across(matches(%s), function(.x) {",
+        # ignore.case = FALSE: tidyselect's matches() ignores case by default,
+        # but apply_recodes() resolves the pattern with case-sensitive grep().
+        # Without it the script also recoded e.g. `Drink3` for "^drink[0-9]+$".
+        sprintf("  mutate(across(matches(%s, ignore.case = FALSE), function(.x) {",
                 deparse(as.character(pattern))),
         "    case_when(",
         make_arms(".x"),
@@ -884,5 +920,621 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
     blocks <- c(blocks, block)
   }
 
-  paste(c(header, blocks), collapse = "\n")
+  paste(c(header, norm_blocks, blocks), collapse = "\n")
+}
+
+
+# =============================================================================
+# Column normalizations
+# =============================================================================
+#
+# A normalization is a COLUMN-LEVEL text transform ("title case this column",
+# "collapse its whitespace"), as distinct from a recode, which maps one VALUE
+# to another value.
+#
+# WHY IT IS NOT A RECODE ROW, deliberately. Adding `lowercase` / `titlecase` to
+# RECODE_ACTIONS with `old_value` unused was considered and rejected:
+#   - `recode_rule_id()` hashes (variable, match_type, old_value), so two
+#     normalizations of one column would collide on a single id.
+#   - `apply_recodes()` is a per-cell claim model (first rule to claim a cell
+#     wins). A column-wide transform claims nothing and is shadowed by nothing,
+#     so it does not belong in that ordering at all.
+#   - every recode consumer (the editable rule table, `validate_recodes()`'s
+#     duplicate / chain / stale checks, the three per-rule cell counts) is
+#     written around old_value / new_value and would need a special case.
+# Recategorization is the precedent: also a different KIND of operation, with
+# its own tibble, file and codegen. Normalization follows that pattern. The
+# generated recode script still carries the normalization blocks, so that one
+# file is the whole cleaning.
+#
+# ORDER: normalizations, THEN recodes, THEN recat.
+#   - FIRST, because the app builds its value lists, clusters and spellcheck on
+#     normalized values. Capitalization and whitespace variants otherwise fill
+#     the cluster list with decisions whose answer never changes, each one
+#     producing a recode rule that is pure clutter.
+#   - which means a recode rule is authored against a NORMALIZED value, and the
+#     rule set only means what it says under the normalization it was written
+#     under. That is why every recode rule carries a `norm_spec` stamp (see
+#     "Normalization spec stamp" below) and why the Preview & export tab
+#     reports drift.
+#   - the cost: normalizing first kills an `exact` or `regex` recode written
+#     against the values as delivered. Those rules must be re-authored against
+#     the normalized values; the Normalize tab says so.
+#   - a recode may rewrite a value a normalization just produced. That is the
+#     intended shape ("the user clicked this cluster label and chose a
+#     target"), so it carries no warning of its own.
+#   - BEFORE recat, so recat matches a tidy frame and a recat rule's `category`
+#     literal is never re-cased. Recat term matching is already
+#     case-insensitive, so the case ops cannot cost it a match.
+#
+# LOSSY: `titlecase` cannot be undone ("McKenzie" -> "Mckenzie"). There is no
+# unnormalize. `normalization_preview()` exists so the user sees the exact
+# before / after pairs, with cell counts, before adding the rule.
+#
+# The five ops all COMMUTE (the case ops do not move whitespace, the whitespace
+# ops do not change case), so a rule's ops are stored and applied in one
+# canonical order and a rule needs no ordering semantics of its own. Picking
+# two conflicting case ops is a validation error, not an ordering question.
+#
+# Columns are assumed to be character (read_dataset() reads every column as
+# text). The ops return character, so a non-character column would be coerced,
+# identically in the app and the generated script.
+#
+# Public functions:
+#   empty_normalizations_tibble()                   schema scaffold
+#   normalization_rule_id(variable, sibling_pattern)  stable hash id
+#   normalize_ops_split(x) / normalize_ops_join(x)  ";"-list round trip
+#   apply_normalize_ops(x, ops)                     the transform (vectorised)
+#   apply_normalizations(df, rules)                 list(df, summary)
+#   recode_value_map(df_before, df_after, cols)     before -> after pairs
+#   normalization_preview(df, rules)                pairs + cell counts
+#   validate_normalizations(rules, data = NULL)     issue tibbles
+#   read_normalizations(path) / write_normalizations(rules, path)
+#   merge_normalization_rules(base, overlay)        overlay wins per norm_id
+#   normalization_spec_string(cols, normalizations) the per-column stamp
+#   recode_norm_specs(rules, normalizations, data_cols)  one stamp per rule
+#   stamp_recode_norm_spec(rules, normalizations, data_cols)
+# =============================================================================
+
+# The ops, in the canonical order they are applied and stored in.
+#
+# KEPT: whitespace tidying and the three case forms. Each is presentational:
+# it changes how a value is written, never which value it is.
+# REJECTED, deliberately:
+#   - sentence case: no clearer than title case on the short categorical values
+#     these columns hold, and it mangles proper nouns the same way.
+#   - punctuation stripping / accent folding: those change MEANING, not
+#     presentation ("St. Mark" and "St Mark" are a data decision, not a format
+#     one). The Clusters tab's "normalize before clustering" options do that
+#     for COMPARING values, and it must not be written back into the data.
+#   - blank-to-NA: that is a value mapping, and the recode table already has a
+#     shape for it (an `old_value` of "" with action `delete`). Two ways to
+#     express one thing is how rule sets start disagreeing with each other.
+NORMALIZE_OPS <- c("trim", "squish", "lowercase", "uppercase", "titlecase")
+
+# Ops that set the case. At most one per rule (validate_normalizations()).
+NORMALIZE_CASE_OPS <- c("lowercase", "uppercase", "titlecase")
+
+# Plain-language labels, keyed by op.
+NORMALIZE_OP_LABELS <- c(
+  trim      = "Trim leading and trailing spaces",
+  squish    = "Trim, and collapse repeated inner spaces",
+  lowercase = "lower case",
+  uppercase = "UPPER CASE",
+  titlecase = "Title Case"
+)
+
+# A rule's ops are stored as one delimited string in the CSV.
+NORMALIZE_LIST_SEP <- ";"
+
+#' Empty tibble matching the normalizations CSV schema
+#' (`normalizations_master.csv`).
+#'
+#' `variable` / `apply_to_siblings` / `sibling_pattern` are named exactly as in
+#' the recodes schema so `.recode_cols()` resolves a normalization's target
+#' columns with no second implementation.
+empty_normalizations_tibble <- function() {
+  tibble::tibble(
+    norm_id           = character(0),
+    variable          = character(0),
+    apply_to_siblings = logical(0),
+    sibling_pattern   = character(0),
+    ops               = character(0),   # ";"-joined, canonical order
+    notes             = character(0),
+    author            = character(0),
+    created_at        = character(0),
+    updated_at        = character(0),
+    source_dataset    = character(0)
+  )
+}
+
+#' Split an ops value (a ";"-joined string, or a character vector) into tokens.
+#'
+#' Unknown tokens are KEPT so validate_normalizations() can name them; use
+#' `.norm_ops_ordered()` for the ops that will actually be applied.
+normalize_ops_split <- function(x, sep = NORMALIZE_LIST_SEP) {
+  if (length(x) == 0) return(character(0))
+  x <- as.character(x)
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(character(0))
+  parts <- unlist(strsplit(x, sep, fixed = TRUE), use.names = FALSE)
+  parts <- trimws(parts)
+  unique(parts[nzchar(parts)])
+}
+
+# The recognised ops only, in canonical order: what is applied and emitted.
+.norm_ops_ordered <- function(x) {
+  intersect(NORMALIZE_OPS, normalize_ops_split(x))
+}
+
+#' Canonical storage form of an ops set: recognised ops, canonical order.
+#'
+#' Storing canonically means the tick order in the UI cannot change the rule.
+normalize_ops_join <- function(x, sep = NORMALIZE_LIST_SEP) {
+  paste(.norm_ops_ordered(x), collapse = sep)
+}
+
+#' Apply a normalization's ops to a character vector. NA stays NA.
+#'
+#' This is the single definition of what each op means; the generated R script
+#' emits calls to exactly these functions (see `.NORMALIZE_FUNS`), which is
+#' what keeps the app and the script agreeing cell for cell.
+apply_normalize_ops <- function(x, ops) {
+  ops <- .norm_ops_ordered(ops)
+  if (length(ops) == 0) return(x)
+  for (op in ops) {
+    x <- switch(op,
+      trim      = stringr::str_trim(x),
+      squish    = stringr::str_squish(x),
+      lowercase = tolower(x),
+      uppercase = toupper(x),
+      titlecase = stringr::str_to_title(x),
+      x)
+  }
+  x
+}
+
+#' Stable 12-char hex id for a normalization, derived from its TARGET.
+#'
+#' The ops are deliberately NOT in the id: the target is the identity ("this
+#' column is title case"), so re-adding a column with different ops UPDATES
+#' the rule instead of stacking a second one behind it.
+normalization_rule_id <- function(variable, sibling_pattern = NA_character_) {
+  sibling_pattern <- rep(as.character(sibling_pattern),
+                         length.out = length(variable))
+  raw <- paste(as.character(variable),
+               ifelse(is.na(sibling_pattern), "<NA>", sibling_pattern),
+               sep = "||")
+  vapply(raw, function(x) substr(rlang::hash(x), 1, 12),
+         character(1), USE.NAMES = FALSE)
+}
+
+#' Apply a normalization rule set to a data frame.
+#'
+#' Rules are applied in table order. Two rules resolving to the SAME column
+#' therefore compose (the second sees the first's output), which is harmless
+#' because the ops commute and are idempotent, and `validate_normalizations()`
+#' flags the overlap anyway. A rule whose target is not in `df` is skipped.
+#'
+#' @return list(
+#'   df      = modified df,
+#'   summary = tibble(norm_id, ops, columns, n_cols, cells_changed))
+#'   `columns` is the ";"-joined resolved column list; `ops` the canonical ops.
+apply_normalizations <- function(df, rules) {
+  empty_summary <- tibble::tibble(norm_id = character(0), ops = character(0),
+                                  columns = character(0), n_cols = integer(0),
+                                  cells_changed = integer(0))
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0)
+    return(list(df = df, summary = empty_summary))
+
+  n_rules  <- nrow(rules)
+  ops_txt  <- character(n_rules)
+  cols_txt <- character(n_rules)
+  n_cols   <- integer(n_rules)
+  changed  <- integer(n_rules)
+
+  for (i in seq_len(n_rules)) {
+    r    <- rules[i, ]
+    ops  <- .norm_ops_ordered(r$ops)
+    cols <- .recode_cols(df, r)
+    ops_txt[i]  <- paste(ops, collapse = NORMALIZE_LIST_SEP)
+    cols_txt[i] <- paste(cols, collapse = NORMALIZE_LIST_SEP)
+    n_cols[i]   <- length(cols)
+    if (length(ops) == 0 || length(cols) == 0) next
+    for (col in cols) {
+      before <- df[[col]]
+      after  <- apply_normalize_ops(before, ops)
+      changed[i] <- changed[i] + sum(.cells_differ(before, after))
+      df[[col]] <- after
+    }
+  }
+
+  list(
+    df = df,
+    summary = tibble::tibble(
+      norm_id       = as.character(rules$norm_id),
+      ops           = ops_txt,
+      columns       = cols_txt,
+      n_cols        = as.integer(n_cols),
+      cells_changed = as.integer(changed)
+    )
+  )
+}
+
+#' Distinct before -> after value pairs for the cells that moved.
+#'
+#' @param df_before,df_after Frames of identical shape.
+#' @param cols Columns to compare. NULL compares every shared column; pass the
+#'   rules' target columns on a wide frame.
+#' @return tibble(column, raw_value, clean_value, n_cells); zero rows if nothing
+#'   moved.
+recode_value_map <- function(df_before, df_after, cols = NULL) {
+  empty <- tibble::tibble(column = character(0), raw_value = character(0),
+                          clean_value = character(0), n_cells = integer(0))
+  if (is.null(df_before) || is.null(df_after) || nrow(df_before) == 0)
+    return(empty)
+  shared <- intersect(names(df_before), names(df_after))
+  cols <- if (is.null(cols)) shared else intersect(as.character(cols), shared)
+  if (length(cols) == 0) return(empty)
+
+  rows <- lapply(cols, function(cn) {
+    b <- as.character(df_before[[cn]])
+    a <- as.character(df_after[[cn]])
+    if (length(b) != length(a)) return(NULL)
+    changed <- .cells_differ(b, a)
+    if (!any(changed)) return(NULL)
+    tibble::tibble(column = cn, raw_value = b[changed],
+                   clean_value = a[changed]) |>
+      dplyr::count(column, raw_value, clean_value, name = "n_cells")
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0) return(empty)
+  out <- dplyr::bind_rows(rows)
+  out$n_cells <- as.integer(out$n_cells)
+  out
+}
+
+#' Distinct before -> after value pairs a normalization set would produce.
+#'
+#' Normalization is LOSSY and there is no undo, so this is how the user sees
+#' what it does before adding the rule.
+#'
+#' @return tibble(column, before, after, n_cells), most-affected first.
+normalization_preview <- function(df, rules, max_rows = 500L) {
+  empty <- tibble::tibble(column = character(0), before = character(0),
+                          after = character(0), n_cells = integer(0))
+  if (is.null(df) || is.null(rules) || !is.data.frame(rules) ||
+      nrow(rules) == 0 || nrow(df) == 0) return(empty)
+  res  <- apply_normalizations(df, rules)
+  cols <- unique(unlist(lapply(seq_len(nrow(rules)),
+                               function(i) .recode_cols(df, rules[i, ]))))
+  if (length(cols) == 0) return(empty)
+  map <- recode_value_map(df, res$df, cols)
+  if (nrow(map) == 0) return(empty)
+  names(map)[names(map) == "raw_value"]   <- "before"
+  names(map)[names(map) == "clean_value"] <- "after"
+  map <- map[order(-map$n_cells, map$column, map$before), , drop = FALSE]
+  utils::head(map[, c("column", "before", "after", "n_cells")], max_rows)
+}
+
+#' Validate a normalization rule set.
+#'
+#' Returns a named list of issue tibbles (norm_id, variable, detail; all may be
+#' empty):
+#'   no_ops              : rule with nothing selected
+#'   invalid_ops         : op tokens outside NORMALIZE_OPS
+#'   conflicting_case    : more than one of lower / upper / title in one rule
+#'   duplicate_targets   : the same (variable, sibling_pattern) more than once
+#'   missing_column      : target column absent from `data` (needs `data`)
+#'   overlapping_targets : two rules resolving onto a shared column (needs
+#'                         `data`); legal, applied in table order, but almost
+#'                         always a mistake
+validate_normalizations <- function(rules, data = NULL) {
+  none <- tibble::tibble(norm_id = character(0), variable = character(0),
+                         detail = character(0))
+  out <- list(no_ops = none, invalid_ops = none, conflicting_case = none,
+              duplicate_targets = none, missing_column = none,
+              overlapping_targets = none)
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0) return(out)
+
+  mk <- function(idx, detail) {
+    if (length(idx) == 0) return(none)
+    tibble::tibble(norm_id  = as.character(rules$norm_id[idx]),
+                   variable = as.character(rules$variable[idx]),
+                   detail   = detail)
+  }
+
+  tokens  <- lapply(rules$ops, normalize_ops_split)
+  known   <- lapply(tokens, function(tk) intersect(NORMALIZE_OPS, tk))
+  unknown <- lapply(tokens, function(tk) setdiff(tk, NORMALIZE_OPS))
+
+  idx <- which(vapply(known, length, integer(1)) == 0)
+  out$no_ops <- mk(idx, "No normalization selected, so the rule does nothing.")
+
+  idx <- which(vapply(unknown, length, integer(1)) > 0)
+  out$invalid_ops <- mk(idx, vapply(idx, function(i) sprintf(
+    "Unrecognised normalization%s: %s. Allowed: %s.",
+    if (length(unknown[[i]]) == 1) "" else "s",
+    paste(unknown[[i]], collapse = ", "),
+    paste(NORMALIZE_OPS, collapse = ", ")), character(1)))
+
+  idx <- which(vapply(known, function(k)
+    length(intersect(NORMALIZE_CASE_OPS, k)) > 1L, logical(1)))
+  out$conflicting_case <- mk(idx, vapply(idx, function(i) sprintf(
+    "Two case normalizations on one column (%s). Pick one.",
+    paste(intersect(NORMALIZE_CASE_OPS, known[[i]]), collapse = ", ")),
+    character(1)))
+
+  key <- paste(as.character(rules$variable), "||",
+               ifelse(is.na(rules$sibling_pattern), "<NA>",
+                      as.character(rules$sibling_pattern)))
+  idx <- which(key %in% key[duplicated(key)])
+  out$duplicate_targets <- mk(idx,
+    "The same target has more than one normalization rule.")
+
+  if (!is.null(data) && is.data.frame(data)) {
+    cols <- lapply(seq_len(nrow(rules)),
+                   function(i) .recode_cols(data, rules[i, ]))
+    idx <- which(vapply(cols, length, integer(1)) == 0)
+    out$missing_column <- mk(idx,
+      "No column in the loaded data matches the target.")
+
+    all_cols <- unlist(cols, use.names = FALSE)
+    dup_cols <- unique(all_cols[duplicated(all_cols)])
+    idx <- which(vapply(cols, function(cc) any(cc %in% dup_cols), logical(1)))
+    out$overlapping_targets <- mk(idx, vapply(idx, function(i) sprintf(
+      "Shares column%s %s with another rule; they apply in table order.",
+      if (length(intersect(cols[[i]], dup_cols)) == 1) "" else "s",
+      paste(intersect(cols[[i]], dup_cols), collapse = ", ")), character(1)))
+  }
+  out
+}
+
+
+# --- Normalizations CSV read / write -------------------------------------------
+#
+# Encoding: blanks are written as empty cells, and both "" and `<NA>` read back
+# as NA. Unlike a recode's old_value / new_value, no normalization field gives
+# "" a meaning distinct from NA (an empty sibling pattern is no pattern), so
+# the simpler encoding is safe, and it is the encoding upstream writes.
+
+#' Bring a normalization rule set up to the normalizations CSV schema.
+#'
+#' Every schema column present, in schema order, typed (`apply_to_siblings`
+#' logical, the rest character); a missing column is added as NA; an empty
+#' `sibling_pattern` becomes NA. Extra columns are kept after the schema ones.
+.conform_normalizations_schema <- function(df) {
+  schema_cols <- names(empty_normalizations_tibble())
+  df <- tibble::as_tibble(df)
+  n  <- nrow(df)
+  for (nm in schema_cols) {
+    if (!(nm %in% names(df))) {
+      df[[nm]] <- if (nm == "apply_to_siblings") rep(NA, n)
+                  else rep(NA_character_, n)
+    } else if (nm == "apply_to_siblings") {
+      df[[nm]] <- .as_siblings_flag(df[[nm]])
+    } else {
+      df[[nm]] <- as.character(df[[nm]])
+    }
+  }
+  sp <- df$sibling_pattern
+  df$sibling_pattern[!is.na(sp) & !nzchar(trimws(sp))] <- NA_character_
+  extras <- setdiff(names(df), schema_cols)
+  df[, c(schema_cols, extras), drop = FALSE]
+}
+
+#' Read a normalizations CSV.
+#'
+#' @param path    Path to the CSV. A missing file reads as the empty schema.
+#' @param conform When TRUE (default) the result is conformed to the schema.
+#'   FALSE returns the file's own columns, all character, for callers (the
+#'   import guard) that must inspect them first.
+read_normalizations <- function(path, conform = TRUE) {
+  if (!file.exists(path)) return(empty_normalizations_tibble())
+  df <- readr::read_csv(
+    path,
+    na = c("", "<NA>"),
+    show_col_types = FALSE,
+    col_types = readr::cols(.default = readr::col_character())
+  )
+  if (length(conform) == 1 && !is.na(conform) && conform)
+    .conform_normalizations_schema(df)
+  else df
+}
+
+#' Write a normalizations tibble: exactly the schema columns, in order.
+write_normalizations <- function(rules, path) {
+  if (is.null(rules) || !is.data.frame(rules))
+    rules <- empty_normalizations_tibble()
+  rules <- .conform_normalizations_schema(rules)
+  rules <- rules[, names(empty_normalizations_tibble()), drop = FALSE]
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  readr::write_csv(rules, path, na = "")
+  invisible(path)
+}
+
+#' Combine two normalization rule sets, `overlay` winning per `norm_id`, in
+#' place (the counterpart of `merge_recode_rules()`).
+merge_normalization_rules <- function(base, overlay) {
+  if (is.null(base) || !is.data.frame(base))
+    base <- empty_normalizations_tibble()
+  if (is.null(overlay) || !is.data.frame(overlay))
+    overlay <- empty_normalizations_tibble()
+  if (nrow(overlay) == 0) return(base)
+  if (nrow(base) == 0)    return(overlay)
+  idx <- match(base$norm_id, overlay$norm_id)
+  hit <- !is.na(idx)
+  out <- base
+  if (any(hit)) out[hit, ] <- overlay[idx[hit], names(base), drop = FALSE]
+  extra <- overlay[!(overlay$norm_id %in% base$norm_id), , drop = FALSE]
+  dplyr::bind_rows(out, extra)
+}
+
+
+# --- Normalization spec stamp -------------------------------------------------
+#
+# Normalizations run BEFORE the recodes, so a recode rule is written against
+# NORMALIZED values: the user clicked "Latte" in a cluster that only reads
+# "Latte" because the column is title-cased first. Change the normalization
+# afterwards and the rule's meaning changes with it, silently: an `exact` rule
+# on "Latte" stops matching the moment the column becomes UPPER CASE, and
+# nothing on screen says why the rule went dead.
+#
+# So the policy in force is STAMPED onto each rule when the rule is added to
+# the session (make_rules_proxy() in R/rule_proxies.R), and compared with the
+# policy in force on Preview & export (warn_norm_spec_drift()). The stamp is
+# per-COLUMN, because normalization is per-column policy: a rule on `city` is
+# unaffected by a normalization added to `drink1`.
+#
+# The stamp is a canonical string, not a hash, so a person reading
+# recodes_master.csv can see what it says:
+#   ""                                      no normalization on the target
+#   "city=squish;titlecase"                 one column
+#   "drink1=uppercase|drink2=uppercase"     a sibling rule's columns
+# Columns are sorted, ops are in NORMALIZE_OPS order, so the same policy always
+# produces the same string.
+
+# Canonical ops string applying to ONE column, "" when nothing does. Several
+# normalization rules can reach one column (validate_normalizations() flags the
+# overlap); they apply in table order, so the stamp keeps that order too.
+.normalization_ops_for_column <- function(col, normalizations) {
+  if (is.null(normalizations) || !is.data.frame(normalizations) ||
+      nrow(normalizations) == 0) return("")
+  ops <- character(0)
+  for (i in seq_len(nrow(normalizations))) {
+    if (length(.recode_cols_from_names(col, normalizations[i, ])) == 0) next
+    ops <- c(ops, .norm_ops_ordered(normalizations$ops[i]))
+  }
+  paste(ops, collapse = NORMALIZE_LIST_SEP)
+}
+
+#' Canonical stamp of the normalization policy covering a set of columns.
+#'
+#' @param cols Character vector of column names.
+#' @param normalizations Normalization rule set (may be NULL / empty).
+#' @return Single string; "" when no normalization touches any of `cols`.
+normalization_spec_string <- function(cols, normalizations) {
+  cols <- sort(unique(as.character(cols[!is.na(cols)])))
+  if (length(cols) == 0) return("")
+  parts <- character(0)
+  for (col in cols) {
+    ops <- .normalization_ops_for_column(col, normalizations)
+    if (nzchar(ops)) parts <- c(parts, paste0(col, "=", ops))
+  }
+  paste(parts, collapse = "|")
+}
+
+#' Per-rule normalization stamps for a recode rule set.
+#'
+#' @param rules Recode rules tibble.
+#' @param normalizations Normalization rule set (may be NULL / empty).
+#' @param data_cols Column names of the loaded data. Needed to resolve a
+#'   sibling rule's targets; when NULL, a rule is stamped against its own
+#'   `variable` plus every column the normalizations name, which is the most
+#'   that can be known without data.
+#' @return Character vector, one stamp per rule.
+recode_norm_specs <- function(rules, normalizations, data_cols = NULL) {
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0)
+    return(character(0))
+  if (is.null(data_cols)) {
+    data_cols <- unique(c(as.character(rules$variable),
+                          if (is.data.frame(normalizations))
+                            as.character(normalizations$variable)))
+    data_cols <- data_cols[!is.na(data_cols)]
+  }
+  vapply(seq_len(nrow(rules)), function(i) {
+    cols <- .recode_cols_from_names(data_cols, rules[i, ])
+    normalization_spec_string(cols, normalizations)
+  }, character(1))
+}
+
+#' Stamp a recode rule set with the normalization policy in force.
+#'
+#' Overwrites `norm_spec` on every row given. Called by make_rules_proxy()'s
+#' add(), so a rule records the policy it was authored under.
+stamp_recode_norm_spec <- function(rules, normalizations, data_cols = NULL) {
+  if (is.null(rules) || !is.data.frame(rules)) return(rules)
+  if (nrow(rules) == 0) {
+    rules$norm_spec <- character(0)
+    return(rules)
+  }
+  rules$norm_spec <- recode_norm_specs(rules, normalizations, data_cols)
+  rules
+}
+
+
+# --- Normalization code generation -------------------------------------------
+
+# The op -> function map. The ONLY thing that has to stay in step with
+# apply_normalize_ops(); the agreement test in
+# tests/testthat/test-string_helpers.R runs both over the same frame.
+.NORMALIZE_FUNS <- c(trim      = "str_trim",
+                     squish    = "str_squish",
+                     lowercase = "tolower",
+                     uppercase = "toupper",
+                     titlecase = "str_to_title")
+
+# The nested call for one target token, innermost op first.
+.normalize_expr <- function(token, ops) {
+  expr <- token
+  for (op in .norm_ops_ordered(ops))
+    expr <- sprintf("%s(%s)", .NORMALIZE_FUNS[[op]], expr)
+  expr
+}
+
+# A column name as an R token: bare when syntactic, backticked otherwise.
+.r_col_token <- function(name) {
+  name <- as.character(name)
+  if (!is.na(name) && nzchar(name) && identical(make.names(name), name)) {
+    return(name)
+  }
+  paste0("`", gsub("([`\\\\])", "\\\\\\1", name), "`")
+}
+
+# The mutate blocks a normalization set contributes to the generated script.
+# Emitted BEFORE the recode blocks, which is the applied order.
+#
+# Sibling rules use `matches(pattern, ignore.case = FALSE)`: tidyselect's
+# matches() ignores case by default, while apply_normalizations() resolves the
+# pattern with case-sensitive grep(). Without the flag a pattern could reach a
+# differently-capitalized column in the script only.
+.normalize_blocks <- function(rules) {
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0)
+    return(character(0))
+  blocks <- character(0)
+  for (i in seq_len(nrow(rules))) {
+    r   <- rules[i, ]
+    ops <- .norm_ops_ordered(r$ops)
+    if (length(ops) == 0) next
+    notes <- if ("notes" %in% names(r)) r$notes else NA_character_
+    cmt <- if (!is.na(notes) && nzchar(notes))
+             paste0("  # ", gsub("[\r\n]", " ", notes)) else ""
+    siblings <- length(r$apply_to_siblings) == 1 &&
+                !is.na(r$apply_to_siblings) && r$apply_to_siblings &&
+                !is.na(r$sibling_pattern)
+    if (siblings) {
+      blocks <- c(blocks,
+        "df <- df |>",
+        sprintf(paste0("  mutate(across(matches(%s, ignore.case = FALSE), ",
+                       "function(.x) %s))%s"),
+                deparse(as.character(r$sibling_pattern)),
+                .normalize_expr(".x", ops), cmt),
+        "")
+    } else {
+      tok <- .r_col_token(r$variable)
+      blocks <- c(blocks,
+        "df <- df |>",
+        sprintf("  mutate(%s = %s)%s", tok, .normalize_expr(tok, ops), cmt),
+        "")
+    }
+  }
+  if (length(blocks) == 0) return(character(0))
+  c("# --- Column normalizations ---------------------------------------------------",
+    "# Applied BEFORE every recode below, because the recode rules were written",
+    "# against normalized values (Recode Studio shows values that way).",
+    "# Lossy and not reversible: Title Case turns McKenzie into Mckenzie.",
+    "",
+    blocks,
+    "# --- Recodes ------------------------------------------------------------------",
+    "")
 }

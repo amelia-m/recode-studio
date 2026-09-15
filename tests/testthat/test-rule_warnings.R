@@ -1,7 +1,8 @@
 # Run with: testthat::test_dir("tests/testthat")
 #
 # Tests for the rule checks in R/rule_warnings.R: recode rules that match
-# nothing, and recat rules whose include terms the recodes rewrote.
+# nothing, recat rules whose include terms the recodes rewrote, normalizations
+# that do nothing, and recode rules written under a different normalization.
 
 source(file.path("..", "..", "R", "string_helpers.R"))
 source(file.path("..", "..", "R", "recat_helpers.R"))
@@ -216,4 +217,87 @@ test_that("a clean rule set produces no warnings", {
   expect_equal(nrow(w), 0L)
   expect_warning_schema(w)
   expect_equal(nrow(collect_rule_warnings(df, empty_recodes_tibble())), 0L)
+})
+
+
+# --- Normalizations ------------------------------------------------------------
+
+rw_norm <- function(variable, ops, siblings = FALSE, pattern = NA_character_) {
+  pat <- if (siblings) pattern else NA_character_
+  tibble::tibble(
+    norm_id = normalization_rule_id(variable, pat), variable = variable,
+    apply_to_siblings = siblings, sibling_pattern = pat,
+    ops = normalize_ops_join(ops), notes = NA_character_, author = "test",
+    created_at = "2026-01-01T00:00:00", updated_at = "2026-01-01T00:00:00",
+    source_dataset = "cafe")
+}
+
+test_that("a normalization with no target or no effect is reported", {
+  df <- tibble::tibble(drink1 = c("latte", "mocha"), city = c("Uptown", "Old Town"))
+  norms <- dplyr::bind_rows(rw_norm("gone", "uppercase"),
+                            rw_norm("city", "titlecase"),
+                            rw_norm("drink1", "uppercase"))
+  s <- apply_normalizations(df, norms)$summary
+  w <- .warn_normalizations(norms, s)
+  expect_warning_schema(w)
+  expect_identical(w$kind, c("normalize_no_target", "normalize_no_change"))
+  expect_identical(w$id, norms$norm_id[1:2])
+  expect_match(w$message[1], "no column in this data matches it", fixed = TRUE)
+  expect_match(w$message[2], "`city` (Title Case)", fixed = TRUE)
+  expect_equal(nrow(.warn_normalizations(empty_normalizations_tibble(), s)), 0L)
+})
+
+test_that("a recode written under a different normalization is reported", {
+  df <- tibble::tibble(city = c("uptown", "UPTOWN"))
+  authored_under <- rw_norm("city", "titlecase")
+  rules <- stamp_recode_norm_spec(
+    rw_recode("city", "exact", "Uptown", "Uptown East"), authored_under,
+    names(df))
+  expect_equal(rules$norm_spec, "city=titlecase")
+
+  applied_under <- rw_norm("city", "uppercase")
+  w <- collect_rule_warnings(df, rules, normalizations = applied_under)
+  expect_warning_schema(w)
+  expect_true("norm_spec_drift" %in% w$kind)
+  msg <- w$message[w$kind == "norm_spec_drift"]
+  expect_match(msg, "`city`: Title Case", fixed = TRUE)
+  expect_match(msg, "`city`: UPPER CASE", fixed = TRUE)
+  # The rule did nothing, and says so separately.
+  expect_true("recode_no_match" %in% w$kind)
+
+  quiet <- collect_rule_warnings(df, rules, normalizations = authored_under)
+  expect_equal(nrow(quiet), 0L)
+
+  # Removing the normalization is drift too.
+  gone <- collect_rule_warnings(df, rules)
+  expect_match(gone$message[gone$kind == "norm_spec_drift"],
+               "now has no normalization", fixed = TRUE)
+})
+
+test_that("an unstamped rule is reported only when a normalization applies", {
+  df    <- tibble::tibble(city = c("uptown", "UPTOWN"), notes = c("a", "b"))
+  rules <- rw_recode("city", "trimmed_ci", "uptown", "Uptown")
+  expect_false("norm_spec" %in% names(rules))
+
+  loud <- .warn_norm_spec_drift(rules, rw_norm("city", "uppercase"), names(df))
+  expect_identical(loud$kind, "norm_spec_unstamped")
+  quiet <- .warn_norm_spec_drift(rules, rw_norm("notes", "uppercase"), names(df))
+  expect_equal(nrow(quiet), 0L)
+  expect_equal(nrow(.warn_norm_spec_drift(rules, NULL, names(df))), 0L)
+
+  stamped_blank <- rules
+  stamped_blank$norm_spec <- ""
+  expect_equal(nrow(.warn_norm_spec_drift(stamped_blank, NULL, names(df))), 0L)
+})
+
+test_that("recode checks run on the normalized data, in export order", {
+  df <- tibble::tibble(drink1 = c(" LATTE", "latte "))
+  norms <- rw_norm("drink1", c("trim", "lowercase"))
+  rules <- stamp_recode_norm_spec(rw_recode("drink1", "exact", "latte", "Latte"),
+                                  norms, names(df))
+  # On the raw data this exact rule matches nothing; normalized, it matches.
+  expect_identical(collect_rule_warnings(df, rules)$kind,
+                   c("recode_no_match", "norm_spec_drift"))
+  expect_equal(nrow(collect_rule_warnings(df, rules, normalizations = norms)),
+               0L)
 })

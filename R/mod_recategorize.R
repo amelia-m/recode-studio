@@ -440,6 +440,12 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
                else tryCatch(recode_basis_r(), error = function(e) NULL)
       d <- if (is.null(basis) || is.null(basis$df)) d_raw else basis$df
       n_recodes <- if (is.null(basis)) NA_integer_ else basis$n_rules
+      n_norms   <- if (is.null(basis) || is.null(basis$n_norms)) 0L
+                   else basis$n_norms
+      # The frame just before the recodes (normalized, when normalizations
+      # exist), so a shortfall is attributable to the recodes.
+      d_before <- if (is.null(basis) || is.null(basis$df_before_recodes)) d_raw
+                  else basis$df_before_recodes
 
       r <- current_rule()[1, ]
       cols <- intersect(recat_split(r$vars), names(d))
@@ -453,8 +459,8 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       n_hit <- sum(hit)
       # The same rule against the untouched frame: a shortfall means the
       # recodes rewrote wording the include terms look for.
-      n_hit_raw <- if (identical(d, d_raw)) n_hit
-                   else sum(recat_rule_hits(d_raw, r))
+      n_hit_raw <- if (identical(d, d_before)) n_hit
+                   else sum(recat_rule_hits(d_before, r))
       pct <- if (nrow(d) > 0) round(100 * n_hit / nrow(d), 1) else 0
 
       # EVERY selected column, not just the first: a rule over several siblings
@@ -484,22 +490,30 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
               paste0("Counted on the RAW data — no recode rules were available ",
                      "to apply first. Recodes run before recat, so the export ",
                      "may match fewer rows than this.")
+            else if (n_recodes == 0 && n_norms > 0)
+              sprintf(paste0("Counted after applying %d normalization%s, as ",
+                             "the export does. There are no recode rules yet."),
+                      n_norms, if (n_norms == 1) "" else "s")
             else if (n_recodes == 0)
               paste0("Counted after the recodes, as the export does. There are ",
                      "no recode rules yet, so this is the raw data.")
             else
-              sprintf(paste0("Counted AFTER applying %d recode rule%s, which ",
-                             "is the order the exported scripts use: recodes ",
-                             "first, recategorization second."),
+              sprintf(paste0("Counted AFTER applying %s%d recode rule%s, which ",
+                             "is the order the exported scripts use: ",
+                             "normalizations, then recodes, then ",
+                             "recategorization."),
+                      if (n_norms > 0) sprintf("%d normalization%s and ", n_norms,
+                                               if (n_norms == 1) "" else "s")
+                      else "",
                       n_recodes, if (n_recodes == 1) "" else "s")),
 
           if (!is.na(n_recodes) && n_hit_raw > n_hit) shiny::div(
             class = "alert alert-warning py-1 px-2",
             shiny::tags$small(sprintf(
-              paste0("This rule matches %d row%s in the raw data but %d after ",
-                     "the recodes: the recodes rewrote wording your include ",
-                     "terms look for. Restate the terms against the recoded ",
-                     "values — %d is what the export will produce."),
+              paste0("This rule matches %d row%s before the recodes but %d ",
+                     "after: the recodes rewrote wording your include terms ",
+                     "look for. Restate the terms against the recoded values; ",
+                     "%d is what the export will produce."),
               n_hit_raw, if (n_hit_raw == 1) "" else "s", n_hit, n_hit))),
 
           if (!is.null(by_col) && nrow(by_col) > 0) shiny::tagList(

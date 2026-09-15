@@ -7,7 +7,7 @@ test_that("empty_recodes_tibble has expected schema", {
   expect_named(x, c(
     "rule_id", "variable", "apply_to_siblings", "sibling_pattern",
     "match_type", "old_value", "new_value", "action", "notes",
-    "author", "created_at", "updated_at", "source_dataset"
+    "author", "created_at", "updated_at", "source_dataset", "norm_spec"
   ))
   expect_equal(nrow(x), 0)
 })
@@ -435,6 +435,94 @@ test_that("generate_recode_R agrees with apply_recodes cell for cell", {
   }
 })
 
+# The same guard with column normalizations in front of the recodes. The app
+# runs apply_normalizations() then apply_recodes(); the script runs the
+# normalization blocks then the recode blocks. They must agree cell for cell,
+# including a sibling-family normalization and a non-syntactic column name
+# (which the script has to backtick).
+mk_norm_rule <- function(variable, ops, siblings = FALSE,
+                         pattern = NA_character_) {
+  tibble::tibble(
+    norm_id           = normalization_rule_id(variable,
+                                              if (siblings) pattern
+                                              else NA_character_),
+    variable          = variable,
+    apply_to_siblings = siblings,
+    sibling_pattern   = if (siblings) pattern else NA_character_,
+    ops               = normalize_ops_join(ops),
+    notes             = NA_character_,
+    author            = "test",
+    created_at        = "2026-08-13T00:00:00",
+    updated_at        = "2026-08-13T00:00:00",
+    source_dataset    = "synthetic"
+  )
+}
+
+synthetic_norm_df <- function() {
+  df <- synthetic_df()
+  df$drink1[2] <- "  LATTE "
+  df$drink2[1] <- "Cap"
+  df$`drink notes` <- c("  extra   hot ", "OAT milk", NA, "", "no whip", "x")
+  # A column the family pattern must NOT reach: capitalized differently, so a
+  # case-insensitive matches() in the script would wrongly include it.
+  df$Drink3 <- c("CAP", "cap", NA, "cap", "Cap", "cap")
+  df
+}
+
+synthetic_norms <- function() {
+  dplyr::bind_rows(
+    mk_norm_rule("drink1", c("squish", "lowercase"), siblings = TRUE,
+                 pattern = "^drink[0-9]+$"),
+    mk_norm_rule("drink notes", c("titlecase", "squish")),
+    mk_norm_rule("status", "uppercase")
+  )
+}
+
+synthetic_norm_rules <- function() {
+  dplyr::bind_rows(
+    synthetic_rules(),
+    # Written against the NORMALIZED values.
+    mk_rule("drink notes", "exact", "Oat Milk", "oat milk"),
+    mk_rule("status", "exact", "OPEN", "Open"),
+    mk_rule("Drink3", "exact", "cap", "cappuccino")
+  )
+}
+
+eval_generated_with_norms <- function(df, rules, norms) {
+  code <- generate_recode_R(rules, dataset_id = "synthetic",
+                            normalizations = norms)
+  env  <- new.env(parent = globalenv())
+  env$df <- df
+  suppressWarnings(suppressMessages(eval(parse(text = code), envir = env)))
+  env$df
+}
+
+test_that("generated script agrees with normalize-then-recode cell for cell", {
+  df    <- synthetic_norm_df()
+  rules <- synthetic_norm_rules()
+  norms <- synthetic_norms()
+  applied <- apply_recodes(apply_normalizations(df, norms)$df, rules)$df
+  genned  <- eval_generated_with_norms(df, rules, norms)
+  expect_identical(names(genned), names(applied))
+  for (col in names(df)) {
+    expect_identical(genned[[col]], applied[[col]],
+                     info = sprintf("column %s", col))
+  }
+  # The normalizations really ran, in both engines, before the recodes.
+  expect_identical(applied$`drink notes`[1:2], c("Extra Hot", "oat milk"))
+  expect_identical(applied$drink1[2], "latte")
+  expect_identical(applied$status[c(1, 3)], c("Open", "CLOSED"))
+  # The family pattern is case-sensitive in both engines.
+  expect_identical(applied$Drink3[1], "CAP")
+  expect_identical(applied$Drink3[2], "cappuccino")
+  # And the non-syntactic name is backticked in the script.
+  code <- generate_recode_R(rules, "synthetic", normalizations = norms)
+  expect_true(grepl("`drink notes` = str_to_title(str_squish(`drink notes`))",
+                    code, fixed = TRUE))
+  expect_lt(regexpr("Column normalizations", code, fixed = TRUE)[1],
+            regexpr("case_when(", code, fixed = TRUE)[1])
+})
+
 test_that("mixed match_types on one column emit a single case_when block", {
   # Pre-fix, grouping by (effective_pattern, match_type) emitted the `exact`
   # block first and the `trimmed_ci` block second, so the trimmed block
@@ -798,7 +886,8 @@ test_that("read_recodes(conform = FALSE) is the unconformed raw read", {
       new_value = readr::col_character(), action = readr::col_character(),
       notes = readr::col_character(), author = readr::col_character(),
       created_at = readr::col_character(), updated_at = readr::col_character(),
-      source_dataset = readr::col_character()))
+      source_dataset = readr::col_character(),
+      norm_spec = readr::col_character()))
   # Compare columns; readr attaches spec/problems attributes to each read.
   expect_identical(lapply(raw, identity), lapply(expected, identity))
 

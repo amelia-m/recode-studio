@@ -2,7 +2,11 @@
 # Preview + export
 # =============================================================================
 # Diff view (before / after / affected cells), download buttons for the
-# master CSV + recode R script, copy-to-clipboard for the R.
+# master CSVs + recode R script, copy-to-clipboard for the R.
+#
+# Everything here follows the export order: column normalizations first, then
+# the recodes (on the normalized data), then recat. The normalization summary
+# sits above the recode diff for that reason.
 # =============================================================================
 
 # Per-rule count columns in the diff table, in display order, each read from
@@ -43,6 +47,44 @@ preview_diff_table <- function(rules, summary = NULL) {
   out
 }
 
+#' Per-rule summary of what the normalizations do to the loaded data.
+#'
+#' Pure (no Shiny) so it can be unit tested.
+#'
+#' @param normalizations normalization rules tibble.
+#' @param summary apply_normalizations()$summary for those rules, or NULL / an
+#'   empty tibble when no data is loaded.
+#' @return tibble: target, changes, columns, cells_changed. `target` is the
+#'   variable, or the sibling pattern for a family rule; `changes` is the ops
+#'   in words; `columns` / `cells_changed` are NA without a summary.
+normalization_summary_table <- function(normalizations, summary = NULL) {
+  if (is.null(normalizations) || !is.data.frame(normalizations) ||
+      nrow(normalizations) == 0) {
+    return(tibble::tibble(target = character(0), changes = character(0),
+                          columns = character(0), cells_changed = integer(0)))
+  }
+  n <- nrow(normalizations)
+  family <- !is.na(normalizations$apply_to_siblings) &
+    normalizations$apply_to_siblings & !is.na(normalizations$sibling_pattern)
+  target <- ifelse(family, normalizations$sibling_pattern,
+                   normalizations$variable)
+  changes <- vapply(normalizations$ops, .ops_phrase, character(1),
+                    USE.NAMES = FALSE)
+  has_rows <- !is.null(summary) && nrow(summary) > 0 &&
+    "norm_id" %in% names(summary)
+  idx <- if (has_rows) match(normalizations$norm_id, summary$norm_id)
+         else rep(NA_integer_, n)
+  columns <- if (has_rows) {
+    cols <- summary$columns[idx]
+    ifelse(is.na(cols), NA_character_,
+           gsub(NORMALIZE_LIST_SEP, ", ", cols, fixed = TRUE))
+  } else rep(NA_character_, n)
+  cells <- if (has_rows) as.integer(summary$cells_changed[idx])
+           else rep(NA_integer_, n)
+  tibble::tibble(target = as.character(target), changes = changes,
+                 columns = columns, cells_changed = cells)
+}
+
 #' Render the "rules that did nothing" panel.
 #'
 #' Pure (tags only, no reactivity) so it can be unit tested.
@@ -59,11 +101,14 @@ rule_warnings_ui <- function(warnings) {
   if (n == 0) {
     return(shiny::div(
       class = "small text-muted mb-2 rs-rule-warnings-ok",
-      "No problems found: every recode rule matches at least one cell, and ",
-      "no recategorization rule loses rows to the recodes."
+      "No problems found: every normalization changes something, every ",
+      "recode rule matches at least one cell and was written under the ",
+      "current normalization, and no recategorization rule loses rows to the ",
+      "recodes."
     ))
   }
   n_recat <- sum(warnings$kind == "recat_terms_recoded_away")
+  n_drift <- sum(warnings$kind %in% c("norm_spec_drift", "norm_spec_unstamped"))
   shiny::div(
     class = "alert alert-warning rs-rule-warnings",
     role  = "alert",
@@ -73,7 +118,10 @@ rule_warnings_ui <- function(warnings) {
       class = "mb-1",
       lapply(warnings$message, function(m) shiny::tags$li(m))
     ),
-    if (n_recat > 0) shiny::tags$small(shiny::tags$em(
+    if (n_drift > 0) shiny::tags$small(class = "d-block", shiny::tags$em(
+      "Normalizations are applied before the recodes, so recode rules must ",
+      "describe the values as the normalizations leave them.")),
+    if (n_recat > 0) shiny::tags$small(class = "d-block", shiny::tags$em(
       "Recodes are applied first and recategorization second, so ",
       "recategorization terms must describe the values as the recodes ",
       "leave them."))
@@ -90,15 +138,16 @@ mod_preview_export_ui <- function(id) {
       "Preview & export",
       shiny::p("Check what your rules would do to the loaded data, then ",
                "download them. Nothing here changes your data file."),
-      shiny::p("The recodes CSV is the list of rules; keep it to reload or ",
-               "share them. The R script applies the rules to the data when ",
-               "you run it. A yellow box lists any rule that matched nothing, ",
-               "or that the recodes stopped from matching, so you can fix it ",
-               "before you export.")
+      shiny::p("The recodes CSV and the normalizations CSV are the lists of ",
+               "rules; keep them to reload or share them. The R script applies ",
+               "the normalizations and then the recodes to the data when you ",
+               "run it. A yellow box lists any rule that did nothing, was ",
+               "written under a different normalization, or that the recodes ",
+               "stopped from matching, so you can fix it before you export.")
     ),
     bslib::card_body(
       fillable = FALSE,
-      warning_banner("This app does NOT modify your data file. It exports a recode CSV and an R script you run yourself."),
+      warning_banner("This app does NOT modify your data file. It exports rule CSVs and an R script you run yourself."),
       help_line(
         "Each rule reports three counts, taken against your data. ",
         shiny::strong("Matched"), " = cells the rule hit. ",
@@ -116,6 +165,16 @@ mod_preview_export_ui <- function(id) {
       ),
       shiny::uiOutput(ns("rule_warnings")),
       shiny::hr(),
+      shiny::h5("Column normalizations (applied first)"),
+      help_line(
+        "Each normalization runs before any recode. ",
+        shiny::strong("Columns"), " = the columns it reaches in the loaded ",
+        "data. ", shiny::strong("Cells changed"), " = cells whose value it ",
+        "rewrote. The recode counts below are taken on the normalized values."
+      ),
+      shiny::uiOutput(ns("norm_empty")),
+      DT::DTOutput(ns("norm_tbl")),
+      shiny::hr(),
       shiny::h5("Before / after diff"),
       dt_truncate_css(),
       dt_truncate_hint(),
@@ -132,8 +191,10 @@ mod_preview_export_ui <- function(id) {
 #' @param recat_proxy optional list(add=, set=, get=) over the recat rules.
 #'   Used only to check recat rules for matches lost to the recodes; when NULL
 #'   that check is skipped.
+#' @param norms_proxy optional list(add=, set=, get=) over the normalization
+#'   rules. When NULL the session is treated as having no normalizations.
 mod_preview_export_server <- function(id, shared_state, rules_proxy,
-                                      recat_proxy = NULL) {
+                                      recat_proxy = NULL, norms_proxy = NULL) {
   shiny::moduleServer(id, function(input, output, session) {
 
     dataset_id <- shiny::reactive({
@@ -141,29 +202,54 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
       tools::file_path_sans_ext(basename(nm))
     })
 
+    norms_r <- shiny::reactive({
+      n <- if (is.null(norms_proxy)) NULL else norms_proxy$get()
+      if (is.null(n)) empty_normalizations_tibble() else n
+    })
+
+    # Normalize, then recode: the export order. `df_normalized` is the frame
+    # the recodes see; `df_after` the frame recat would see.
     diff_r <- shiny::reactive({
       r <- rules_proxy$get()
       d <- shared_state$data
-      if (nrow(r) == 0 || is.null(d)) {
-        return(list(rules = r, summary = tibble::tibble(), df_after = d))
+      nn <- norms_r()
+      if (is.null(d)) {
+        return(list(rules = r, summary = tibble::tibble(),
+                    norm_summary = tibble::tibble(),
+                    df_normalized = NULL, df_after = NULL))
       }
-      res <- apply_recodes(d, r)
-      list(rules = r, summary = res$summary, df_after = res$df)
+      nres <- apply_normalizations(d, nn)
+      if (nrow(r) == 0) {
+        return(list(rules = r, summary = tibble::tibble(),
+                    norm_summary = nres$summary,
+                    df_normalized = nres$df, df_after = nres$df))
+      }
+      res <- apply_recodes(nres$df, r)
+      list(rules = r, summary = res$summary, norm_summary = nres$summary,
+           df_normalized = nres$df, df_after = res$df)
     })
 
     output$summary <- shiny::renderUI({
       r <- rules_proxy$get()
-      if (nrow(r) == 0) return(shiny::tags$em("No rules in session."))
+      nn <- norms_r()
+      if (nrow(r) == 0 && nrow(nn) == 0)
+        return(shiny::tags$em("No rules in session."))
       diff <- diff_r()
       if (is.null(shared_state$data)) {
         return(shiny::tagList(
+          shiny::p(shiny::strong("Normalizations: "), nrow(nn)),
           shiny::p(shiny::strong("Rules: "), nrow(r)),
           shiny::p(shiny::tags$em("Load a dataset to count the cells these rules would change."))
         ))
       }
       s <- diff$summary
       total <- function(nm) if (nm %in% names(s)) sum(s[[nm]], na.rm = TRUE) else 0L
+      ns_sum <- diff$norm_summary
       shiny::tagList(
+        shiny::p(shiny::strong("Normalizations: "), nrow(nn),
+                 if (nrow(nn) > 0 && "cells_changed" %in% names(ns_sum))
+                   sprintf(" (%d cells changed)",
+                           as.integer(sum(ns_sum$cells_changed, na.rm = TRUE)))),
         shiny::p(shiny::strong("Rules: "), nrow(r)),
         shiny::p(shiny::strong("Cells matched: "), total("cells_matched")),
         shiny::p(shiny::strong("Cells changed: "), total("cells_changed")),
@@ -173,22 +259,28 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
     })
 
     # Rules that did nothing (R/rule_warnings.R). Built from diff_r(), which
-    # has already applied the recodes once, instead of collect_rule_warnings(),
-    # which would apply them a second time; the result is the same.
+    # has already applied the normalizations and recodes once, instead of
+    # collect_rule_warnings(), which would apply them a second time; the result
+    # is the same (a test pins that).
     rule_warnings_r <- shiny::reactive({
       d <- shared_state$data
       if (is.null(d)) return(NULL)
       r     <- rules_proxy$get()
+      nn    <- norms_r()
       recat <- if (is.null(recat_proxy)) empty_recat_tibble()
                else recat_proxy$get()
       if (is.null(recat)) recat <- empty_recat_tibble()
-      if (nrow(r) == 0 && nrow(recat) == 0) return(NULL)
+      if (nrow(r) == 0 && nrow(recat) == 0 && nrow(nn) == 0) return(NULL)
       tryCatch({
         diff <- diff_r()
         dplyr::bind_rows(
           empty_rule_warnings(),
-          .warn_recodes_no_match_from_summary(d, r, diff$summary),
-          warn_recat_terms_recoded_away(d, diff$df_after, recat)
+          .warn_normalizations(nn, diff$norm_summary),
+          .warn_recodes_no_match_from_summary(diff$df_normalized, r,
+                                              diff$summary),
+          .warn_norm_spec_drift(r, nn, names(d)),
+          warn_recat_terms_recoded_away(diff$df_normalized, diff$df_after,
+                                        recat)
         )},
         error = function(e) NULL
       )
@@ -199,6 +291,9 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
     output$buttons <- shiny::renderUI({
       shiny::div(style = "text-align:right;",
         shiny::downloadButton(session$ns("dl_csv"), "Download recodes CSV",
+                              class = "btn btn-sm btn-primary"),
+        shiny::downloadButton(session$ns("dl_norms"),
+                              "Download normalizations CSV",
                               class = "btn btn-sm btn-primary"),
         shiny::downloadButton(session$ns("dl_r"), "Download R script",
                               class = "btn btn-sm btn-primary"),
@@ -212,6 +307,28 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
     output$diff_empty <- shiny::renderUI({
       if (nrow(rules_proxy$get()) > 0) return(NULL)
       empty_state("No rules yet.")
+    })
+
+    output$norm_empty <- shiny::renderUI({
+      if (nrow(norms_r()) > 0) return(NULL)
+      empty_state("No normalizations. Add them on the Normalize tab.")
+    })
+
+    output$norm_tbl <- DT::renderDT({
+      nn <- norms_r()
+      if (nrow(nn) == 0) return(NULL)
+      df <- normalization_summary_table(nn, diff_r()$norm_summary)
+      DT::datatable(
+        df,
+        rownames = FALSE,
+        selection = "none",
+        # escape stays TRUE (the default): target and columns are column
+        # names from the loaded file.
+        options  = list(pageLength = 10, dom = "tp",
+                        columnDefs = dt_truncate_defs())
+      ) |>
+        DT::formatStyle("cells_changed",
+          backgroundColor = DT::styleEqual(c(0L), c("#eeeeee")))
     })
 
     output$diff_tbl <- DT::renderDT({
@@ -232,23 +349,31 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
           backgroundColor = DT::styleEqual(c(0L), c("#eeeeee")))
     })
 
-    output$r_preview <- shiny::renderText({
-      generate_recode_R(rules_proxy$get(), dataset_id = dataset_id())
-    })
+    # One script: normalization blocks first, then the recode blocks.
+    script_r <- function() {
+      generate_recode_R(rules_proxy$get(), dataset_id = dataset_id(),
+                        normalizations = norms_r())
+    }
+
+    output$r_preview <- shiny::renderText(script_r())
 
     output$dl_csv <- shiny::downloadHandler(
       filename = function() "recodes_master.csv",
       content  = function(file) write_recodes(rules_proxy$get(), file)
     )
 
+    output$dl_norms <- shiny::downloadHandler(
+      filename = function() "normalizations_master.csv",
+      content  = function(file) write_normalizations(norms_r(), file)
+    )
+
     output$dl_r <- shiny::downloadHandler(
       filename = function() sprintf("recode_%s.R", dataset_id()),
-      content  = function(file)
-        writeLines(generate_recode_R(rules_proxy$get(), dataset_id()), file)
+      content  = function(file) writeLines(script_r(), file)
     )
 
     shiny::observeEvent(input$copy_r, {
-      txt <- generate_recode_R(rules_proxy$get(), dataset_id())
+      txt <- script_r()
       ok <- tryCatch({
         clipr::write_clip(txt, allow_non_interactive = TRUE)
         TRUE

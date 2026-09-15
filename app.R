@@ -2,8 +2,11 @@
 # Recode Studio - standalone Shiny app
 # =============================================================================
 # A dataset-agnostic tool for cleaning string variables: load any CSV/Excel,
-# pick a text column, browse values alphabetically or as similarity clusters,
-# spellcheck them, build recode rules, and export a recode CSV + an R script.
+# pick a text column, normalize its case / whitespace, browse values
+# alphabetically or as similarity clusters, spellcheck them, build recode
+# rules, and export rule CSVs + an R script.
+#
+# Order of operations everywhere: normalizations, then recodes, then recat.
 #
 # Run with:
 #   shiny::runApp()        # from the repo root
@@ -35,15 +38,19 @@ ui <- bslib::page_navbar(
     mod_variable_banner_ui("variable_banner"),
     bslib::navset_card_tab(
       id = "studio_tabs",
-      bslib::nav_panel("1. Data",            value = "data",       mod_data_input_ui("data_input")),
-      bslib::nav_panel("2. Variable",        value = "variable",   mod_variable_picker_ui("variable_picker")),
-      bslib::nav_panel("3. Browse values",   value = "browse",     mod_value_table_ui("value_table")),
-      bslib::nav_panel("4. Clusters",        value = "clusters",   mod_cluster_view_ui("cluster_view")),
-      bslib::nav_panel("5. Spellcheck",      value = "spellcheck", mod_spellcheck_view_ui("spellcheck_view")),
-      bslib::nav_panel("6. Text analysis",   value = "text",       mod_text_analysis_ui("text_analysis")),
-      bslib::nav_panel("7. Recodes",         value = "recodes",    mod_recode_editor_ui("recode_editor")),
-      bslib::nav_panel("8. Recategorize",    value = "recat",      mod_recategorize_ui("recategorize")),
-      bslib::nav_panel("9. Preview & export", value = "export",
+      # Normalize sits before the value tabs because that is the order rules
+      # are APPLIED in (normalize, recode, recat): Browse values, Clusters and
+      # Spellcheck show normalized values, so recodes are written against them.
+      bslib::nav_panel("1. Data",             value = "data",       mod_data_input_ui("data_input")),
+      bslib::nav_panel("2. Variable",         value = "variable",   mod_variable_picker_ui("variable_picker")),
+      bslib::nav_panel("3. Normalize",        value = "normalize",  mod_normalize_ui("normalize")),
+      bslib::nav_panel("4. Browse values",    value = "browse",     mod_value_table_ui("value_table")),
+      bslib::nav_panel("5. Clusters",         value = "clusters",   mod_cluster_view_ui("cluster_view")),
+      bslib::nav_panel("6. Spellcheck",       value = "spellcheck", mod_spellcheck_view_ui("spellcheck_view")),
+      bslib::nav_panel("7. Text analysis",    value = "text",       mod_text_analysis_ui("text_analysis")),
+      bslib::nav_panel("8. Recodes",          value = "recodes",    mod_recode_editor_ui("recode_editor")),
+      bslib::nav_panel("9. Recategorize",     value = "recat",      mod_recategorize_ui("recategorize")),
+      bslib::nav_panel("10. Preview & export", value = "export",
         mod_preview_export_ui("preview_export"),
         br(),
         mod_import_recodes_ui("import_recodes")
@@ -73,14 +80,21 @@ server <- function(input, output, session) {
   # In-session rule sets + proxies. Recategorization rules live in their OWN
   # store: they derive a new column instead of rewriting values, so they share
   # neither the schema nor the export path with the old->new recodes.
+  # Normalizations are a third store: whole-column case / whitespace tidying,
+  # applied before both of the others.
   rv <- shiny::reactiveValues(
     rules = empty_recodes_tibble(),
-    recat = empty_recat_tibble()
+    recat = empty_recat_tibble(),
+    norms = empty_normalizations_tibble()
   )
+  norms_proxy <- make_norms_proxy(rv)
   # add() replaces a colliding rule IN PLACE (see R/rule_proxies.R): rules are
   # first-match-wins by row order, so moving an edited rule to the end could
-  # change the output.
-  rules_proxy <- make_rules_proxy(rv)
+  # change the output. add() also stamps each new rule's norm_spec with the
+  # normalization in force for its columns, so a later change is detectable.
+  rules_proxy <- make_rules_proxy(rv,
+    norms_r     = norms_proxy$get,
+    data_cols_r = function() names(shared_state$data))
   recat_proxy <- make_recat_proxy(rv)
 
   mod_data_input_server("data_input", shared_state)
@@ -91,9 +105,26 @@ server <- function(input, output, session) {
   selected_var_r <- variable_selection_server(shared_state,
     picker_id = "variable_picker", banner_id = "variable_banner")
 
+  mod_normalize_server("normalize", shared_state,
+    selected_var_r = selected_var_r, norms_proxy = norms_proxy)
+
+  # The loaded data with the session's normalizations applied: the frame the
+  # recodes are written against and run on. Falls back to the raw data if the
+  # normalizations cannot be applied.
+  normalized_r <- shiny::reactive({
+    d <- shared_state$data
+    if (is.null(d)) return(NULL)
+    nn <- norms_proxy$get()
+    if (nrow(nn) == 0) return(d)
+    tryCatch(apply_normalizations(d, nn)$df, error = function(e) d)
+  })
+
+  # Distinct values of the selected column AFTER normalization, so Browse
+  # values, Clusters and Spellcheck show (and mint rules against) normalized
+  # values.
   unique_values_r <- shiny::reactive({
     v <- selected_var_r()
-    d <- shared_state$data
+    d <- normalized_r()
     if (is.null(v) || is.null(d) || !(v %in% names(d))) return(NULL)
     x <- d[[v]]
     x <- x[!is.na(x) & nzchar(x)]
@@ -115,27 +146,39 @@ server <- function(input, output, session) {
     selected_var_r = selected_var_r, unique_values_r = unique_values_r,
     rules_proxy = rules_proxy)
 
+  # Text analysis deliberately reads the RAW values (shared_state$data), not
+  # normalized_r(): it is descriptive (lengths, tokens, n-grams, keyword in
+  # context) and should describe the file as delivered.
   mod_text_analysis_server("text_analysis", shared_state, selected_var_r)
 
   mod_recode_editor_server("recode_editor", shared_state, rules_proxy)
 
-  # The exported recat script is meant to run AFTER the recode script, so the
-  # Recategorize tab previews against the recoded frame, not the raw one.
+  # The exported recat script is meant to run AFTER the recode script (which
+  # itself normalizes first), so the Recategorize tab previews against the
+  # normalized-then-recoded frame, not the raw one. `df_before_recodes` is the
+  # normalized frame, used to spot rows the recodes took away.
   recode_basis_r <- shiny::reactive({
     d <- shared_state$data
-    r <- rules_proxy$get()
     if (is.null(d)) return(NULL)
-    if (nrow(r) == 0) return(list(df = d, n_rules = 0L))
-    df <- tryCatch(apply_recodes(d, r)$df, error = function(e) d)
-    list(df = df, n_rules = nrow(r))
+    r  <- rules_proxy$get()
+    dn <- normalized_r()
+    n_norms <- nrow(norms_proxy$get())
+    if (nrow(r) == 0) {
+      return(list(df = dn, n_rules = 0L, n_norms = n_norms,
+                  df_before_recodes = dn))
+    }
+    df <- tryCatch(apply_recodes(dn, r)$df, error = function(e) dn)
+    list(df = df, n_rules = nrow(r), n_norms = n_norms,
+         df_before_recodes = dn)
   })
 
   mod_recategorize_server("recategorize", shared_state, recat_proxy,
     seed_var_r = selected_var_r, recode_basis_r = recode_basis_r)
 
   mod_preview_export_server("preview_export", shared_state, rules_proxy,
-    recat_proxy = recat_proxy)
-  mod_import_recodes_server("import_recodes", shared_state, rules_proxy)
+    recat_proxy = recat_proxy, norms_proxy = norms_proxy)
+  mod_import_recodes_server("import_recodes", shared_state, rules_proxy,
+    norms_proxy = norms_proxy)
 }
 
 shinyApp(ui, server)

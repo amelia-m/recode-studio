@@ -64,7 +64,8 @@ source(file.path("..", "..", "R", "mod_recategorize.R"))
     source_dataset    = "orders.csv"))
 }
 
-# Mirrors recode_basis_r in app.R.
+# Mirrors recode_basis_r in app.R with no normalizations (the fields it adds,
+# n_norms and df_before_recodes, are optional to the module).
 .basis <- function(d, r) {
   shiny::reactive({
     if (nrow(r) == 0) return(list(df = d, n_rules = 0L))
@@ -108,7 +109,7 @@ test_that("preview counts rows AFTER the recodes, and says so", {
     # it, so the export matches three.
     expect_match(txt, "3 rows match", fixed = TRUE)
     expect_match(txt, "Counted AFTER applying 1 recode rule,", fixed = TRUE)
-    expect_false(grepl("in the raw data but", txt, fixed = TRUE))
+    expect_false(grepl("before the recodes but", txt, fixed = TRUE))
   })
 })
 
@@ -123,7 +124,7 @@ test_that("preview reports the shortfall when a recode rewrote an include term a
     # The number shown is what the export will produce...
     expect_match(txt, "0 rows match", fixed = TRUE)
     # ...and the raw count it would have reported is called out, not hidden.
-    expect_match(txt, "matches 2 rows in the raw data but 0 after the recodes",
+    expect_match(txt, "matches 2 rows before the recodes but 0 after",
                  fixed = TRUE)
   })
 })
@@ -139,7 +140,7 @@ test_that("with no recode rules the preview says the count is on the raw data", 
     expect_match(txt, "2 rows match", fixed = TRUE)
     expect_match(txt, "no recode rules yet, so this is the raw data",
                  fixed = TRUE)
-    expect_false(grepl("in the raw data but", txt, fixed = TRUE))
+    expect_false(grepl("before the recodes but", txt, fixed = TRUE))
   })
 })
 

@@ -4,6 +4,11 @@
 # Upload an externally-edited recodes_master.csv. Merge with conflict
 # resolution per rule_id: keep-mine / keep-theirs / keep-newer.
 #
+# The same card imports a normalizations_master.csv, with the same three
+# conflict choices keyed on norm_id. Normalization rules carry `updated_at`
+# (set whenever the Normalize tab adds or replaces a rule), so "newer" means
+# the same thing for both files, and one set of choices serves both.
+#
 # The incoming frame's schema is checked BEFORE any bind_rows. readr does not
 # error when a col_types spec names a column the file lacks (it only warns on
 # the console, which this app's user never sees), so an off-schema file would
@@ -11,44 +16,71 @@
 # corrupting recodes_master.csv on the next export.
 # =============================================================================
 
-# Columns that current upstream rule files carry and this repo has no use for.
+# Columns that upstream rule files may carry and this repo has no use for.
 # They are dropped on import (and the user is told), rather than refused.
-# `norm_spec` records a column-normalization step that this app does not have.
-.RECODES_FOREIGN_DROP <- c("norm_spec")
+# Empty today: `norm_spec` used to be here, and is now part of the schema.
+.RECODES_FOREIGN_DROP <- character(0)
+
+# Schema columns an incoming recodes file may lack. Their absence is not a
+# "missing required column": `norm_spec` was added after files already
+# existed, and an older file simply reads with an NA (unstamped) stamp.
+.RECODES_OPTIONAL_COLS <- c("norm_spec")
 
 #' Check an incoming recodes frame against this repo's schema.
 #'
-#' Tolerates two known upstream divergences:
+#' Tolerates known divergences:
 #' - the provenance field is named `source_quarter` where this repo uses
 #'   `source_dataset`; that lone difference is renamed.
-#' - known-foreign columns (`.RECODES_FOREIGN_DROP`, e.g. `norm_spec`) are
-#'   dropped.
+#' - an optional column (`.RECODES_OPTIONAL_COLS`, i.e. `norm_spec`) may be
+#'   absent; it is added as NA. When present it is kept.
+#' - known-foreign columns (`.RECODES_FOREIGN_DROP`) are dropped.
 #' Anything else off-schema (an unknown extra, a missing required column, or
 #' both `source_dataset` and `source_quarter`) is refused.
 #'
 #' @param inc tibble read by read_recodes(path, conform = FALSE).
 #' @return list(ok = lgl, df = tibble or NULL, renamed = lgl,
-#'              dropped = chr, missing = chr, extra = chr)
+#'              dropped = chr, added = chr, missing = chr, extra = chr)
 .check_incoming_recodes <- function(inc) {
   expected <- names(empty_recodes_tibble())
+  .check_incoming_schema(inc, expected, optional = .RECODES_OPTIONAL_COLS,
+                         drop = .RECODES_FOREIGN_DROP)
+}
+
+#' Check an incoming normalizations frame against the normalizations schema.
+#'
+#' Same rules as `.check_incoming_recodes()`: `source_quarter` is renamed to
+#' `source_dataset`; anything else off-schema is refused.
+#'
+#' @param inc tibble read by read_normalizations(path, conform = FALSE).
+#' @return the same list as `.check_incoming_recodes()`.
+.check_incoming_normalizations <- function(inc) {
+  .check_incoming_schema(inc, names(empty_normalizations_tibble()))
+}
+
+# The shared guard behind both checks.
+.check_incoming_schema <- function(inc, expected, optional = character(0),
+                                   drop = character(0)) {
   out <- list(ok = FALSE, df = NULL, renamed = FALSE, dropped = character(0),
-              missing = character(0), extra = character(0))
+              added = character(0), missing = character(0),
+              extra = character(0))
   if (is.null(inc)) return(out)
 
   got <- names(inc)
 
-  # Sibling-repo normalization: source_quarter -> source_dataset.
+  # Sibling-repo naming: source_quarter -> source_dataset.
   if ("source_quarter" %in% got && !("source_dataset" %in% got)) {
     names(inc)[names(inc) == "source_quarter"] <- "source_dataset"
     got <- names(inc)
     out$renamed <- TRUE
   }
 
-  out$missing <- setdiff(expected, got)
-  out$extra   <- setdiff(got, c(expected, .RECODES_FOREIGN_DROP))
+  out$missing <- setdiff(expected, c(got, optional))
+  out$extra   <- setdiff(got, c(expected, drop))
   if (length(out$missing) > 0 || length(out$extra) > 0) return(out)
 
-  out$dropped <- intersect(got, .RECODES_FOREIGN_DROP)
+  out$dropped <- intersect(got, drop)
+  out$added   <- setdiff(intersect(expected, optional), got)
+  for (nm in out$added) inc[[nm]] <- rep(NA_character_, nrow(inc))
 
   # Column ORDER may differ harmlessly; force it to the canonical order so the
   # merge can never produce a frame whose columns differ from the schema. This
@@ -66,17 +98,21 @@
     bits <- c(bits, "column 'source_quarter' was read as 'source_dataset'")
   }
   if (length(chk$dropped) > 0) {
-    bits <- c(bits, sprintf(
-      paste0("column(s) %s were dropped (this app has no column-normalization ",
-             "step, so check any rule written against normalized values)"),
-      paste0("'", chk$dropped, "'", collapse = ", ")))
+    bits <- c(bits, sprintf("column(s) %s were dropped",
+                            paste0("'", chk$dropped, "'", collapse = ", ")))
+  }
+  if ("norm_spec" %in% chk$added) {
+    bits <- c(bits, paste0(
+      "the file has no 'norm_spec' column (it predates normalization stamps), ",
+      "so its rules are unstamped; Preview & export flags any on a column ",
+      "that is now normalized"))
   }
   if (length(bits) == 0) return(NULL)
-  paste0("Upstream-format file normalized: ", paste(bits, collapse = "; "), ".")
+  paste0("File adjusted on import: ", paste(bits, collapse = "; "), ".")
 }
 
 #' Human-readable explanation of a failed .check_incoming_recodes().
-.schema_error_msg <- function(chk) {
+.schema_error_msg <- function(chk, what = "recodes") {
   bits <- character(0)
   if (length(chk$missing) > 0) {
     bits <- c(bits, sprintf("missing required column(s): %s",
@@ -86,8 +122,42 @@
     bits <- c(bits, sprintf("unexpected column(s): %s",
                             paste(chk$extra, collapse = ", ")))
   }
-  sprintf("That CSV does not match the recodes schema (%s). Nothing was merged.",
-          paste(bits, collapse = "; "))
+  sprintf("That CSV does not match the %s schema (%s). Nothing was merged.",
+          what, paste(bits, collapse = "; "))
+}
+
+#' Merge incoming rules into the current set, resolving id collisions.
+#'
+#' Pure. Rules only in `cur` keep their place; a colliding rule is decided by
+#' `strategy` (mine / theirs / newer `updated_at`) and stays in `cur`'s
+#' position; rules only in `inc` are appended in file order.
+#'
+#' Keeping colliding rules in place matters for recodes (first match wins by
+#' row order). The previous merge appended every collision winner at the end,
+#' which could reorder rules.
+#'
+#' @param cur,inc schema-shaped rule tibbles.
+#' @param id_col the id column: "rule_id" or "norm_id".
+#' @param strategy "mine", "theirs" or "newer".
+#' @return tibble with `cur`'s columns.
+merge_incoming_rules <- function(cur, inc, id_col, strategy = "newer") {
+  if (nrow(inc) == 0) return(cur)
+  if (nrow(cur) == 0) return(inc[, names(cur), drop = FALSE])
+  out <- cur
+  idx <- match(cur[[id_col]], inc[[id_col]])
+  for (i in which(!is.na(idx))) {
+    t <- inc[idx[i], names(cur), drop = FALSE]
+    m <- cur[i, , drop = FALSE]
+    take_theirs <- switch(strategy,
+      mine   = FALSE,
+      theirs = TRUE,
+      newer  = !is.na(t$updated_at[1]) &&
+               (is.na(m$updated_at[1]) || t$updated_at[1] > m$updated_at[1]),
+      FALSE)
+    if (take_theirs) out[i, ] <- t
+  }
+  novel <- inc[!(inc[[id_col]] %in% cur[[id_col]]), names(cur), drop = FALSE]
+  dplyr::bind_rows(out, novel)
 }
 
 mod_import_recodes_ui <- function(id) {
@@ -96,31 +166,49 @@ mod_import_recodes_ui <- function(id) {
     full_screen = FALSE,
     fill        = FALSE,
     card_header_help(
-      "Import / merge an existing recodes CSV",
-      shiny::p("Load a recodes CSV exported earlier (by you or a colleague) ",
-               "and add its rules to this session, so you can pick up where ",
-               "you left off."),
-      shiny::p("When both have a rule for the same value, choose which one ",
+      "Import / merge existing rule CSVs",
+      shiny::p("Load a recodes CSV or a normalizations CSV exported earlier ",
+               "(by you or a colleague) and add its rules to this session, so ",
+               "you can pick up where you left off."),
+      shiny::p("When both have a rule for the same thing, choose which one ",
                "wins: the one already here, the one in the file, or ",
-               "whichever was edited most recently.")
+               "whichever was edited most recently. The same choice applies ",
+               "to both files.")
     ),
     bslib::card_body(
       fillable = FALSE,
-      shiny::fileInput(ns("file"), "Upload recodes_master.csv", accept = c(".csv")),
-      shiny::radioButtons(ns("conflict"), "On rule_id collision:",
+      shiny::radioButtons(ns("conflict"), "When a rule is in both:",
         choices = c("Keep current session"  = "mine",
                     "Take incoming file"    = "theirs",
                     "Take newer updated_at" = "newer"),
         selected = "newer", inline = TRUE),
-      shiny::actionButton(ns("apply"), "Merge", class = "btn btn-primary"),
-      shiny::tags$hr(),
-      shiny::uiOutput(ns("preview"))
+      shiny::fluidRow(
+        shiny::column(6,
+          shiny::fileInput(ns("file"), "Upload recodes_master.csv",
+                           accept = c(".csv")),
+          shiny::actionButton(ns("apply"), "Merge recodes",
+                              class = "btn btn-primary"),
+          shiny::tags$hr(),
+          shiny::uiOutput(ns("preview"))
+        ),
+        shiny::column(6,
+          shiny::fileInput(ns("norm_file"), "Upload normalizations_master.csv",
+                           accept = c(".csv")),
+          shiny::actionButton(ns("apply_norms"), "Merge normalizations",
+                              class = "btn btn-primary"),
+          shiny::tags$hr(),
+          shiny::uiOutput(ns("norm_preview"))
+        )
+      )
     )
   )
 }
 
 #' @param rules_proxy list(add=, set=, get=)
-mod_import_recodes_server <- function(id, shared_state, rules_proxy) {
+#' @param norms_proxy optional list(add=, set=, get=) over the normalization
+#'   rules. When NULL, a normalizations upload is refused with a message.
+mod_import_recodes_server <- function(id, shared_state, rules_proxy,
+                                      norms_proxy = NULL) {
   shiny::moduleServer(id, function(input, output, session) {
 
     # Raw read + schema check. Returns the .check_incoming_recodes() list, or
@@ -174,7 +262,7 @@ mod_import_recodes_server <- function(id, shared_state, rules_proxy) {
       if (!chk$ok) {
         return(shiny::div(
           class = "text-danger",
-          shiny::strong("Schema mismatch — merge refused."),
+          shiny::strong("Schema mismatch: merge refused."),
           shiny::tags$br(),
           .schema_error_msg(chk)
         ))
@@ -202,39 +290,105 @@ mod_import_recodes_server <- function(id, shared_state, rules_proxy) {
         return()
       }
       inc <- chk$df
-      cur <- rules_proxy$get()
-      strategy <- input$conflict
+      cur <- .conform_recodes_schema(rules_proxy$get())
+      cur <- cur[, names(empty_recodes_tibble()), drop = FALSE]
 
-      novel_ids <- setdiff(inc$rule_id, cur$rule_id)
-      coll_ids  <- intersect(cur$rule_id, inc$rule_id)
+      merged <- merge_incoming_rules(cur, inc, "rule_id", input$conflict)
 
-      merged <- dplyr::bind_rows(
-        cur[!(cur$rule_id %in% coll_ids), ],
-        inc[inc$rule_id %in% novel_ids, ]
-      )
-
-      if (length(coll_ids) > 0) {
-        for (cid in coll_ids) {
-          m <- cur[cur$rule_id == cid, ]
-          t <- inc[inc$rule_id == cid, ]
-          winner <- switch(strategy,
-            mine   = m,
-            theirs = t,
-            newer  = if (!is.na(t$updated_at[1]) &&
-                         (is.na(m$updated_at[1]) ||
-                          t$updated_at[1] > m$updated_at[1])) t else m
-          )
-          merged <- dplyr::bind_rows(merged, winner)
-        }
-      }
-
-      # Defensive: both sides are schema-shaped, so this is a no-op reorder --
+      # Defensive: both sides are schema-shaped, so this is a no-op reorder,
       # but it guarantees the session rule set can never gain a stray column.
       merged <- merged[, names(empty_recodes_tibble())]
 
+      # set(), not add(): imported rules keep the norm_spec stamp they carry.
       rules_proxy$set(merged)
       shiny::showNotification(
         sprintf("Merged. Now %d rule(s) in session.", nrow(merged)), type = "message")
+    })
+
+    # --- Normalizations CSV ---------------------------------------------------
+
+    norm_checked_r <- shiny::reactive({
+      f <- input$norm_file
+      if (is.null(f)) return(NULL)
+      raw <- tryCatch(read_normalizations(f$datapath, conform = FALSE),
+                      error = function(e) NULL)
+      if (is.null(raw)) return(NULL)
+      chk <- .check_incoming_normalizations(raw)
+      if (chk$ok) {
+        chk$df <- tryCatch(.conform_normalizations_schema(chk$df),
+                           error = function(e) NULL)
+        if (is.null(chk$df)) return(NULL)
+      }
+      chk
+    })
+
+    shiny::observeEvent(input$norm_file, {
+      chk <- norm_checked_r()
+      if (is.null(chk)) {
+        shiny::showNotification(
+          "Could not read that file as a normalizations CSV.", type = "error")
+        return()
+      }
+      if (!chk$ok) {
+        shiny::showNotification(.schema_error_msg(chk, "normalizations"),
+                                type = "error", duration = NULL)
+        return()
+      }
+      adjust <- .import_adjust_msg(chk)
+      if (!is.null(adjust)) {
+        shiny::showNotification(adjust, type = "warning", duration = 10)
+      }
+    })
+
+    output$norm_preview <- shiny::renderUI({
+      chk <- norm_checked_r()
+      if (is.null(chk)) return(shiny::tags$em("Upload a CSV to preview."))
+      if (!chk$ok) {
+        return(shiny::div(
+          class = "text-danger",
+          shiny::strong("Schema mismatch: merge refused."),
+          shiny::tags$br(),
+          .schema_error_msg(chk, "normalizations")
+        ))
+      }
+      inc <- chk$df
+      cur <- if (is.null(norms_proxy)) empty_normalizations_tibble()
+             else norms_proxy$get()
+      shiny::tagList(
+        shiny::p(shiny::strong("Incoming normalizations: "), nrow(inc)),
+        shiny::p(shiny::strong("Novel (not in session): "),
+                 length(setdiff(inc$norm_id, cur$norm_id))),
+        shiny::p(shiny::strong("Conflicts (norm_id collision): "),
+                 length(intersect(cur$norm_id, inc$norm_id)))
+      )
+    })
+
+    shiny::observeEvent(input$apply_norms, {
+      if (is.null(norms_proxy)) {
+        shiny::showNotification("Normalizations cannot be imported here.",
+                                type = "warning")
+        return()
+      }
+      chk <- norm_checked_r()
+      if (is.null(chk)) {
+        shiny::showNotification("Upload a readable CSV first.", type = "warning")
+        return()
+      }
+      if (!chk$ok) {
+        shiny::showNotification(.schema_error_msg(chk, "normalizations"),
+                                type = "error", duration = NULL)
+        return()
+      }
+      cur <- .conform_normalizations_schema(norms_proxy$get())
+      cur <- cur[, names(empty_normalizations_tibble()), drop = FALSE]
+      merged <- merge_incoming_rules(cur, chk$df, "norm_id", input$conflict)
+      merged <- merged[, names(empty_normalizations_tibble())]
+      norms_proxy$set(merged)
+      shiny::showNotification(
+        sprintf(paste0("Merged. Now %d normalization(s) in session. Recode ",
+                       "rules written under a different normalization are ",
+                       "flagged on Preview & export."), nrow(merged)),
+        type = "message")
     })
   })
 }

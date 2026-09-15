@@ -230,8 +230,8 @@ mod_variable_banner_ui <- function(id) {
     shiny::uiOutput(ns("note"), inline = TRUE),
     help_btn(
       title = "Recoding",
-      shiny::p("The column that the Browse values, Clusters, Spellcheck and ",
-               "Text analysis tabs are working on. Change it here from any ",
+      shiny::p("The column that the Normalize, Browse values, Clusters, ",
+               "Spellcheck and Text analysis tabs are working on. Change it here from any ",
                "tab, or pick a row on tab 2; the two stay in step."),
       shiny::p("Rules you have already made are kept when you switch.")
     )
