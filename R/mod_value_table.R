@@ -13,7 +13,30 @@ mod_value_table_ui <- function(id) {
     bslib::card_header("Browse values"),
     bslib::card_body(
       fillable = FALSE,
+      # Case-insensitive matching already exists (every rule minted here is
+      # trimmed_ci) but was invisible where rules are CREATED, so it kept being
+      # asked for. Keep in step with the Spellcheck tab's wording.
+      help_line(shiny::tags$em(
+        "Rules created here match with ", shiny::tags$code("trimmed_ci"),
+        ": case and surrounding spaces are ignored, so one rule catches ",
+        "\"latte\", \"Latte\" and \"LATTE \". Change that per rule on the ",
+        "Recodes tab.")),
       shiny::uiOutput(ns("toolbar")),
+      dt_truncate_css(),
+      # Column widths must not move when the sort changes. `autoWidth = FALSE`
+      # alone does not do it: the browser still lays the table out from the
+      # content on the current page, so sorting by n (short values on screen)
+      # gives a narrow value column and sorting by value gives a wide one.
+      # table-layout:fixed makes the declared percentage widths binding. With
+      # fixed layout the cell width already bounds the one-line span, so the
+      # truncation's max-width cap is lifted here.
+      shiny::tags$style(shiny::HTML("
+        .rs-value-table { table-layout: fixed; width: 100% !important; }
+        .rs-value-table td, .rs-value-table th {
+          overflow-wrap: anywhere; word-break: break-word; }
+        .rs-value-table td .rs-dt-trunc { max-width: none; }
+      ")),
+      dt_truncate_hint(),
       DT::DTOutput(ns("tbl"))
     )
   )
@@ -60,7 +83,18 @@ mod_value_table_server <- function(id, shared_state,
         rownames  = FALSE,
         selection = "multi",
         filter    = "top",
-        options   = list(pageLength = 25, autoWidth = FALSE)
+        class     = "display rs-value-table",
+        # escape stays TRUE (the default): value is raw dataset text, and
+        # dt_truncate_defs() relies on escaped input.
+        options   = list(
+          pageLength = 25,
+          autoWidth  = FALSE,
+          # Percent widths: adapts to the window, stays put across sorts.
+          columnDefs = c(
+            list(list(targets = 0, width = "70%"),
+                 list(targets = 1, width = "10%"),
+                 list(targets = 2, width = "20%")),
+            dt_truncate_defs()))
       ) |>
         DT::formatStyle(
           "duplicate_token",

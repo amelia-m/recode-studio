@@ -21,6 +21,16 @@ mod_recode_editor_ui <- function(id) {
     bslib::card_header("Recode rules"),
     bslib::card_body(
       fillable = FALSE,
+      help_line(
+        "Rules apply in a ", shiny::strong("single pass"),
+        ": every rule is matched against the ", shiny::strong("original"),
+        " values, and the first rule to claim a cell wins. Chained rules do ",
+        "not combine: with ", shiny::tags$code("a -> b"), " and ",
+        shiny::tags$code("b -> c"), ", the original ", shiny::tags$code("a"),
+        " values end up as ", shiny::tags$code("b"), ", not ",
+        shiny::tags$code("c"), ". Write the rule you actually mean; ",
+        shiny::strong("Validate"), " flags chains so they are easy to find."
+      ),
       shiny::fluidRow(
         shiny::column(8,
           shiny::tags$small(shiny::tags$em(

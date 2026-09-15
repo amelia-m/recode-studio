@@ -33,6 +33,11 @@ To add a discipline by hand, drop a `<name>.txt` (one lowercase word per line,
 `#` comments allowed) into `dictionary/disciplines/` and it appears in the
 selector on next app start.
 
+**Pitfall: don't paste a raw Hunspell `.dic` file.** It has a leading word-count
+line and per-word affix flags after a `/` (`espresso/SM`). The loader strips
+flags, numeric lines and multi-word lines, but save plain one-word-per-line
+lists anyway.
+
 > The bundled lists are term vocabularies (not copyrightable) compiled to
 > suppress false-positive spellcheck flags on common professional jargon. They
 > are starting points — extend them for your own data via the "Add to

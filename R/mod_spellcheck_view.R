@@ -22,11 +22,22 @@
   )
 }
 
+#' Read one dictionary word list: one lowercase word per line, `#` comments.
+#'
+#' Also strips Hunspell `.dic` artifacts, because the Spellcheck tab imports
+#' any .txt and a raw .dic pasted in would otherwise add dead entries that
+#' hunspell can never match against a token:
+#' - per-word affix flags after a slash (`espresso/SM` -> `espresso`)
+#' - the leading word-count line (a purely numeric line)
+#' - multi-word lines (the spellchecker checks single tokens only)
 .read_dict_terms <- function(path) {
   if (!file.exists(path)) return(character(0))
   x <- readLines(path, warn = FALSE, encoding = "UTF-8")
   x <- x[!startsWith(trimws(x), "#")]
   x <- tolower(trimws(x))
+  x <- sub("/.*$", "", x)
+  x <- x[!grepl("^[0-9]+$", x)]
+  x <- x[!grepl("\\s", x)]
   unique(x[nzchar(x)])
 }
 
@@ -89,6 +100,12 @@ mod_spellcheck_view_ui <- function(id) {
       shiny::tags$small(shiny::tags$em(
         "Click any blue suggestion to recode. Type into the 'Other' box for your own correction. '+ Dict' adds the flagged token to the chosen dictionary tier."
       )),
+      # Name the match type where the rule is created. Keep in step with the
+      # Browse values tab's wording.
+      help_line(shiny::tags$em(
+        "Rules created here match with ", shiny::tags$code("trimmed_ci"),
+        ": case and surrounding spaces are ignored. Change that per rule on ",
+        "the Recodes tab.")),
       shiny::fluidRow(
         shiny::column(6,
           shiny::selectizeInput(
@@ -119,6 +136,7 @@ mod_spellcheck_view_ui <- function(id) {
         )
       ),
       shiny::hr(),
+      shiny::uiOutput(ns("tbl_empty")),
       DT::DTOutput(ns("tbl"))
     )
   )
@@ -290,15 +308,17 @@ mod_spellcheck_view_server <- function(id, shared_state,
         dplyr::arrange(dplyr::desc(n))
     })
 
+    # Empty state as a plain note, not a one-column datatable (which would
+    # show a literal "message" header with a sort arrow).
+    output$tbl_empty <- shiny::renderUI({
+      df <- flagged_r()
+      if (!is.null(df) && nrow(df) > 0) return(NULL)
+      empty_state(spellcheck_error() %||% "No spellcheck flags.")
+    })
+
     output$tbl <- DT::renderDT({
       df <- flagged_r()
-      if (is.null(df) || nrow(df) == 0) {
-        msg <- spellcheck_error() %||% "No spellcheck flags."
-        return(DT::datatable(
-          tibble::tibble(message = msg),
-          rownames = FALSE, options = list(dom = "t")
-        ))
-      }
+      if (is.null(df) || nrow(df) == 0) return(NULL)
       ns <- session$ns
       df$action <- vapply(
         seq_len(nrow(df)),
