@@ -127,6 +127,123 @@ BUILTIN_TAXONOMIES <- list(
   )
 )
 
+# --- UI pieces ---------------------------------------------------------------
+# Every shiny:: call below sits inside a function body, so this file still
+# sources without Shiny loaded (tests/testthat/test-cluster_target.R relies on
+# that).
+
+# Both sub-tabs mint trimmed_ci rules. Users kept asking for case-insensitive
+# matching that was already happening, because nothing said so where the rules
+# get created.
+trimmed_ci_note <- function() {
+  shiny::tags$p(
+    class = "text-muted small",
+    shiny::tags$em(
+      "Rules created here match with ", shiny::tags$code("trimmed_ci"),
+      ": case and surrounding spaces are ignored. Change that per rule on the ",
+      "Recodes tab."))
+}
+
+# Styles for the per-cluster member table. Emitted once in the UI, not per
+# card render.
+cluster_table_css <- function() {
+  shiny::tags$style(shiny::HTML("
+    /* Fixed layout + full width: with overflow-wrap:anywhere an auto-layout
+       table shrinks the Value column to one character wide. NOT SUFFICIENT on
+       its own: the table sits inside two .shiny-input-container wrappers and
+       shiny.css gives those width: 300px, so width: 100% here would mean 100%
+       of 300px. The wrappers carry an inline width: 100% (see
+       cluster_member_table()), which no stylesheet can override. */
+    .rs-cluster-table { margin-bottom: .5rem; table-layout: fixed; width: 100%; }
+    .rs-cluster-table th { font-size: .8rem; text-transform: uppercase;
+      letter-spacing: .03em; color: var(--bs-secondary-color, #6c757d); }
+    .rs-cluster-table td { overflow-wrap: anywhere; }
+    .rs-cl-keep { width: 3.25rem; }
+    .rs-cl-n    { width: 2.75rem; }
+    .rs-cl-excl { width: 4.5rem; }
+    /* Centre the controls under their headers: the class must be on the TD
+       as well as the TH, or the label centres and the input stays left. */
+    .rs-cluster-table th.rs-cl-keep, .rs-cluster-table td.rs-cl-keep,
+    .rs-cluster-table th.rs-cl-excl, .rs-cluster-table td.rs-cl-excl {
+      text-align: center; }
+    .rs-cluster-table input[type=radio],
+    .rs-cluster-table input[type=checkbox] { margin: 0; }
+  "))
+}
+
+#' One table per cluster: a row per member with Keep radio, n, Exclude
+#' checkbox and Value.
+#'
+#' This replaces two side-by-side inputs over the same member list (a
+#' radioButtons and a checkboxGroupInput). Those only LOOKED aligned: a value
+#' long enough to wrap pushed row i of one list out of line with row i of the
+#' other, so the Exclude tick beside a value could belong to a different value.
+#' Each value also appeared twice, with the count glued into its label.
+#'
+#' HOW SHINY FINDS THESE INPUTS: the radio-group and checkbox-group bindings
+#' select on the NAME attribute, `input:radio[name="<container id>"]`. So the
+#' invariant is that every input's `name` equals its group container's `id`;
+#' the nesting order of the two containers does not matter. Do not drop the
+#' name attributes. The row inputs deliberately carry NO id of their own, which
+#' stops Shiny's single-checkbox binding from claiming them. The ids are the
+#' ones `radioButtons()` / `checkboxGroupInput()` used, so the conflicts output
+#' and the Apply handler read exactly what they read before.
+#'
+#' @param members    Data frame with `value`, `n` and optionally `is_rare`,
+#'                   most frequent first.
+#' @param target_id  Namespaced id of the keep radio group.
+#' @param exclude_id Namespaced id of the exclude checkbox group.
+#' @param selected   Value whose Keep radio starts checked.
+cluster_member_table <- function(members, target_id, exclude_id,
+                                 selected = members$value[1]) {
+  rare <- if ("is_rare" %in% names(members)) members$is_rare
+          else rep(FALSE, nrow(members))
+  rows <- lapply(seq_len(nrow(members)), function(i) {
+    val <- members$value[i]
+    shiny::tags$tr(
+      shiny::tags$td(
+        class = "rs-cl-keep",
+        shiny::tags$input(
+          type = "radio", name = target_id, value = val,
+          `aria-label` = paste("Keep", val),
+          checked = if (identical(val, selected)) "checked" else NULL)),
+      shiny::tags$td(class = "text-end rs-cl-n", members$n[i]),
+      shiny::tags$td(
+        class = "rs-cl-excl",
+        shiny::tags$input(
+          type = "checkbox", name = exclude_id, value = val,
+          `aria-label` = paste("Exclude", val))),
+      # Dataset text goes in as a child, so htmltools escapes it. Never paste
+      # it into an HTML string.
+      shiny::tags$td(
+        val,
+        if (isTRUE(rare[i]))
+          shiny::tags$span(class = "badge text-bg-light ms-2", "rare"))
+    )
+  })
+
+  # Both wrappers exist only so the bindings find their inputs. The inline
+  # width beats shiny.css's `.shiny-input-container { width: 300px }`.
+  shiny::div(
+    id = exclude_id,
+    class = "shiny-input-checkboxgroup shiny-input-container",
+    style = "width:100%",
+    shiny::div(
+      id = target_id,
+      class = "shiny-input-radiogroup shiny-input-container",
+      style = "width:100%",
+      shiny::tags$table(
+        class = "table table-sm align-middle rs-cluster-table",
+        # Fixed-width control columns lead and Value, the only elastic
+        # column, comes last, so the controls stay in one vertical line.
+        shiny::tags$thead(shiny::tags$tr(
+          shiny::tags$th(class = "rs-cl-keep", "Keep"),
+          shiny::tags$th(class = "text-end rs-cl-n", "n"),
+          shiny::tags$th(class = "rs-cl-excl", "Exclude"),
+          shiny::tags$th("Value"))),
+        shiny::tags$tbody(rows))))
+}
+
 mod_cluster_view_ui <- function(id) {
   ns <- shiny::NS(id)
 
@@ -235,6 +352,8 @@ mod_cluster_view_ui <- function(id) {
           )
         ),
         shiny::br(),
+        trimmed_ci_note(),
+        cluster_table_css(),
         shiny::div(
           class = "alert alert-info", style = "padding:.5em .8em;",
           shiny::tags$strong("Tip: "),
@@ -264,6 +383,7 @@ mod_cluster_view_ui <- function(id) {
           "(e.g., standard US State names, standard department categories, ISO codes, or custom company codebooks). ",
           "Accept fuzzy matches and create recode rules in one click."
         ),
+        trimmed_ci_note(),
         shiny::fluidRow(
           shiny::column(4,
             shiny::radioButtons(ns("tax_source_type"), "Taxonomy source:",
@@ -449,14 +569,6 @@ mod_cluster_view_server <- function(id, shared_state,
           dplyr::arrange(dplyr::desc(n))
         modal <- members$value[1]   # most frequent = default suggested target
 
-        # Radio choices = the cluster members, labelled with frequency and a
-        # rare flag. Value is the raw string; default selection is the modal.
-        choice_labels <- vapply(seq_len(nrow(members)), function(i)
-          sprintf("%s  —  %d%s", members$value[i], members$n[i],
-                  if (isTRUE(members$is_rare[i])) "  (rare)" else ""),
-          character(1))
-        choices <- stats::setNames(members$value, choice_labels)
-
         bslib::card(
           full_screen = FALSE,
           fill        = FALSE,
@@ -465,23 +577,14 @@ mod_cluster_view_server <- function(id, shared_state,
           ),
           bslib::card_body(
             fillable = FALSE,
-            # Two aligned columns over the same member list (same order): pick
-            # the keep target on the left, tick members to exclude on the right.
-            shiny::fluidRow(
-              shiny::column(7,
-                shiny::radioButtons(
-                  session$ns(paste0("target_", cid)),
-                  "Recode the rest to:",
-                  choices  = choices,
-                  selected = modal)
-              ),
-              shiny::column(5,
-                shiny::checkboxGroupInput(
-                  session$ns(paste0("exclude_", cid)),
-                  "Exclude from cluster:",
-                  choices = choices)
-              )
-            ),
+            shiny::tags$small(class = "text-muted",
+              "Keep one value; the rest are recoded to it. Tick Exclude for ",
+              "any member that does not belong."),
+            cluster_member_table(
+              members,
+              target_id  = session$ns(paste0("target_", cid)),
+              exclude_id = session$ns(paste0("exclude_", cid)),
+              selected   = modal),
             shiny::textInput(
               session$ns(paste0("custom_", cid)),
               label = NULL,

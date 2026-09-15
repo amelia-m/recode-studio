@@ -198,7 +198,7 @@ mod_recategorize_ui <- function(id) {
           shiny::actionButton(ns("clear_all"), "Clear all",
             class = "btn btn-sm btn-outline-danger"))
       ),
-      DT::DTOutput(ns("rules_tbl")),
+      shiny::uiOutput(ns("rules_tbl_ui")),
 
       shiny::hr(),
 
@@ -225,12 +225,13 @@ mod_recategorize_ui <- function(id) {
 #' @param shared_state   reactiveValues(data, meta, dataset_name). Read only.
 #' @param recat_proxy    list(get = reactive, add = fn, set = fn) — the recat
 #'   rule store owned by server(). Separate from the old->new `rules_proxy`.
-#' @param seed_var_r optional reactive giving the variable selected in the
-#'   banner. Used ONLY to seed this tab's source-variable picker while it is
-#'   still empty, so arriving here from Clusters or Spellcheck starts on the
-#'   variable you were working on. A recat rule reads across SEVERAL columns,
-#'   so this tab keeps its own multi-select and never has a deliberate
-#'   selection overwritten by the banner.
+#' @param seed_var_r optional reactive giving the single variable picked on
+#'   the Variable tab (the one the other tabs work on). Used ONLY to seed this
+#'   tab's source-variable picker while it is still empty, so arriving here
+#'   from Clusters or Spellcheck starts on the variable you were working on. A
+#'   recat rule reads across SEVERAL columns, so this tab keeps its own
+#'   multi-select, and picking a different variable on the Variable tab never
+#'   overwrites a selection already made here.
 #' @param recode_basis_r optional reactive returning list(df, n_rules): the
 #'   loaded data with the session's recodes ALREADY APPLIED. The generated
 #'   recat script is meant to run after the recode script, so previewing a
@@ -267,10 +268,10 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       # when the column universe changes, not re-fire on every pick (which
       # would collapse an open dropdown and reset a typed search).
       sel <- shiny::isolate(input$vars) %||% character(0)
-      # Seed from the banner's variable, but ONLY while nothing is chosen here.
-      # A recat rule spans several columns, so silently adding or replacing a
-      # deliberate selection because the banner changed would quietly alter
-      # what a half-written rule matches.
+      # Seed from the Variable tab's selection, but ONLY while nothing is
+      # chosen here. A recat rule spans several columns, so silently adding or
+      # replacing a deliberate selection because a different variable was
+      # picked elsewhere would quietly alter what a half-written rule matches.
       if (length(sel) == 0 && !is.null(seed_var_r)) {
         v <- tryCatch(seed_var_r(), error = function(e) NULL)
         if (!is.null(v) && length(v) == 1 && !is.na(v) && v %in% cols) sel <- v
@@ -558,13 +559,26 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
     })
 
     # --- Rule list table + delete -------------------------------------------
+    # Empty state is plain muted text, not a one-cell DT: that rendered a
+    # literal "message" column header with a sort arrow. The switch keys on
+    # whether rules exist at all, so the DT output is not torn down and
+    # rebuilt on every add or delete.
+    # (A reactiveVal, not a reactive(): setting it to an identical value does
+    # not invalidate, whereas a reactive() re-fires its dependents every time.)
+    has_rules_r <- shiny::reactiveVal(FALSE)
+    shiny::observe(has_rules_r(nrow(recat_proxy$get()) > 0))
+
+    output$rules_tbl_ui <- shiny::renderUI({
+      if (!has_rules_r()) {
+        return(shiny::div(class = "text-muted fst-italic",
+                          "No recategorization rules yet."))
+      }
+      DT::DTOutput(ns("rules_tbl"))
+    })
+
     output$rules_tbl <- DT::renderDT({
       r <- recat_proxy$get()
-      if (nrow(r) == 0) {
-        return(DT::datatable(
-          tibble::tibble(message = "No recategorization rules yet."),
-          rownames = FALSE, options = list(dom = "t")))
-      }
+      shiny::req(nrow(r) > 0)
       show <- r
       show$delete <- vapply(seq_len(nrow(show)), function(i) {
         sprintf(

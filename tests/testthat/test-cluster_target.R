@@ -296,3 +296,104 @@ test_that("excluding every member other than the target writes no rules", {
     expect_equal(nrow(proxy$peek()), 0)
   })
 })
+
+
+# --- The member table (render) -----------------------------------------------
+
+test_that("each cluster renders as one Keep / n / Exclude / Value table", {
+  # Replaces two side-by-side lists (radio + checkbox group) that drifted out
+  # of line whenever a value wrapped, so an Exclude tick could sit beside the
+  # wrong value. One row per member keeps each tick on its own value.
+  #
+  # "fingerprint" (key collision) strips punctuation and sorts tokens, so the
+  # clusters here do not depend on a similarity score: the three lattes share
+  # the key "latte", and "<b>x</b>" / "x b" share "b x".
+  uv <- tibble::tibble(
+    value = c("latte", "Latte ", "LATTE", "<b>x</b>", "x b"),
+    n     = c(10L, 3L, 1L, 2L, 1L))
+  proxy <- .rules_proxy()
+  shiny::testServer(
+    mod_cluster_view_server,
+    args = list(shared_state    = .state(),
+                selected_var_r  = shiny::reactiveVal("drink1"),
+                unique_values_r = shiny::reactive(uv),
+                rules_proxy     = proxy), {
+    session$setInputs(algorithm = "fingerprint", threshold = 0.92, qgram = 2,
+                      normalize = c("lower", "squish"),
+                      apply_siblings = FALSE)
+    cl  <- clusters_r()
+    cid <- .latte_cid(cl)
+    tag_cid <- unique(cl$cluster_id[cl$value == "<b>x</b>"])
+    expect_equal(sum(cl$cluster_id == cid), 3L)
+    expect_equal(sum(cl$cluster_id == tag_cid), 2L)
+
+    html <- as.character(output$clusters_ui$html)
+    target_id  <- session$ns(paste0("target_", cid))
+    exclude_id <- session$ns(paste0("exclude_", cid))
+
+    # One table per cluster, headers in order: fixed-width controls first,
+    # Value last.
+    tables <- regmatches(html, gregexpr("<table[^>]*rs-cluster-table", html))[[1]]
+    expect_length(tables, 2)
+    heads <- regmatches(html, gregexpr("<th[^>]*>[^<]*</th>", html))[[1]]
+    expect_equal(gsub("<[^>]+>", "", heads),
+                 rep(c("Keep", "n", "Exclude", "Value"), 2))
+
+    # The old two-list inputs are gone.
+    expect_false(grepl("Recode the rest to:", html, fixed = TRUE))
+    expect_false(grepl("Exclude from cluster:", html, fixed = TRUE))
+
+    # Group containers keep the ids the Apply handler and the conflict check
+    # read, and every row input's name equals its container id: that is how
+    # Shiny's radio / checkbox-group bindings find them.
+    expect_true(grepl(sprintf('id="%s"', target_id), html, fixed = TRUE))
+    expect_true(grepl(sprintf('id="%s"', exclude_id), html, fixed = TRUE))
+    inputs <- regmatches(html, gregexpr("<input[^>]*>", html))[[1]]
+    radios <- inputs[grepl('type="radio"', inputs, fixed = TRUE) &
+                     grepl(sprintf('name="%s"', target_id), inputs, fixed = TRUE)]
+    checks <- inputs[grepl('type="checkbox"', inputs, fixed = TRUE) &
+                     grepl(sprintf('name="%s"', exclude_id), inputs, fixed = TRUE)]
+    expect_length(radios, 3)
+    expect_length(checks, 3)
+    # No id on the row inputs, or the single-checkbox binding claims them.
+    row_inputs <- inputs[grepl('type="(radio|checkbox)"', inputs)]
+    expect_length(row_inputs, 10)
+    expect_false(any(grepl("\\sid=", row_inputs)))
+    # The most frequent member is pre-selected, and only that one.
+    expect_equal(sum(grepl("checked", radios, fixed = TRUE)), 1L)
+    expect_true(grepl('value="latte"', radios[grepl("checked", radios)],
+                      fixed = TRUE))
+
+    # Per-row accessible labels.
+    expect_true(any(grepl('aria-label="Keep Latte "', radios, fixed = TRUE)))
+    expect_true(any(grepl('aria-label="Exclude LATTE"', checks, fixed = TRUE)))
+
+    # Dataset text is escaped everywhere (cell, value, aria-label), never
+    # injected as markup.
+    expect_false(grepl("<b>x</b>", html, fixed = TRUE))
+    expect_true(grepl("<td>&lt;b&gt;x&lt;/b&gt;</td>", html, fixed = TRUE))
+    expect_true(grepl('aria-label="Keep &lt;b&gt;x&lt;/b&gt;"', html,
+                      fixed = TRUE))
+
+    # shiny.css caps .shiny-input-container at 300px, so width: 100% on the
+    # table alone is 100% of 300px and the Value column is crushed. Both
+    # wrappers must carry an INLINE width. The custom-target textInput is also
+    # a .shiny-input-container and keeps Shiny's default, so match only the
+    # group wrappers.
+    wrappers <- regmatches(html,
+      gregexpr("<div[^>]*shiny-input-(radiogroup|checkboxgroup)[^>]*>",
+               html))[[1]]
+    expect_length(wrappers, 4)
+    bad <- wrappers[!grepl("width:[[:space:]]*100%", wrappers)]
+    expect_identical(bad, character(0),
+      info = paste("wrapper(s) without an inline width: 100% -",
+                   paste(bad, collapse = " | ")))
+  })
+})
+
+test_that("both cluster sub-tabs say their rules are trimmed_ci", {
+  html <- as.character(mod_cluster_view_ui("cv"))
+  hits <- gregexpr("case and surrounding spaces are ignored", html,
+                   fixed = TRUE)[[1]]
+  expect_equal(sum(hits > 0), 2L)
+})
