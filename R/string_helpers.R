@@ -8,8 +8,10 @@
 #   empty_recodes_tibble()              schema scaffold for a rule set
 #   normalize_value(x, match_type)      value normalization per match strategy
 #   cluster_strings(vals, freqs, ...)   string-similarity clustering + rare flag
-#   read_recodes(path)                  read recode CSV with NA round-trip
+#   read_recodes(path, conform = TRUE)  read recode CSV with NA round-trip,
+#                                       conformed to the schema by default
 #   write_recodes(rules, path)          write recode CSV with NA round-trip
+#   merge_recode_rules(base, overlay)   overlay wins per rule_id, in place
 #   recode_rule_id(variable, match_type, old_value)  stable hash id
 #   validate_recodes(rules, data = NULL)  duplicates, chains, blanks, stale
 #   apply_recodes(df, rules)            single pass, first match wins;
@@ -434,9 +436,85 @@ match_taxonomy <- function(values, taxonomy_targets, frequencies = NULL,
 
 # --- CSV read / write --------------------------------------------------------
 
+# Coerce an `apply_to_siblings` vector of whatever type a CSV or a hand-built
+# frame produced into a plain logical. Accepts TRUE/true/T/1 and FALSE/false/F/0
+# (surrounding spaces ignored); anything else, blanks included, becomes NA,
+# which every consumer treats as "not a sibling rule".
+.as_siblings_flag <- function(x) {
+  if (is.logical(x)) return(x)
+  if (is.numeric(x)) {
+    out <- rep(NA, length(x))
+    out[!is.na(x) & x == 1] <- TRUE
+    out[!is.na(x) & x == 0] <- FALSE
+    return(out)
+  }
+  s <- toupper(trimws(as.character(x)))
+  out <- rep(NA, length(s))
+  out[!is.na(s) & s %in% c("TRUE", "T", "1")]  <- TRUE
+  out[!is.na(s) & s %in% c("FALSE", "F", "0")] <- FALSE
+  out
+}
+
+#' Bring a recode rule set up to the recodes CSV schema.
+#'
+#' Every schema column (`names(empty_recodes_tibble())`) is present, in schema
+#' order, with the schema type: a missing column is added as NA,
+#' `apply_to_siblings` is coerced to logical (see `.as_siblings_flag()`), and
+#' the other schema columns are character. Columns outside the schema are NOT
+#' dropped: they are kept, in their original order, after the schema columns,
+#' so a read never loses data. `write_recodes()` is where the schema is
+#' enforced strictly.
+#'
+#' Why this exists: a CSV missing, say, `apply_to_siblings` used to read back
+#' with fewer columns and only a console warning, and `generate_recode_R()`
+#' then errored on the missing column.
+#'
+#' @param df A data frame of recode rules (any column types).
+#' @return A tibble with the 13 schema columns first, then any extras.
+.conform_recodes_schema <- function(df) {
+  schema <- empty_recodes_tibble()
+  schema_cols <- names(schema)
+  df <- tibble::as_tibble(df)
+  n  <- nrow(df)
+  for (nm in schema_cols) {
+    if (!(nm %in% names(df))) {
+      df[[nm]] <- if (nm == "apply_to_siblings") rep(NA, n)
+                  else rep(NA_character_, n)
+    } else if (nm == "apply_to_siblings") {
+      df[[nm]] <- .as_siblings_flag(df[[nm]])
+    } else {
+      df[[nm]] <- as.character(df[[nm]])
+    }
+  }
+  extras <- setdiff(names(df), schema_cols)
+  df[, c(schema_cols, extras), drop = FALSE]
+}
+
 #' Read a recodes CSV, preserving the explicit NA encoding (`<NA>` in CSV).
-read_recodes <- function(path) {
+#'
+#' @param path    Path to the CSV. A missing file reads as the empty schema.
+#' @param conform When TRUE (default), every column is read as character and
+#'   the result is passed through `.conform_recodes_schema()`: all 13 schema
+#'   columns present, in order, typed, with any extra columns kept after them.
+#'   When FALSE, the file is read raw with the schema's column types, exactly
+#'   as before this option existed (columns the file lacks are simply absent,
+#'   and readr warns). Callers that must inspect the raw columns first, such as
+#'   the import module's schema guard, use FALSE and conform afterwards.
+read_recodes <- function(path, conform = TRUE) {
   if (!file.exists(path)) return(empty_recodes_tibble())
+  use_schema <- length(conform) == 1 && !is.na(conform) && conform
+  if (!use_schema) return(.read_recodes_raw(path))
+  df <- readr::read_csv(
+    path,
+    na = "<NA>",
+    show_col_types = FALSE,
+    col_types = readr::cols(.default = readr::col_character())
+  )
+  .conform_recodes_schema(df)
+}
+
+# The unconformed read: schema column types, no column added or reordered.
+.read_recodes_raw <- function(path) {
   readr::read_csv(
     path,
     na = "<NA>",
@@ -460,10 +538,47 @@ read_recodes <- function(path) {
 }
 
 #' Write a recodes tibble with explicit NA encoding.
+#'
+#' The rule set is conformed first and exactly the 13 schema columns are
+#' written, in schema order. Extra columns (kept by `read_recodes()`) are not
+#' written, so the file on disk always matches the schema.
 write_recodes <- function(rules, path) {
+  rules <- .conform_recodes_schema(rules)
+  rules <- rules[, names(empty_recodes_tibble()), drop = FALSE]
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
   readr::write_csv(rules, path, na = "<NA>")
   invisible(path)
+}
+
+
+# --- Merging rule sets --------------------------------------------------------
+
+#' Combine two recode rule sets, `overlay` winning per `rule_id`.
+#'
+#' A rule in `overlay` whose `rule_id` is already in `base` replaces that base
+#' rule IN PLACE, so the base order is preserved. Rules only in `overlay` are
+#' appended, in overlay order.
+#'
+#' Why in place: rules are single pass, first match wins, so row order decides
+#' which rule claims a cell when two rules match it. Dropping the old row and
+#' appending the edited one moves the rule to the end, and merely editing its
+#' notes could then change the recoded output.
+#'
+#' @param base,overlay Recode rule tibbles (NULL is treated as empty). The
+#'   overlay must carry every column of `base`.
+#' @return A tibble with `base`'s columns (plus any overlay-only columns that
+#'   `bind_rows()` brings in with appended rules).
+merge_recode_rules <- function(base, overlay) {
+  if (is.null(base)    || !is.data.frame(base))    base    <- empty_recodes_tibble()
+  if (is.null(overlay) || !is.data.frame(overlay)) overlay <- empty_recodes_tibble()
+  if (nrow(overlay) == 0) return(base)
+  if (nrow(base) == 0)    return(overlay)
+  idx <- match(base$rule_id, overlay$rule_id)
+  hit <- !is.na(idx)
+  out <- base
+  if (any(hit)) out[hit, ] <- overlay[idx[hit], names(base), drop = FALSE]
+  extra <- overlay[!(overlay$rule_id %in% base$rule_id), , drop = FALSE]
+  dplyr::bind_rows(out, extra)
 }
 
 

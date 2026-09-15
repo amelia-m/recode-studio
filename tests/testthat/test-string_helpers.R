@@ -688,3 +688,265 @@ test_that("match_taxonomy handles empty inputs and empty targets gracefully", {
   expect_equal(res_notarget$status, c("no_taxonomy_targets", "no_taxonomy_targets"))
 })
 
+
+# --- Schema-conforming recodes CSV read / write ------------------------------
+
+# Write raw CSV lines to a temp file and return its path.
+write_csv_lines <- function(lines) {
+  tmp <- tempfile(fileext = ".csv")
+  writeLines(lines, tmp)
+  tmp
+}
+
+schema_cols <- function() names(empty_recodes_tibble())
+
+test_that("a recodes CSV missing sibling columns reads to the full schema", {
+  tmp <- write_csv_lines(c(
+    "rule_id,variable,match_type,old_value,new_value,action,notes,author,created_at,updated_at,source_dataset",
+    "r1,drink1,trimmed_ci,capuccino,cappuccino,recode,typo,t,2026-01-01,2026-01-01,cafe",
+    "r2,city,exact,<NA>,unknown,recode,<NA>,t,2026-01-01,2026-01-01,cafe"
+  ))
+  on.exit(unlink(tmp), add = TRUE)
+
+  expect_no_warning(rules <- read_recodes(tmp))
+  expect_named(rules, schema_cols())
+  expect_type(rules$apply_to_siblings, "logical")
+  expect_true(all(is.na(rules$apply_to_siblings)))
+  expect_true(all(is.na(rules$sibling_pattern)))
+  expect_true(is.na(rules$old_value[2]))
+
+  df <- tibble::tibble(drink1 = c("Capuccino ", "latte"), city = c("Uptown", NA))
+  expect_no_warning(code <- generate_recode_R(rules, "cafe"))
+  expect_silent(parse(text = code))
+  expect_no_warning(res <- apply_recodes(df, rules))
+  expect_identical(res$df$drink1, c("cappuccino", "latte"))
+  expect_identical(res$df$city, c("Uptown", "unknown"))
+})
+
+test_that("read_recodes puts schema columns in schema order", {
+  tmp <- write_csv_lines(c(
+    "source_dataset,new_value,old_value,variable,rule_id,match_type,action",
+    "cafe,latte,late,drink1,r1,exact,recode"
+  ))
+  on.exit(unlink(tmp), add = TRUE)
+  rules <- read_recodes(tmp)
+  expect_named(rules, schema_cols())
+  expect_identical(rules$old_value, "late")
+  expect_identical(rules$source_dataset, "cafe")
+})
+
+test_that("read_recodes coerces apply_to_siblings text to logical", {
+  tmp <- write_csv_lines(c(
+    "rule_id,variable,apply_to_siblings",
+    "a,drink1,TRUE", "b,drink1,true", "c,drink1,T", "d,drink1,1",
+    "e,drink1,FALSE", "f,drink1,false", "g,drink1,0", "h,drink1,",
+    "i,drink1,maybe"
+  ))
+  on.exit(unlink(tmp), add = TRUE)
+  rules <- read_recodes(tmp)
+  expect_identical(rules$apply_to_siblings,
+                   c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, NA, NA))
+})
+
+test_that("read_recodes keeps unknown extra columns after the schema", {
+  tmp <- write_csv_lines(c(
+    "reviewer,rule_id,variable,match_type,old_value,new_value,action,ticket",
+    "sam,r1,drink1,exact,late,latte,recode,T-12"
+  ))
+  on.exit(unlink(tmp), add = TRUE)
+  rules <- read_recodes(tmp)
+  expect_named(rules, c(schema_cols(), "reviewer", "ticket"))
+  expect_identical(rules$reviewer, "sam")
+  expect_identical(rules$ticket, "T-12")
+
+  # ...but write_recodes writes exactly the schema.
+  out <- tempfile(fileext = ".csv"); on.exit(unlink(out), add = TRUE)
+  write_recodes(rules, out)
+  expect_named(read_recodes(out), schema_cols())
+  expect_identical(
+    strsplit(readLines(out, n = 1), ",", fixed = TRUE)[[1]], schema_cols())
+})
+
+test_that("write_recodes conforms a partial rule set before writing", {
+  partial <- tibble::tibble(
+    variable = "drink1", rule_id = "r1", match_type = "exact",
+    old_value = "late", new_value = "latte", action = "recode",
+    apply_to_siblings = "1"
+  )
+  out <- tempfile(fileext = ".csv"); on.exit(unlink(out), add = TRUE)
+  write_recodes(partial, out)
+  rt <- read_recodes(out)
+  expect_named(rt, schema_cols())
+  expect_identical(rt$apply_to_siblings, TRUE)
+  expect_identical(rt$new_value, "latte")
+})
+
+test_that("read_recodes(conform = FALSE) is the unconformed raw read", {
+  # Full-schema file: typed columns, same as a direct read with the schema spec.
+  rules <- mk_rule("drink1", "trimmed_ci", "capuccino", NA_character_,
+                   siblings = TRUE, pattern = "^drink[0-9]+$")
+  full <- tempfile(fileext = ".csv"); on.exit(unlink(full), add = TRUE)
+  write_recodes(rules, full)
+  raw <- read_recodes(full, conform = FALSE)
+  expected <- readr::read_csv(
+    full, na = "<NA>", show_col_types = FALSE,
+    col_types = readr::cols(
+      rule_id = readr::col_character(), variable = readr::col_character(),
+      apply_to_siblings = readr::col_logical(),
+      sibling_pattern = readr::col_character(),
+      match_type = readr::col_character(), old_value = readr::col_character(),
+      new_value = readr::col_character(), action = readr::col_character(),
+      notes = readr::col_character(), author = readr::col_character(),
+      created_at = readr::col_character(), updated_at = readr::col_character(),
+      source_dataset = readr::col_character()))
+  # Compare columns; readr attaches spec/problems attributes to each read.
+  expect_identical(lapply(raw, identity), lapply(expected, identity))
+
+  # Missing-column file: columns stay missing, readr still warns, no reorder.
+  partial <- write_csv_lines(c(
+    "variable,rule_id,match_type,old_value,new_value,action,reviewer",
+    "drink1,r1,exact,late,latte,recode,sam"
+  ))
+  on.exit(unlink(partial), add = TRUE)
+  expect_warning(raw2 <- read_recodes(partial, conform = FALSE))
+  expect_named(raw2, c("variable", "rule_id", "match_type", "old_value",
+                       "new_value", "action", "reviewer"))
+
+  # The import module's path: raw read, then conform.
+  expect_named(.conform_recodes_schema(raw2), c(schema_cols(), "reviewer"))
+})
+
+test_that("the <NA> round trip is the same with and without conform", {
+  rules <- dplyr::bind_rows(
+    mk_rule("drink1", "trimmed_ci", "capuccino", "cappuccino"),
+    mk_rule("city", "exact", NA_character_, "unknown"),
+    mk_rule("notes", "exact", "n/a", NA_character_, action = "delete"),
+    mk_rule("review", "exact", "meh", "")
+  )
+  tmp <- tempfile(fileext = ".csv"); on.exit(unlink(tmp), add = TRUE)
+  write_recodes(rules, tmp)
+  conformed <- read_recodes(tmp)
+  raw       <- read_recodes(tmp, conform = FALSE)
+  expect_identical(lapply(conformed, identity), lapply(raw, identity))
+  expect_true(is.na(conformed$old_value[2]))
+  expect_true(is.na(conformed$new_value[3]))
+  expect_true(is.na(conformed$notes[1]))
+  expect_equal(conformed$apply_to_siblings, rules$apply_to_siblings)
+})
+
+test_that("read_recodes on a missing path returns the empty schema either way", {
+  nope <- file.path(tempdir(), "definitely-not-here-recodes.csv")
+  expect_identical(read_recodes(nope), empty_recodes_tibble())
+  expect_identical(read_recodes(nope, conform = FALSE), empty_recodes_tibble())
+})
+
+
+# --- merge_recode_rules ------------------------------------------------------
+
+test_that("merge_recode_rules replaces a colliding rule in place", {
+  base <- dplyr::bind_rows(
+    mk_rule("drink1", "exact", "late", "latte"),
+    mk_rule("drink1", "exact", "expresso", "espresso"),
+    mk_rule("city", "exact", "uptown", "Uptown")
+  )
+  edited <- base[2, ]
+  edited$notes <- "common misspelling"
+  out <- merge_recode_rules(base, edited)
+  expect_identical(out$rule_id, base$rule_id)
+  expect_identical(out$notes, c(NA, "common misspelling", NA))
+})
+
+test_that("merge_recode_rules keeps precedence where drop-and-append would not", {
+  df <- tibble::tibble(drink1 = c("latte", "oat latte", "mocha"))
+  # Both rules match "latte"; the first one listed claims it.
+  base <- dplyr::bind_rows(
+    mk_rule("drink1", "trimmed_ci", "latte", "Latte"),
+    mk_rule("drink1", "regex", "latte", "Latte (other)")
+  )
+  expect_identical(apply_recodes(df, base)$df$drink1,
+                   c("Latte", "Latte (other)", "mocha"))
+
+  edited <- base[1, ]
+  edited$notes <- "house style"
+
+  merged <- merge_recode_rules(base, edited)
+  expect_identical(apply_recodes(df, merged)$df$drink1,
+                   c("Latte", "Latte (other)", "mocha"))
+
+  # The old drop-then-append behaviour moves the edited rule last, and a
+  # notes-only edit changes the output.
+  dropped <- dplyr::bind_rows(base[base$rule_id != edited$rule_id, ], edited)
+  expect_identical(apply_recodes(df, dropped)$df$drink1,
+                   c("Latte (other)", "Latte (other)", "mocha"))
+})
+
+test_that("merge_recode_rules appends new rule ids in overlay order", {
+  base <- mk_rule("drink1", "exact", "late", "latte")
+  overlay <- dplyr::bind_rows(
+    mk_rule("city", "exact", "uptown", "Uptown"),
+    base,
+    mk_rule("drink2", "exact", "moca", "mocha")
+  )
+  out <- merge_recode_rules(base, overlay)
+  expect_identical(out$rule_id,
+                   c(base$rule_id, overlay$rule_id[1], overlay$rule_id[3]))
+})
+
+test_that("merge_recode_rules handles empty and NULL inputs", {
+  r <- mk_rule("drink1", "exact", "late", "latte")
+  expect_identical(merge_recode_rules(r, empty_recodes_tibble()), r)
+  expect_identical(merge_recode_rules(empty_recodes_tibble(), r), r)
+  expect_identical(merge_recode_rules(NULL, r), r)
+  expect_identical(merge_recode_rules(r, NULL), r)
+  expect_identical(merge_recode_rules(NULL, NULL), empty_recodes_tibble())
+})
+
+
+# --- Coverage: match_type truth table, rare flag, stale, regex normalize -----
+
+test_that(".rule_hits truth table across every match_type and an NA target", {
+  x <- c("Yes", "yes", " yes ", "yesterday", NA)
+  hit <- function(mt, old) .rule_hits(x, old, mt)
+
+  expect_identical(hit("exact",      "yes"),  c(FALSE, TRUE,  FALSE, FALSE, FALSE))
+  expect_identical(hit("exact",      "YES"),  c(FALSE, FALSE, FALSE, FALSE, FALSE))
+  expect_identical(hit("exact_ci",   "YES"),  c(TRUE,  TRUE,  FALSE, FALSE, FALSE))
+  expect_identical(hit("trimmed_ci", "yes"),  c(TRUE,  TRUE,  TRUE,  FALSE, FALSE))
+  # regex is unanchored and case-sensitive, and never matches a missing cell.
+  expect_identical(hit("regex",      "^yes"), c(FALSE, TRUE,  FALSE, TRUE,  FALSE))
+  expect_identical(hit("regex",      "yes"),  c(FALSE, TRUE,  TRUE,  TRUE,  FALSE))
+  # An NA old_value targets the missing cells whatever the match_type.
+  for (mt in RECODE_MATCH_TYPES) {
+    expect_identical(hit(mt, NA_character_), c(FALSE, FALSE, FALSE, FALSE, TRUE))
+  }
+})
+
+test_that("cluster_strings flags a low-share cluster member as rare, not singletons", {
+  out <- cluster_strings(c("cappuccino", "capuccino", "espresso"),
+                         frequencies = c(99L, 1L, 1L),
+                         threshold = 0.85, algorithm = "jw")
+  cap <- out$cluster_id[out$value == "cappuccino"]
+  expect_equal(out$cluster_id[out$value == "capuccino"], cap)
+  expect_false(out$cluster_id[out$value == "espresso"] == cap)
+
+  expect_true(out$is_rare[out$value == "capuccino"])    # 1 of 100 in cluster
+  expect_false(out$is_rare[out$value == "cappuccino"])  # the dominant spelling
+  expect_false(out$is_rare[out$value == "espresso"])    # singleton, never rare
+})
+
+test_that("validate_recodes flags a rule matching nothing as stale", {
+  df <- tibble::tibble(drink1 = c("latte", "mocha"))
+  rules <- dplyr::bind_rows(
+    mk_rule("drink1", "exact", "latte", "Latte"),       # matches
+    mk_rule("drink1", "exact", "frappe", "Frappe"),     # value not present
+    mk_rule("drink9", "exact", "latte", "Latte")        # column not present
+  )
+  issues <- validate_recodes(rules, df)
+  expect_identical(issues$stale$rule_id, rules$rule_id[2:3])
+})
+
+test_that("normalize_value leaves values untouched for regex", {
+  x <- c(" Oat  Latte ", "^Mocha$", NA)
+  expect_identical(normalize_value(x, "regex"), x)
+})
+

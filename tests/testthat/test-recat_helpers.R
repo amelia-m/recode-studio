@@ -281,6 +281,21 @@ test_that("recat_rule_hits_by_col is empty for a rule with no columns/terms", {
   expect_equal(nrow(recat_rule_hits_by_col(df, no_terms[1, ])), 0L)
 })
 
+test_that("per-column breakdown agrees with the row matcher across columns", {
+  # Two DIFFERENT rows match, each through a different column.
+  df <- tibble::tibble(
+    drink1 = c("latte", "espresso", "mocha"),
+    drink2 = c("", "oat latte", "")
+  )
+  rules <- mk_rule("cat", "Milk-based", vars = c("drink1", "drink2"),
+                   include_terms = "latte")
+  by <- recat_rule_hits_by_col(df, rules[1, ])
+  expect_identical(recat_rule_hits(df, rules[1, ]), c(TRUE, TRUE, FALSE))
+  expect_equal(sum(recat_rule_hits(df, rules[1, ])), 2L)
+  expect_equal(by$kept, c(1L, 1L))
+  expect_equal(max(by$kept), 1L)
+})
+
 
 # --- Multiple rules, same out_col, first-match-wins by priority --------------
 
