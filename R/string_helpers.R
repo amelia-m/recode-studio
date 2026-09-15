@@ -800,9 +800,9 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL) {
   groups <- lapply(pattern_order,
                    function(p) rules[rules$effective_pattern == p, , drop = FALSE])
 
-  # A column reached by more than one pattern (e.g. a plain rule on cause1 plus
-  # a sibling rule matching "^cause[0-9]+$") lands in two blocks, which run in
-  # sequence rather than in one pass — say so rather than diverging silently
+  # A column reached by more than one pattern (e.g. a plain rule on drink1 plus
+  # a sibling rule matching "^drink[0-9]+$") lands in two blocks, which run in
+  # sequence rather than in one pass - say so rather than diverging silently
   # from apply_recodes().
   overlapping <- unique(rules$variable[vapply(rules$variable, function(v) {
     sum(vapply(pattern_order, function(p) isTRUE(grepl(p, v)), logical(1))) > 1L

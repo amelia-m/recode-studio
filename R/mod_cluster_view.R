@@ -320,7 +320,7 @@ mod_cluster_view_ui <- function(id) {
                     shiny::tags$tr(
                       shiny::tags$td(shiny::tags$strong("Jaro-Winkler (Default)")),
                       shiny::tags$td(shiny::tags$span(class = "badge bg-secondary", "O(N²) Pairwise")),
-                      shiny::tags$td("Short strings, person/place names, single words with typos near end (e.g. 'Nebraska' vs 'Nebrska')."),
+                      shiny::tags$td("Short strings, person/place names, single words with typos near end (e.g. 'Americano' vs 'Americanno')."),
                       shiny::tags$td("Heavily rewards matching prefixes; gold standard for entity names."),
                       shiny::tags$td("Less effective for multi-word phrases with reordered words.")
                     ),

@@ -11,9 +11,8 @@
 #
 # One word per line.
 
-# README: sibling-column recode worked example
-ascphyxiation
-asphyziation
+# README: sibling-column recode worked example uses capuccino and capccino,
+# listed once under the messy-input fixtures below.
 
 # string_helpers.R: docstring explaining the single-pass invariant
 # (the rule pair `asain -> Asian` / `Asian -> Asian or PI`)
@@ -34,16 +33,8 @@ expresso
 macchiatto
 machiato
 moccha
-asfixiation
-ashphxiation
-asphyxation
-asphyzia
-drowining
-wond
-Californai
-Nebrska
 newyork
-linclon
+uptwon
 Smtih
 
 # test-string_helpers.R: deliberately INVALID match_type, to exercise

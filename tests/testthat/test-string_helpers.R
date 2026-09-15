@@ -19,15 +19,15 @@ test_that("normalize_value applies match_type strategy", {
 })
 
 test_that("cluster_strings groups a variant family", {
-  values <- c("asphyxiation", "ascphyxiation", "ashphxiation",
-              "asphyziation", "gunshot wound")
+  values <- c("cappuccino", "capuccino", "cappucino",
+              "capccino", "flat white")
   out <- cluster_strings(values, threshold = 0.85, algorithm = "jw")
   expect_equal(nrow(out), 5)
-  variants <- c("asphyxiation", "ascphyxiation", "ashphxiation", "asphyziation")
+  variants <- c("cappuccino", "capuccino", "cappucino", "capccino")
   expect_length(unique(out$cluster_id[out$value %in% variants]), 1L)
-  asph <- out$cluster_id[out$value == "asphyxiation"]
-  gun  <- out$cluster_id[out$value == "gunshot wound"]
-  expect_false(asph == gun)
+  cap  <- out$cluster_id[out$value == "cappuccino"]
+  flat <- out$cluster_id[out$value == "flat white"]
+  expect_false(cap == flat)
 })
 
 test_that("cluster_strings handles empty input", {
@@ -39,22 +39,22 @@ test_that("cluster_strings handles empty input", {
 test_that("normalize_for_cluster applies the selected steps", {
   expect_equal(normalize_for_cluster("Foo, BAR", c("lower","punct","squish")),
                "foo bar")
-  expect_equal(normalize_for_cluster("asphyxia asphyxia", "dedupe_tokens"),
-               "asphyxia")
-  expect_equal(normalize_for_cluster("head and torso", "sort_tokens"),
-               "and head torso")
+  expect_equal(normalize_for_cluster("latte latte", "dedupe_tokens"),
+               "latte")
+  expect_equal(normalize_for_cluster("oat milk latte", "sort_tokens"),
+               "latte milk oat")
   expect_equal(normalize_for_cluster("Foo Bar", character(0)), "Foo Bar")
 })
 
 test_that("cosine metric clusters reordered multi-word values", {
-  values <- c("head and torso injuries", "injuries of torso and head",
-              "gunshot wound")
+  values <- c("oat milk vanilla latte", "vanilla latte with oat milk",
+              "flat white")
   out <- cluster_strings(values, algorithm = "cosine", q = 2, threshold = 0.6,
                          normalize = c("lower", "punct", "squish"))
-  reordered <- c("head and torso injuries", "injuries of torso and head")
+  reordered <- c("oat milk vanilla latte", "vanilla latte with oat milk")
   expect_length(unique(out$cluster_id[out$value %in% reordered]), 1L)
-  expect_false(out$cluster_id[out$value == "gunshot wound"] ==
-               out$cluster_id[out$value == "head and torso injuries"])
+  expect_false(out$cluster_id[out$value == "flat white"] ==
+               out$cluster_id[out$value == "oat milk vanilla latte"])
 })
 
 test_that("sort_tokens normalization groups order-permuted values exactly", {
@@ -65,14 +65,14 @@ test_that("sort_tokens normalization groups order-permuted values exactly", {
                out$cluster_id[out$value == "c b a"])
 })
 
-test_that("metaphone clusters phonetically-equal medical terms", {
+test_that("metaphone clusters phonetically-equal drink names", {
   testthat::skip_if_not_installed("phonics")
-  values <- c("asphyxiation", "asfixiation", "gunshot")
+  values <- c("espresso", "esspresso", "latte")
   out <- cluster_strings(values, algorithm = "metaphone")
-  expect_equal(out$cluster_id[out$value == "asphyxiation"],
-               out$cluster_id[out$value == "asfixiation"])
-  expect_false(out$cluster_id[out$value == "gunshot"] ==
-               out$cluster_id[out$value == "asphyxiation"])
+  expect_equal(out$cluster_id[out$value == "espresso"],
+               out$cluster_id[out$value == "esspresso"])
+  expect_false(out$cluster_id[out$value == "latte"] ==
+               out$cluster_id[out$value == "espresso"])
 })
 
 test_that("CLUSTER_ALGORITHMS / NORMALIZERS constants are exported", {
@@ -84,12 +84,12 @@ test_that("CLUSTER_ALGORITHMS / NORMALIZERS constants are exported", {
 
 test_that("write_recodes -> read_recodes preserves NA encoding", {
   rules <- tibble::tibble(
-    rule_id = c("a", "b"), variable = c("cause1", "city"),
+    rule_id = c("a", "b"), variable = c("drink1", "city"),
     apply_to_siblings = c(TRUE, FALSE),
-    sibling_pattern = c("^cause[0-9]+$", NA_character_),
+    sibling_pattern = c("^drink[0-9]+$", NA_character_),
     match_type = c("trimmed_ci", "trimmed_ci"),
-    old_value = c("ascphyxiation", "linclon"),
-    new_value = c("asphyxiation", NA_character_),
+    old_value = c("capuccino", "uptwon"),
+    new_value = c("cappuccino", NA_character_),
     action = c("recode", "delete"),
     notes = c("typo", NA_character_), author = c("t", "t"),
     created_at = c("2026-05-27T10:00:00", "2026-05-27T10:00:00"),
@@ -105,9 +105,9 @@ test_that("write_recodes -> read_recodes preserves NA encoding", {
 })
 
 test_that("recode_rule_id is stable", {
-  a <- recode_rule_id("cause1", "trimmed_ci", "ascphyxiation")
-  b <- recode_rule_id("cause1", "trimmed_ci", "ascphyxiation")
-  c <- recode_rule_id("cause1", "trimmed_ci", "asphyxiation")
+  a <- recode_rule_id("drink1", "trimmed_ci", "capuccino")
+  b <- recode_rule_id("drink1", "trimmed_ci", "capuccino")
+  c <- recode_rule_id("drink1", "trimmed_ci", "cappuccino")
   expect_equal(a, b)
   expect_false(a == c)
   expect_equal(nchar(a), 12L)
@@ -116,7 +116,7 @@ test_that("recode_rule_id is stable", {
 test_that("validate_recodes flags duplicate key, rule chain, blank new_value", {
   rules <- tibble::tibble(
     rule_id = c("r1","r2","r3","r4","r5"),
-    variable = rep("cause1", 5),
+    variable = rep("drink1", 5),
     apply_to_siblings = rep(FALSE, 5), sibling_pattern = rep(NA_character_, 5),
     match_type = rep("trimmed_ci", 5),
     old_value = c("a","a","b","x","c"),
@@ -134,22 +134,22 @@ test_that("validate_recodes flags duplicate key, rule chain, blank new_value", {
 
 test_that("apply_recodes expands to sibling columns when requested", {
   df <- tibble::tibble(
-    cause1 = c("ascphyxiation", "x"),
-    cause2 = c("ascphyxiation", NA_character_),
-    other  = c("ascphyxiation", "z")
+    drink1 = c("capuccino", "x"),
+    drink2 = c("capuccino", NA_character_),
+    other  = c("capuccino", "z")
   )
   rules <- tibble::tibble(
-    rule_id = "r1", variable = "cause1",
-    apply_to_siblings = TRUE, sibling_pattern = "^cause[0-9]+$",
-    match_type = "trimmed_ci", old_value = "ascphyxiation",
-    new_value = "asphyxiation", action = "recode",
+    rule_id = "r1", variable = "drink1",
+    apply_to_siblings = TRUE, sibling_pattern = "^drink[0-9]+$",
+    match_type = "trimmed_ci", old_value = "capuccino",
+    new_value = "cappuccino", action = "recode",
     notes = NA_character_, author = "t",
     created_at = "", updated_at = "", source_dataset = "d"
   )
   res <- apply_recodes(df, rules)
-  expect_equal(res$df$cause1[1], "asphyxiation")
-  expect_equal(res$df$cause2[1], "asphyxiation")
-  expect_equal(res$df$other[1], "ascphyxiation")  # untouched
+  expect_equal(res$df$drink1[1], "cappuccino")
+  expect_equal(res$df$drink2[1], "cappuccino")
+  expect_equal(res$df$other[1], "capuccino")  # untouched
   expect_equal(res$summary$cells_changed, 2L)
 })
 
@@ -169,11 +169,11 @@ test_that("apply_recodes delete sets NA", {
 
 test_that("generate_recode_R parses and contains case_when", {
   rules <- tibble::tibble(
-    rule_id = c("r1","r2"), variable = c("cause1","cause1"),
+    rule_id = c("r1","r2"), variable = c("drink1","drink1"),
     apply_to_siblings = c(FALSE, FALSE), sibling_pattern = c(NA_character_, NA_character_),
     match_type = c("trimmed_ci","trimmed_ci"),
-    old_value = c("ascphyxiation","gone"),
-    new_value = c("asphyxiation", NA_character_),
+    old_value = c("capuccino","gone"),
+    new_value = c("cappuccino", NA_character_),
     action = c("recode","delete"),
     notes = c("typo","x"), author = c("t","t"),
     created_at = c("",""), updated_at = c("",""),
@@ -220,20 +220,20 @@ test_that("enum constants are exported and complete", {
 
 test_that("apply_recodes with match_type = regex matches by pattern", {
   df <- tibble::tibble(
-    cause = c("acute asphyxia", "asphyxiation", "gunshot wound", NA_character_)
+    drink = c("double espresso", "espresso macchiato", "flat white", NA_character_)
   )
   rules <- tibble::tibble(
-    rule_id = "r1", variable = "cause", apply_to_siblings = FALSE,
+    rule_id = "r1", variable = "drink", apply_to_siblings = FALSE,
     sibling_pattern = NA_character_, match_type = "regex",
-    old_value = "asphyx", new_value = "ASPHYXIA",   # unanchored substring
+    old_value = "espresso", new_value = "ESPRESSO",   # unanchored substring
     action = "recode", notes = NA_character_, author = "t",
     created_at = "", updated_at = "", source_dataset = "d"
   )
   res <- apply_recodes(df, rules)
-  expect_equal(res$df$cause[1], "ASPHYXIA")   # "acute asphyxia" matched
-  expect_equal(res$df$cause[2], "ASPHYXIA")   # "asphyxiation" matched
-  expect_equal(res$df$cause[3], "gunshot wound")  # untouched
-  expect_true(is.na(res$df$cause[4]))         # NA untouched
+  expect_equal(res$df$drink[1], "ESPRESSO")   # "double espresso" matched
+  expect_equal(res$df$drink[2], "ESPRESSO")   # "espresso macchiato" matched
+  expect_equal(res$df$drink[3], "flat white")  # untouched
+  expect_true(is.na(res$df$drink[4]))         # NA untouched
   expect_equal(res$summary$cells_changed, 2L)
 })
 
@@ -269,24 +269,24 @@ test_that("validate_recodes flags an invalid regex pattern", {
 
 test_that("generate_recode_R emits str_detect for regex rules", {
   rules <- tibble::tibble(
-    rule_id = "r1", variable = "cause", apply_to_siblings = FALSE,
+    rule_id = "r1", variable = "drink", apply_to_siblings = FALSE,
     sibling_pattern = NA_character_, match_type = "regex",
-    old_value = "asphyx", new_value = "asphyxiation",
+    old_value = "espresso", new_value = "espresso drink",
     action = "recode", notes = NA_character_, author = "t",
     created_at = "", updated_at = "", source_dataset = "d"
   )
   code <- generate_recode_R(rules, "d")
   expect_silent(parse(text = code))
   expect_true(grepl("str_detect", code))
-  expect_false(grepl("== \"asphyx\"", code))
+  expect_false(grepl("== \"espresso\"", code))
 })
 
 test_that("generate_recode_R sibling rule uses across()", {
   rules <- tibble::tibble(
-    rule_id = "r1", variable = "cause1",
-    apply_to_siblings = TRUE, sibling_pattern = "^cause[0-9]+$",
-    match_type = "trimmed_ci", old_value = "ascphyxiation",
-    new_value = "asphyxiation", action = "recode",
+    rule_id = "r1", variable = "drink1",
+    apply_to_siblings = TRUE, sibling_pattern = "^drink[0-9]+$",
+    match_type = "trimmed_ci", old_value = "capuccino",
+    new_value = "cappuccino", action = "recode",
     notes = NA_character_, author = "t",
     created_at = "", updated_at = "", source_dataset = "d"
   )
@@ -324,19 +324,19 @@ mk_rule <- function(variable, match_type, old_value, new_value,
 
 # Synthetic frame. One column per thing under test:
 #   race        - exact, exact_ci, regex, and the CASCADE pair
-#   cause1/2    - sibling expansion (other must stay untouched)
+#   drink1/2    - sibling expansion (other must stay untouched)
 #   status      - a rule targeting the MISSING cells (`<NA>` sentinel)
 #   notes       - free text rewritten by a plain rule
 synthetic_df <- function() {
   tibble::tibble(
     id     = paste0("p", 1:6),
     race   = c("asain", "Asian", "wht", "BLK", "Nat Am", NA),
-    cause1 = c("gsw", "hanging", "gsw", "overdose", NA, "gsw"),
-    cause2 = c("gsw", NA, "drowning", "gsw", "hanging", NA),
-    other  = rep("gsw", 6),
+    drink1 = c("cap", "latte", "cap", "mocha", NA, "cap"),
+    drink2 = c("cap", NA, "americano", "cap", "latte", NA),
+    other  = rep("cap", 6),
     status = c("open", NA, "closed", NA, "open", NA),
-    notes  = c("self inflicted gsw", "overdose of pills", "hanging",
-               "gsw to the head", "drowning", "unknown")
+    notes  = c("cap with oat milk", "mocha no whip", "latte",
+               "cap extra hot", "americano", "unknown")
   )
 }
 
@@ -350,10 +350,10 @@ synthetic_rules <- function() {
     mk_rule("race", "exact",      "wht",   "White"),
     mk_rule("race", "exact_ci",   "blk",   "Black"),   # hits "BLK"
     mk_rule("race", "regex",      "^Nat",  "Native"),
-    mk_rule("cause1", "trimmed_ci", "gsw", "gunshot wound",
-            siblings = TRUE, pattern = "^cause[0-9]+$"),
+    mk_rule("drink1", "trimmed_ci", "cap", "cappuccino",
+            siblings = TRUE, pattern = "^drink[0-9]+$"),
     mk_rule("status", "exact", NA_character_, "unrecorded"),
-    mk_rule("notes", "trimmed_ci", "self inflicted gsw", "firearm injury")
+    mk_rule("notes", "trimmed_ci", "cap with oat milk", "oat milk cappuccino")
   )
 }
 
@@ -398,17 +398,17 @@ test_that("the synthetic rule set produces exactly the expected frame", {
   res <- apply_recodes(synthetic_df(), synthetic_rules())
   expect_identical(res$df$race,
                    c("Asian", "Asian or PI", "White", "Black", "Native", NA))
-  expect_identical(res$df$cause1,
-                   c("gunshot wound", "hanging", "gunshot wound", "overdose",
-                     NA, "gunshot wound"))
-  expect_identical(res$df$cause2,
-                   c("gunshot wound", NA, "drowning", "gunshot wound",
-                     "hanging", NA))
-  expect_identical(res$df$other, rep("gsw", 6))     # not a sibling column
+  expect_identical(res$df$drink1,
+                   c("cappuccino", "latte", "cappuccino", "mocha",
+                     NA, "cappuccino"))
+  expect_identical(res$df$drink2,
+                   c("cappuccino", NA, "americano", "cappuccino",
+                     "latte", NA))
+  expect_identical(res$df$other, rep("cap", 6))     # not a sibling column
   expect_identical(res$df$status,
                    c("open", "unrecorded", "closed", "unrecorded", "open",
                      "unrecorded"))
-  expect_identical(res$df$notes[1], "firearm injury")
+  expect_identical(res$df$notes[1], "oat milk cappuccino")
 })
 
 test_that("apply_recodes summary separates matched / changed / shadowed", {
@@ -440,19 +440,19 @@ test_that("mixed match_types on one column emit a single case_when block", {
   # block first and the `trimmed_ci` block second, so the trimmed block
   # re-recoded what the exact block wrote and the exact rule was discarded --
   # and the script disagreed with apply_recodes().
-  df <- tibble::tibble(city = c("Omaha", "omaha "))
+  df <- tibble::tibble(city = c("Uptown", "uptown "))
   rules <- dplyr::bind_rows(
-    mk_rule("city", "trimmed_ci", "omaha", "Omaha"),
-    mk_rule("city", "exact",      "Omaha", "OMAHA"))
+    mk_rule("city", "trimmed_ci", "uptown", "Uptown"),
+    mk_rule("city", "exact",      "Uptown", "UPTOWN"))
 
   code <- generate_recode_R(rules, "d")
   expect_silent(parse(text = code))
   expect_equal(lengths(regmatches(code, gregexpr("case_when", code)))[[1]], 1L)
 
   applied <- apply_recodes(df, rules)
-  expect_identical(applied$df$city, c("Omaha", "Omaha"))
-  expect_identical(eval_generated_recodes(df, rules)$city, c("Omaha", "Omaha"))
-  # The exact rule matched the original "Omaha" but the trimmed rule claimed it.
+  expect_identical(applied$df$city, c("Uptown", "Uptown"))
+  expect_identical(eval_generated_recodes(df, rules)$city, c("Uptown", "Uptown"))
+  # The exact rule matched the original "Uptown" but the trimmed rule claimed it.
   expect_equal(applied$summary$cells_shadowed, c(0L, 1L))
 })
 
@@ -467,13 +467,13 @@ test_that("blocks are emitted in first-appearance order of the pattern", {
 
 test_that("a column reached by two patterns gets a WARNING comment", {
   rules <- dplyr::bind_rows(
-    mk_rule("cause1", "exact", "a", "A"),
-    mk_rule("cause1", "exact", "b", "B",
-            siblings = TRUE, pattern = "^cause[0-9]+$"))
+    mk_rule("drink1", "exact", "a", "A"),
+    mk_rule("drink1", "exact", "b", "B",
+            siblings = TRUE, pattern = "^drink[0-9]+$"))
   code <- generate_recode_R(rules, "d")
   expect_true(grepl("# WARNING: these columns are targeted by more than one",
                     code, fixed = TRUE))
-  expect_true(grepl("#   cause1", code, fixed = TRUE))
+  expect_true(grepl("#   drink1", code, fixed = TRUE))
 })
 
 test_that("a single-pattern rule set gets no overlap warning", {
@@ -655,26 +655,26 @@ test_that("ngram_fingerprint and fingerprint cover complementary cases", {
 })
 
 test_that("match_taxonomy matches exact and fuzzy target standards", {
-  values <- c("NE", "Nebrska", "Californai", "Unknown State")
-  targets <- c("Nebraska", "California", "New York", "Texas")
+  values <- c("FW", "Capuccino", "Americanno", "Unknown Drink")
+  targets <- c("Cappuccino", "Americano", "Flat White", "Macchiato")
 
   res <- match_taxonomy(values, targets, method = "jw", threshold = 0.70)
   expect_equal(nrow(res), 4)
   expect_named(res, c("value", "n", "matched_target", "similarity", "is_matched", "status"))
 
-  # "Nebrska" should match "Nebraska"
-  neb_row <- res[res$value == "Nebrska", ]
-  expect_true(neb_row$is_matched)
-  expect_equal(neb_row$matched_target, "Nebraska")
-  expect_gte(neb_row$similarity, 0.85)
+  # "Capuccino" should match "Cappuccino"
+  cap_row <- res[res$value == "Capuccino", ]
+  expect_true(cap_row$is_matched)
+  expect_equal(cap_row$matched_target, "Cappuccino")
+  expect_gte(cap_row$similarity, 0.85)
 
-  # "Californai" should match "California"
-  cal_row <- res[res$value == "Californai", ]
-  expect_true(cal_row$is_matched)
-  expect_equal(cal_row$matched_target, "California")
+  # "Americanno" should match "Americano"
+  ame_row <- res[res$value == "Americanno", ]
+  expect_true(ame_row$is_matched)
+  expect_equal(ame_row$matched_target, "Americano")
 
-  # "Unknown State" should be below threshold
-  unk_row <- res[res$value == "Unknown State", ]
+  # "Unknown Drink" should be below threshold
+  unk_row <- res[res$value == "Unknown Drink", ]
   expect_false(unk_row$is_matched)
   expect_true(is.na(unk_row$matched_target))
 })

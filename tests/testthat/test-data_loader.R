@@ -5,15 +5,15 @@ source(file.path("..", "..", "R", "data_loader.R"))
 
 # A small all-character fixture shaped like read_dataset() output.
 .fixture <- function() {
-  causes <- c("asphyxiation","ascphyxiation","ashphxiation","asphyxation",
-              "asphyzia","gunshot wound","gunshot wond","blunt force trauma",
-              "blunt trauma","drowning","drowining","hanging","overdose",
-              "over dose","cardiac arrest","drug toxicity","smoke inhalation",
-              "exposure","fall","poisoning")
-  n <- length(causes)
+  drinks <- c("cappuccino","capuccino","cappucino","capccino",
+              "espresso","esspresso","expresso","macchiato","machiato",
+              "americano","americanno","flat white","latte","mocha",
+              "moccha","cortado","cold brew","hot chocolate","chai latte",
+              "affogato")
+  n <- length(drinks)
   tibble::tibble(
     id         = as.character(seq_len(n)),                 # numeric-like
-    cause      = causes,                                   # free text
+    drink      = drinks,                                   # free text
     city       = paste0("City", sprintf("%02d", seq_len(n))),  # 20 unique text
     status     = rep(c("Yes","No"), length.out = n),       # 2-value choice set
     amount     = as.character(seq_len(n) * 1.5),           # numeric-like
@@ -27,7 +27,7 @@ test_that("build_meta classifies free-text vs non-candidates", {
                        "median_words","is_free_text_candidate","is_long_text",
                        "text_kind"))
   pick <- function(col) meta$is_free_text_candidate[meta$column == col]
-  expect_true(pick("cause"))
+  expect_true(pick("drink"))
   expect_true(pick("city"))
   expect_false(pick("id"))         # numeric-like
   expect_false(pick("amount"))     # numeric-like
@@ -120,19 +120,19 @@ test_that("bundled example dataset classification is unchanged", {
 })
 
 test_that("column_group extracts the prefix before the first underscore", {
-  expect_equal(column_group("vic_death_cause1"), "vic")
-  expect_equal(column_group("cause"), "(none)")
+  expect_equal(column_group("shop_drink1"), "shop")
+  expect_equal(column_group("drink"), "(none)")
   expect_equal(column_group(c("a_b","c_d","plain")), c("a","c","(none)"))
 })
 
 test_that("suggest_sibling_pattern finds a trailing-digit family", {
-  cols <- c("cause1","cause2","cause3","other")
-  expect_equal(suggest_sibling_pattern("cause1", cols), "^cause[0-9]+$")
+  cols <- c("drink1","drink2","drink3","other")
+  expect_equal(suggest_sibling_pattern("drink1", cols), "^drink[0-9]+$")
 })
 
 test_that("suggest_sibling_pattern returns NA when no family", {
-  cols <- c("cause1","other","city")
-  expect_true(is.na(suggest_sibling_pattern("cause1", cols)))   # only one cause#
+  cols <- c("drink1","other","city")
+  expect_true(is.na(suggest_sibling_pattern("drink1", cols)))   # only one drink#
   expect_true(is.na(suggest_sibling_pattern("city", cols)))     # no trailing digit
 })
 
@@ -148,7 +148,7 @@ test_that("suggest_sibling_pattern escapes regex metacharacters in the stem", {
 
 test_that(".is_date_like / .is_numeric_like detect their shapes", {
   expect_true(.is_date_like(c("2026-01-04","2026-01-05","1/2/2026")))
-  expect_false(.is_date_like(c("asphyxiation","gunshot")))
+  expect_false(.is_date_like(c("cappuccino","flat white")))
   expect_true(.is_numeric_like(c("1","2.5","-3","40")))
   expect_false(.is_numeric_like(c("1","two","3")))
 })

@@ -21,7 +21,7 @@ Load any CSV or Excel file, pick a text column, and Recode Studio helps you:
 - **Cluster** with 10 algorithms (Jaro-Winkler, Levenshtein, OSA, Cosine, Jaccard, linear $O(N)$ Key-Collision Fingerprint, N-gram Fingerprint, Soundex, Metaphone) with built-in pros/cons reference guides.
 - **Match Taxonomies** against uploaded reference standard lists (e.g. ISO codes, state names, customer taxonomies).
 - **Spot** likely typos via Hunspell spellcheck and rare-member-in-cluster flags.
-- **Build** "old value → new value" recode rules, with optional propagation to sibling columns (e.g. `cause1`, `cause2`, ...).
+- **Build** "old value → new value" recode rules, with optional propagation to sibling columns (e.g. `drink1`, `drink2`, ...).
 - **Recategorize** across multiple variables with conditional include/exclude rule priorities.
 - **Preview** exactly which cells change before committing.
 - **Export** a canonical recode CSV plus a copyable R script.
@@ -175,7 +175,7 @@ immediately, or upload your own CSV/Excel.
 | `rule_id` | stable hash of (variable, match_type, old_value) |
 | `variable` | column the rule targets |
 | `apply_to_siblings` | `TRUE` → also apply across `sibling_pattern` |
-| `sibling_pattern` | regex (e.g. `^cause[0-9]+$`); `NA` otherwise |
+| `sibling_pattern` | regex (e.g. `^drink[0-9]+$`); `NA` otherwise |
 | `match_type` | how `old_value` is matched — see below |
 | `old_value` | value (or regex pattern) to match |
 | `new_value` | replacement (`<NA>` literally means "set to NA") |
@@ -186,7 +186,7 @@ NA round-trips as the literal `<NA>` so the file survives editing in Excel.
 
 **Match types:**
 
-- `trimmed_ci` (default) — compare after `str_squish(tolower(...))`. `" Asphyxiation "` matches `"asphyxiation"`.
+- `trimmed_ci` (default): compare after `str_squish(tolower(...))`. `" Cappuccino "` matches `"cappuccino"`.
 - `exact_ci` — case-insensitive exact compare.
 - `exact` — byte-for-byte exact compare.
 - `regex` — `old_value` is an (unanchored) regular expression matched against the raw value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid pattern is flagged by Validate and matches nothing.
@@ -199,10 +199,10 @@ against the original column and the first matching arm wins:
 
 ```r
 df <- df |>
-  mutate(across(matches("^cause[0-9]+$"), function(.x) {
+  mutate(across(matches("^drink[0-9]+$"), function(.x) {
     case_when(
-      str_squish(tolower(.x)) == "ascphyxiation" ~ "asphyxiation",
-      str_squish(tolower(.x)) == "asphyziation"  ~ "asphyxiation",
+      str_squish(tolower(.x)) == "capuccino" ~ "cappuccino",
+      str_squish(tolower(.x)) == "capccino"  ~ "cappuccino",
       .default = .x
     )
   }))

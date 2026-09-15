@@ -149,8 +149,8 @@ build_meta <- function(df) {
 
 #' Derive a generic group label from a column name's prefix.
 #'
-#' Returns the token before the first underscore (e.g. "vic_death_cause1" ->
-#' "vic"). Columns with no underscore return "(none)". Useful for datasets
+#' Returns the token before the first underscore (e.g. "shop_drink1" ->
+#' "shop"). Columns with no underscore return "(none)". Useful for datasets
 #' whose columns are namespaced by a source-table prefix; harmless otherwise.
 column_group <- function(cols) {
   m <- stringr::str_match(cols, "^([^_]+)_")
@@ -162,8 +162,8 @@ column_group <- function(cols) {
 #' Suggest a sibling-column regex pattern from a column name.
 #'
 #' Looks for a trailing digit run. If found and the family has >= 2 members
-#' in `all_cols`, returns a regex matching the family (e.g. `cause1` ->
-#' `^cause[0-9]+$`). Otherwise returns NA_character_.
+#' in `all_cols`, returns a regex matching the family (e.g. `drink1` ->
+#' `^drink[0-9]+$`). Otherwise returns NA_character_.
 suggest_sibling_pattern <- function(col_name, all_cols) {
   m <- stringr::str_match(col_name, "^(.*?)(\\d+)$")
   if (is.na(m[1, 2])) return(NA_character_)
