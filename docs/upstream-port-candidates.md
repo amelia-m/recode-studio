@@ -256,6 +256,18 @@ This repo only:
      `medical.txt`) overwrites the bundled file.
    - Key-collision clustering took about 6 s for 3000 random values. It is
      linear and deliberately uncapped, so very large columns are still slow.
+   - Spellcheck flags only the FIRST unrecognized word per value, and it reads
+     data before recodes, so after a fix the same value is still flagged on the
+     same word and a second typo in it can never be fixed from that tab.
+     Addressed by the word-fixes spec
+     ([2026-09-16-word-fixes.md](superpowers/specs/2026-09-16-word-fixes.md)).
+   - A Spellcheck rule is a whole-cell `trimmed_ci` rule, so a differently
+     cased copy of the same value elsewhere in the column takes the clicked
+     value's casing.
+   - renv's startup synchronized check can take minutes on every `Rscript`
+     run from the repo root; `RENV_CONFIG_SYNCHRONIZED_CHECK=FALSE` in the
+     environment skips it for local test runs. Possibly worth a note in
+     CLAUDE.md.
 7. **Docs updated for the September sync** (2026-09-15): CLAUDE.md and
    README.md now cover normalizations, the rule warnings, the variable banner
    and the cleaned data export bundle. Updated again 2026-09-16 for the
