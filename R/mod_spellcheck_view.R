@@ -108,6 +108,112 @@
   uv[!is.na(v) & nzchar(trimws(v)), , drop = FALSE]
 }
 
+# --- Tokens and word-level correction -----------------------------------------
+#
+# The flagger and the correction must agree on what a "word" is, so both use
+# this one definition: lowercase the value, then a token is a maximal run of
+# ASCII letters and apostrophes. Everything else (spaces, digits, hyphens,
+# punctuation, non-ASCII letters) separates tokens.
+
+SPELL_TOKEN_RUN <- "[a-z']+"
+
+#' Tokens of each value, as the spellchecker sees them.
+#'
+#' @param values character vector.
+#' @return list of character vectors, lowercase, one per value.
+.spell_tokens <- function(values) {
+  lv <- tolower(values)
+  lapply(regmatches(lv, gregexpr(SPELL_TOKEN_RUN, lv)), as.character)
+}
+
+#' Character spans in `value` where `token` occurs as a whole token.
+#'
+#' Runs the tokenizer over `tolower(value)`. `tolower()` maps character by
+#' character, so its positions are positions in `value` too. A span matches
+#' when its lowercase text equals `tolower(token)` exactly, which makes the
+#' match case-insensitive and whole-word by construction: `coffe` is not found
+#' inside `coffees`, and `it` is not found inside `it's`.
+#'
+#' @return integer matrix with columns `start` and `end` (zero rows if none).
+.spell_token_spans <- function(value, token) {
+  none <- matrix(integer(0), ncol = 2, dimnames = list(NULL, c("start", "end")))
+  if (length(value) != 1L || is.na(value) || length(token) != 1L ||
+      is.na(token) || !nzchar(token)) {
+    return(none)
+  }
+  lv <- tolower(value)
+  m  <- gregexpr(SPELL_TOKEN_RUN, lv)[[1]]
+  if (m[1] == -1L) return(none)
+  start <- as.integer(m)
+  end   <- start + attr(m, "match.length") - 1L
+  keep  <- substring(lv, start, end) == tolower(token)
+  cbind(start = start[keep], end = end[keep])
+}
+
+#' How many whole-token occurrences of `token` are in `value`.
+spell_token_count <- function(value, token) {
+  nrow(.spell_token_spans(value, token))
+}
+
+#' Case `replacement` to follow the word it replaces.
+#'
+#' ALL CAPS original (two or more letters, none lowercase): the replacement is
+#' upper-cased. Title Case original (first letter upper, every other letter
+#' lower): only the replacement's first letter is upper-cased, the rest is
+#' left as given, so a suggestion such as `McKenzie` keeps its inner capital.
+#' Anything else (lowercase, mixed case): the replacement is used as given.
+.spell_mirror_case <- function(original, replacement) {
+  letters_only <- gsub("[^A-Za-z]", "", original)
+  if (!nzchar(letters_only)) return(replacement)
+  first <- substr(letters_only, 1L, 1L)
+  rest  <- substring(letters_only, 2L)
+  if (nchar(letters_only) >= 2L && !grepl("[a-z]", letters_only)) {
+    return(toupper(replacement))
+  }
+  if (grepl("[A-Z]", first) && !grepl("[A-Z]", rest)) {
+    return(sub("^([^[:alpha:]]*)([[:alpha:]])", "\\1\\U\\2", replacement,
+               perl = TRUE))
+  }
+  replacement
+}
+
+#' Replace one misspelled token inside a value, leaving the rest untouched.
+#'
+#' Every whole-token occurrence of `token` (see `.spell_token_spans()`) is
+#' replaced; other words, punctuation and spacing are kept exactly. Each
+#' occurrence is cased from its own original text (`.spell_mirror_case()`).
+#' Leading or trailing apostrophes belong to the token as the tokenizer sees
+#' it (`'coffe'`), but they are quotation marks to a reader, so they are kept
+#' unless the replacement brings its own.
+#'
+#' @param value       one value (character scalar).
+#' @param token       the flagged token, any case.
+#' @param replacement the correction for that token.
+#' @return the corrected value. `value` unchanged when the token is absent.
+#'   NA when `value` is NA.
+spell_replace_token <- function(value, token, replacement) {
+  if (length(value) != 1L) stop("`value` must be a single string.")
+  if (is.na(value)) return(NA_character_)
+  spans <- .spell_token_spans(value, token)
+  if (nrow(spans) == 0L || is.na(replacement)) return(value)
+  out <- value
+  # Right to left, so earlier spans keep their positions.
+  for (k in rev(seq_len(nrow(spans)))) {
+    s    <- spans[k, "start"]
+    e    <- spans[k, "end"]
+    orig <- substr(value, s, e)
+    lead  <- sub("^('*).*$", "\\1", orig)
+    trail <- if (grepl("[a-z]", tolower(orig))) sub("^.*?('*)$", "\\1", orig,
+                                                   perl = TRUE) else ""
+    rep_k <- .spell_mirror_case(orig, replacement)
+    if (nzchar(lead)  && !startsWith(rep_k, "'")) rep_k <- paste0(lead, rep_k)
+    if (nzchar(trail) && !endsWith(rep_k, "'"))   rep_k <- paste0(rep_k, trail)
+    out <- paste0(substr(out, 1L, s - 1L), rep_k,
+                  substring(out, e + 1L))
+  }
+  out
+}
+
 #' Discipline dictionaries bundled in dictionary/disciplines/.
 #'
 #' @return named character vector: display-name -> file path. Empty if none.
@@ -165,7 +271,8 @@ mod_spellcheck_view_ui <- function(id) {
       "Spellcheck",
       shiny::p("Lists values containing words the dictionary does not ",
                "recognise, with suggested spellings. Click a suggestion, or ",
-               "type your own, to create a rule that fixes that value."),
+               "type your own, to create a rule for that value that replaces ",
+               "only the flagged word and keeps the rest."),
       shiny::p("If a flagged word is actually correct (a name, a product, a ",
                "field term), add it to a dictionary so it stops being ",
                "flagged, or pick a discipline dictionary that already has it.")
@@ -173,7 +280,7 @@ mod_spellcheck_view_ui <- function(id) {
     bslib::card_body(
       fillable = FALSE,
       shiny::tags$small(shiny::tags$em(
-        "Click any blue suggestion to recode. Type into the 'Other' box for your own correction. '+ Dict' adds the flagged token to the chosen dictionary tier."
+        "Click any blue suggestion to replace the flagged word in that value. Type into the 'Other' box for your own correction. '+ Dict' adds the flagged token to the chosen dictionary tier."
       )),
       # Name the match type where the rule is created. Keep in step with the
       # Browse values tab's wording.
@@ -397,7 +504,7 @@ mod_spellcheck_view_server <- function(id, shared_state,
           suggestions = character(0)
         ))
       }
-      tokens_per_value <- strsplit(tolower(uv$value), "[^a-z']+")
+      tokens_per_value <- .spell_tokens(uv$value)
       flagged_tokens <- lapply(tokens_per_value, function(toks) {
         toks <- toks[nchar(toks) > 1]
         if (length(toks) == 0) return(character(0))
@@ -464,9 +571,12 @@ mod_spellcheck_view_server <- function(id, shared_state,
       if (is.null(payload)) return()
       parsed <- tryCatch(jsonlite::fromJSON(payload), error = function(e) NULL)
       if (is.null(parsed) || is.null(parsed$row) || is.null(parsed$val)) return()
-      i   <- as.integer(parsed$row)
-      val <- as.character(parsed$val)
-      if (!nzchar(val)) {
+      i   <- suppressWarnings(as.integer(parsed$row))
+      # The correction replaces ONE word, so surrounding spaces typed into the
+      # Other box are not part of it.
+      val <- trimws(as.character(parsed$val))
+      if (length(i) != 1L || is.na(i) || length(val) != 1L) return()
+      if (is.na(val) || !nzchar(val)) {
         shiny::showNotification("Type a value first.", type = "warning")
         return()
       }
@@ -474,17 +584,36 @@ mod_spellcheck_view_server <- function(id, shared_state,
       if (is.null(df) || i < 1 || i > nrow(df)) return()
       v <- selected_var_r()
       if (is.null(v)) return()
+      # The flag is one token inside the value, and so is the correction: the
+      # rule still claims the whole cell (trimmed_ci on the whole value), but
+      # its new value is the old one with only that token replaced. Using the
+      # bare correction as the new value would drop every other word.
+      old_val <- df$value[i]
+      tok     <- df$flagged_token[i]
+      n_occ   <- spell_token_count(old_val, tok)
+      new_val <- spell_replace_token(old_val, tok, val)
+      if (n_occ == 0L || identical(new_val, old_val)) {
+        shiny::showNotification(
+          sprintf("No rule added: '%s' would leave \"%s\" unchanged.",
+                  val, old_val),
+          type = "warning")
+        return()
+      }
+      note <- sprintf("Spellcheck: token '%s' -> '%s'", tok, val)
+      if (n_occ > 1L) {
+        note <- sprintf("%s (all %d occurrences replaced)", note, n_occ)
+      }
       now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
       new_rule <- tibble::tibble(
-        rule_id           = recode_rule_id(v, "trimmed_ci", df$value[i]),
+        rule_id           = recode_rule_id(v, "trimmed_ci", old_val),
         variable          = v,
         apply_to_siblings = FALSE,
         sibling_pattern   = NA_character_,
         match_type        = "trimmed_ci",
-        old_value         = df$value[i],
-        new_value         = val,
+        old_value         = old_val,
+        new_value         = new_val,
         action            = "recode",
-        notes             = sprintf("Spellcheck (token '%s')", df$flagged_token[i]),
+        notes             = note,
         author            = Sys.info()[["user"]],
         created_at        = now,
         updated_at        = now,
@@ -492,7 +621,8 @@ mod_spellcheck_view_server <- function(id, shared_state,
       )
       rules_proxy$add(new_rule)
       shiny::showNotification(
-        sprintf("Rule added: %s -> %s", df$value[i], val), type = "message")
+        sprintf("Rule added: \"%s\" -> \"%s\"", old_val, new_val),
+        type = "message")
     }
 
     shiny::observeEvent(input$pick_sug,    ignoreInit = TRUE,

@@ -8,6 +8,8 @@
 #     JavaScript string, and the payload must reach the server unchanged.
 #   * blank values (which unique_values_r() now keeps for Browse values) are
 #     never flagged.
+#   * a pick replaces only the flagged token inside the value
+#     (spell_replace_token()), never the whole value.
 
 source(file.path("..", "..", "R", "ui_helpers.R"))
 source(file.path("..", "..", "R", "string_helpers.R"))
@@ -215,5 +217,168 @@ test_that("a badge payload with awkward characters creates the rule unchanged", 
     expect_equal(nrow(rules), 1L)
     expect_identical(rules$old_value, "cappucino")
     expect_identical(rules$new_value, target)
+  })
+})
+
+
+# --- Word-level correction inside a whole-cell rule --------------------------
+#
+# Spellcheck flags ONE token inside a value. A pick must replace only that
+# token: the rule is still whole-cell (trimmed_ci, old_value = the value), but
+# its new_value keeps every other word. The old handler set new_value to the
+# bare correction, so `iced coffe` became `coffee`.
+
+test_that("spell_replace_token replaces a single-word value", {
+  expect_identical(spell_replace_token("coffe", "coffe", "coffee"), "coffee")
+})
+
+test_that("spell_replace_token keeps the other words of a multi-word value", {
+  expect_identical(spell_replace_token("iced coffe", "coffe", "coffee"),
+                   "iced coffee")
+  expect_identical(spell_replace_token("coffe latte", "coffe", "coffee"),
+                   "coffee latte")
+})
+
+test_that("punctuation and spacing around the token are preserved exactly", {
+  expect_identical(
+    spell_replace_token("  iced   coffe,  no-sugar!! ", "coffe", "coffee"),
+    "  iced   coffee,  no-sugar!! ")
+  expect_identical(spell_replace_token("no-sugr (iced)", "sugr", "sugar"),
+                   "no-sugar (iced)")
+  # Digits separate tokens, exactly as the flagger splits them.
+  expect_identical(spell_replace_token("coffe2go", "coffe", "coffee"),
+                   "coffee2go")
+})
+
+test_that("every whole-token occurrence is replaced and counted", {
+  expect_identical(
+    spell_replace_token("coffe, then more coffe", "coffe", "coffee"),
+    "coffee, then more coffee")
+  expect_identical(spell_token_count("coffe, then more coffe", "coffe"), 2L)
+  expect_identical(spell_token_count("iced coffe", "coffe"), 1L)
+  expect_identical(spell_token_count("iced coffee", "coffe"), 0L)
+})
+
+test_that("a token inside a longer word is not replaced", {
+  # `coffees` is one token to the flagger, so `coffe` is not in it.
+  expect_identical(.spell_tokens("coffe coffees")[[1]], c("coffe", "coffees"))
+  expect_identical(spell_replace_token("coffe coffees", "coffe", "coffee"),
+                   "coffee coffees")
+  expect_identical(spell_replace_token("coffees", "coffe", "coffee"),
+                   "coffees")
+  # The apostrophe is a token character, so `it` is not inside `it's`.
+  expect_identical(spell_replace_token("it's it", "it", "at"), "it's at")
+})
+
+test_that("ALL CAPS and Title Case originals are mirrored, others kept as given", {
+  expect_identical(spell_replace_token("ICED COFFE", "coffe", "coffee"),
+                   "ICED COFFEE")
+  expect_identical(spell_replace_token("Iced Coffe", "coffe", "coffee"),
+                   "Iced Coffee")
+  # Each occurrence is cased from its own text.
+  expect_identical(spell_replace_token("Coffe or COFFE or coffe", "coffe",
+                                       "coffee"),
+                   "Coffee or COFFEE or coffee")
+  # Title Case only raises the first letter; an inner capital survives.
+  expect_identical(spell_replace_token("Dr Mckenze", "mckenze", "McKenzie"),
+                   "Dr McKenzie")
+  # Lowercase or mixed-case original: the correction exactly as given.
+  expect_identical(spell_replace_token("iced coffe", "coffe", "Coffee"),
+                   "iced Coffee")
+  expect_identical(spell_replace_token("cOFFe", "coffe", "coffee"), "coffee")
+  # The token may arrive in any case.
+  expect_identical(spell_replace_token("iced coffe", "COFFE", "coffee"),
+                   "iced coffee")
+})
+
+test_that("apostrophes inside and around a token are handled", {
+  expect_identical(spell_replace_token("Barista's chioce", "chioce", "choice"),
+                   "Barista's choice")
+  expect_identical(spell_replace_token("dont know", "dont", "don't"),
+                   "don't know")
+  # Quote marks the tokenizer counts as part of the token are kept when the
+  # suggestion (which hunspell gives unquoted) does not carry them.
+  expect_identical(.spell_tokens("'coffe' please")[[1]], c("'coffe'", "please"))
+  expect_identical(spell_replace_token("'Coffe' please", "'coffe'", "coffee"),
+                   "'Coffee' please")
+  expect_identical(spell_replace_token("'coffe'", "'coffe'", "'coffee'"),
+                   "'coffee'")
+})
+
+test_that("a correction equal to the original leaves the value unchanged", {
+  expect_identical(spell_replace_token("iced coffe", "coffe", "coffe"),
+                   "iced coffe")
+  # Title Case mirroring makes a lowercase retype of a Title Case word a no-op.
+  expect_identical(spell_replace_token("Iced Coffe", "coffe", "coffe"),
+                   "Iced Coffe")
+  expect_identical(spell_replace_token("iced latte", "coffe", "coffee"),
+                   "iced latte")
+  expect_identical(spell_replace_token(NA_character_, "coffe", "coffee"),
+                   NA_character_)
+})
+
+test_that("the flagger and the replacement share one tokenizer", {
+  src <- paste(readLines(file.path("..", "..", "R", "mod_spellcheck_view.R"),
+                         warn = FALSE), collapse = "\n")
+  expect_match(src, "tokens_per_value <- .spell_tokens(uv$value)", fixed = TRUE)
+})
+
+.pick_payload <- function(row, val) {
+  as.character(jsonlite::toJSON(list(row = row, val = val), auto_unbox = TRUE))
+}
+
+test_that("clicking a suggestion on a multi-word value keeps the other words", {
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+  uv <- tibble::tibble(value = "Iced coffe, no sugar", n = 4L)
+  proxy <- .rules_store()
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv, proxy), {
+    session$flushReact()
+    df <- flagged_r()
+    expect_equal(nrow(df), 1L)
+    expect_identical(df$flagged_token, "coffe")
+    expect_match(df$suggestions, "coffee", fixed = TRUE)
+    session$setInputs(pick_sug = .pick_payload(1L, "coffee"))
+    rules <- proxy$peek()
+    expect_equal(nrow(rules), 1L)
+    expect_identical(rules$old_value, "Iced coffe, no sugar")
+    expect_identical(rules$new_value, "Iced coffee, no sugar")
+    expect_identical(rules$match_type, "trimmed_ci")
+    expect_identical(rules$rule_id,
+                     recode_rule_id("drink1", "trimmed_ci",
+                                    "Iced coffe, no sugar"))
+    expect_match(rules$notes, "'coffe' -> 'coffee'", fixed = TRUE)
+  })
+})
+
+test_that("the Other... path replaces only the token, and notes repeats", {
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+  uv <- tibble::tibble(value = "coffe and more COFFE", n = 2L)
+  proxy <- .rules_store()
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv, proxy), {
+    session$flushReact()
+    expect_identical(flagged_r()$flagged_token, "coffe")
+    # Surrounding spaces typed into the box are not part of the correction.
+    session$setInputs(pick_custom = .pick_payload(1L, "  coffee "))
+    rules <- proxy$peek()
+    expect_equal(nrow(rules), 1L)
+    expect_identical(rules$old_value, "coffe and more COFFE")
+    expect_identical(rules$new_value, "coffee and more COFFEE")
+    expect_match(rules$notes, "all 2 occurrences replaced", fixed = TRUE)
+  })
+})
+
+test_that("a correction that changes nothing adds no rule", {
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+  uv <- tibble::tibble(value = "iced coffe", n = 1L)
+  proxy <- .rules_store()
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv, proxy), {
+    session$flushReact()
+    session$setInputs(pick_custom = .pick_payload(1L, "coffe"))
+    expect_equal(nrow(proxy$peek()), 0L)
+    session$setInputs(pick_custom = .pick_payload(1L, "   "))
+    expect_equal(nrow(proxy$peek()), 0L)
+    # A bad row index is ignored rather than throwing.
+    session$setInputs(pick_sug = .pick_payload(9L, "coffee"))
+    expect_equal(nrow(proxy$peek()), 0L)
   })
 })
