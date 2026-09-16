@@ -105,6 +105,104 @@ cluster_recode_pairs <- function(members, keep, excluded = character(0)) {
   )
 }
 
+# --- Input guard, recompute cap and card cap (pure) --------------------------
+
+#' Drop missing, empty and whitespace-only values before clustering/matching.
+#'
+#' `unique_values_r()` keeps the empty string so Browse values can target it,
+#' but a blank is meaningless to a similarity cluster or a taxonomy match: ""
+#' and "   " would even cluster together once whitespace is squished.
+#'
+#' @param uv tibble(value, n) or NULL.
+#' @return `uv` without those rows (NULL stays NULL).
+cluster_drop_blank <- function(uv) {
+  if (is.null(uv) || nrow(uv) == 0) return(uv)
+  v <- as.character(uv$value)
+  uv[!is.na(v) & nzchar(trimws(v)), , drop = FALSE]
+}
+
+# Algorithms that build a full N x N distance matrix. Key collision, n-gram
+# fingerprint and the phonetic ones bucket on a key and scale linearly.
+CLUSTER_PAIRWISE_ALGORITHMS <- c("jw", "osa", "lv", "lcs", "cosine", "jaccard")
+
+# Most distinct values a pairwise algorithm clusters. Measured on synthetic
+# 6-18 character strings (lower + squish): 1000 values take about 1 s for
+# osa / lv / lcs / jw and 2-2.5 s for cosine / jaccard; 1500 take about 2 s
+# and 5 s; 2000 about 3 s and 8 s. Time and memory grow with the square.
+PAIRWISE_CLUSTER_CAP <- 1000L
+
+# Most cluster cards drawn at once. Each card is a table of inputs rebuilt by
+# renderUI, so hundreds of them make the tab crawl.
+MAX_CLUSTER_CARDS <- 50L
+
+#' Is `algorithm` a quadratic pairwise one?
+cluster_is_pairwise <- function(algorithm) {
+  length(algorithm) == 1L && !is.na(algorithm) &&
+    algorithm %in% CLUSTER_PAIRWISE_ALGORITHMS
+}
+
+#' Limit the values a pairwise algorithm clusters to the most frequent `cap`.
+#'
+#' Linear algorithms are never capped.
+#'
+#' @param uv        tibble(value, n).
+#' @param algorithm one of CLUSTER_ALGORITHMS.
+#' @param cap       maximum distinct values for a pairwise algorithm.
+#' @return list(uv, capped, n_total, cap): `uv` is the (possibly) reduced
+#'   table, most frequent first when capped; `n_total` the distinct values
+#'   before capping.
+cluster_cap_values <- function(uv, algorithm, cap = PAIRWISE_CLUSTER_CAP) {
+  n_total <- if (is.null(uv)) 0L else nrow(uv)
+  capped  <- cluster_is_pairwise(algorithm) && n_total > cap
+  if (capped) {
+    keep <- order(-uv$n, seq_len(n_total))[seq_len(cap)]
+    uv <- uv[keep, , drop = FALSE]
+  }
+  list(uv = uv, capped = capped, n_total = n_total, cap = as.integer(cap))
+}
+
+#' Which multi-member clusters get a card: the largest first, at most
+#' `max_cards` of them.
+#'
+#' @param cl        cluster_strings() output.
+#' @param max_cards maximum cards to draw.
+#' @return list(ids, sizes, n_total): ids and sizes of the clusters to draw,
+#'   in drawing order, and how many multi-member clusters exist in all.
+cluster_cards_to_show <- function(cl, max_cards = MAX_CLUSTER_CARDS) {
+  if (is.null(cl) || nrow(cl) == 0) {
+    return(list(ids = integer(0), sizes = integer(0), n_total = 0L))
+  }
+  tab   <- table(cl$cluster_id)
+  ids   <- as.integer(names(tab))
+  sizes <- as.integer(tab)
+  multi <- sizes > 1
+  ids   <- ids[multi]
+  sizes <- sizes[multi]
+  # Largest first; ties keep ascending cluster id (order() is stable).
+  o <- order(-sizes)
+  ids   <- ids[o]
+  sizes <- sizes[o]
+  n_total <- length(ids)
+  keep <- seq_len(min(n_total, max(0L, as.integer(max_cards))))
+  list(ids = ids[keep], sizes = sizes[keep], n_total = n_total)
+}
+
+#' The note shown when a pairwise algorithm was capped, or NULL.
+#'
+#' @param capping cluster_cap_values() result.
+cluster_cap_note <- function(capping) {
+  if (is.null(capping) || !isTRUE(capping$capped)) return(NULL)
+  help_line(sprintf(
+    paste0("Clustering the %s most frequent of %s distinct values. This ",
+           "algorithm compares every value with every other, which gets very ",
+           "slow past %s values. To cluster them all, choose Key collision, ",
+           "N-gram fingerprint, Soundex or Metaphone, which handle any number ",
+           "of values quickly."),
+    format(capping$cap, big.mark = ","),
+    format(capping$n_total, big.mark = ","),
+    format(capping$cap, big.mark = ",")))
+}
+
 # --- Built-in standard reference taxonomies ----------------------------------
 BUILTIN_TAXONOMIES <- list(
   "US 50 States & DC" = c(
@@ -393,6 +491,7 @@ mod_cluster_view_ui <- function(id) {
           "for you."
         ),
         shiny::uiOutput(ns("conflicts")),
+        shiny::uiOutput(ns("cap_note")),
         shiny::uiOutput(ns("clusters_ui"))
       )
     ),
@@ -478,10 +577,18 @@ mod_cluster_view_ui <- function(id) {
 #' @param selected_var_r   reactive selected variable name
 #' @param unique_values_r  reactive tibble(value, n) for current var
 #' @param rules_proxy      list(add=, set=, get=)
+#' @param debounce_ms      wait after the last clustering-settings change
+#'                         before clustering again (a slider drag is one run).
+#' @param pairwise_cap     see PAIRWISE_CLUSTER_CAP. An argument so tests can
+#'                         exercise the cap without a thousand values.
+#' @param max_cards        see MAX_CLUSTER_CARDS.
 mod_cluster_view_server <- function(id, shared_state,
                                     selected_var_r,
                                     unique_values_r,
-                                    rules_proxy) {
+                                    rules_proxy,
+                                    debounce_ms  = 500,
+                                    pairwise_cap = PAIRWISE_CLUSTER_CAP,
+                                    max_cards    = MAX_CLUSTER_CARDS) {
   shiny::moduleServer(id, function(input, output, session) {
 
     # --- Similarity Clustering Server Logic -----------------------------------
@@ -523,17 +630,65 @@ mod_cluster_view_server <- function(id, shared_state,
       }
     })
 
+    # Clustering settings, debounced: dragging the threshold slider, stepping
+    # q or ticking several normalizers queues ONE recomputation once the
+    # inputs have been still for `debounce_ms`, not one per intermediate
+    # value. The notes above read the inputs directly and stay instant.
+    settings_r <- shiny::reactive({
+      alg <- input$algorithm
+      q   <- suppressWarnings(as.integer(input$qgram))
+      if (length(q) != 1L || is.na(q)) q <- 2L
+      list(
+        algorithm = alg,
+        # The threshold only matters to pairwise algorithms. Blanking it for
+        # the others keeps it out of the cache key, so moving the slider under
+        # Key collision is a cache hit rather than a rerun.
+        threshold = if (cluster_is_pairwise(alg)) input$threshold
+                    else NA_real_,
+        q         = max(1L, q),
+        # normalize_for_cluster() applies steps in a fixed order, so sorting
+        # only makes the cache key independent of tick order.
+        normalize = sort(input$normalize %||% character(0)))
+    })
+    settings_d <- shiny::debounce(settings_r, debounce_ms)
+
+    # What gets clustered: blanks dropped, pairwise algorithms capped.
+    cluster_input_r <- shiny::reactive({
+      s  <- settings_d()
+      uv <- cluster_drop_blank(unique_values_r())
+      if (is.null(uv) || nrow(uv) == 0 || is.null(s$algorithm)) return(NULL)
+      capping <- cluster_cap_values(uv, s$algorithm, pairwise_cap)
+      list(uv       = capping$uv,
+           capping  = capping[c("capped", "n_total", "cap")],
+           settings = s)
+    })
+
+    # Cached on exactly what the computation reads (values, counts,
+    # algorithm, threshold, q, normalizers), so returning to an earlier
+    # setting is instant. Session-scoped: one user's column values never sit
+    # in a cache another session could hit. bindCache() rather than a
+    # hand-rolled cache around the pure call, because it slots into the
+    # reactive graph as-is: clusters_r() keeps its name and its callers
+    # (cards, conflicts, Apply) are untouched.
     clusters_r <- shiny::reactive({
-      uv <- unique_values_r()
-      if (is.null(uv) || nrow(uv) == 0) return(NULL)
+      ci <- cluster_input_r()
+      if (is.null(ci)) return(NULL)
+      s <- ci$settings
       cluster_strings(
-        values      = uv$value,
-        frequencies = uv$n,
-        threshold   = input$threshold,
-        algorithm   = input$algorithm,
-        q           = max(1L, as.integer(input$qgram %||% 2L)),
-        normalize   = input$normalize %||% character(0)
+        values      = ci$uv$value,
+        frequencies = ci$uv$n,
+        threshold   = s$threshold,
+        algorithm   = s$algorithm,
+        q           = s$q,
+        normalize   = s$normalize
       )
+    }) |>
+      shiny::bindCache(cluster_input_r(), cache = "session")
+
+    output$cap_note <- shiny::renderUI({
+      ci <- cluster_input_r()
+      if (is.null(ci)) return(NULL)
+      cluster_cap_note(ci$capping)
     })
 
     output$sibling_preview <- shiny::renderUI({
@@ -590,18 +745,23 @@ mod_cluster_view_server <- function(id, shared_state,
       cl <- clusters_r()
       if (is.null(cl) || nrow(cl) == 0) return(shiny::tags$em("No data."))
 
-      cluster_sizes <- cl |>
-        dplyr::count(cluster_id, name = "size") |>
-        dplyr::filter(size > 1) |>
-        dplyr::arrange(dplyr::desc(size))
+      shown <- cluster_cards_to_show(cl, max_cards)
 
-      if (nrow(cluster_sizes) == 0) {
+      if (shown$n_total == 0) {
         return(shiny::tags$em(
           "No multi-member clusters at this threshold. Try lowering it or picking a different algorithm."
         ))
       }
 
-      cards <- lapply(cluster_sizes$cluster_id, function(cid) {
+      count_line <- if (length(shown$ids) < shown$n_total) {
+        help_line(sprintf(
+          paste0("Showing %d of %d clusters, largest first. Raise the ",
+                 "similarity threshold or choose a stricter algorithm to ",
+                 "narrow the list."),
+          length(shown$ids), shown$n_total))
+      }
+
+      cards <- lapply(shown$ids, function(cid) {
         members <- cl[cl$cluster_id == cid, ] |>
           dplyr::arrange(dplyr::desc(n))
         modal <- members$value[1]   # most frequent = default suggested target
@@ -633,7 +793,7 @@ mod_cluster_view_server <- function(id, shared_state,
         )
       })
 
-      do.call(shiny::tagList, cards)
+      shiny::tagList(count_line, cards)
     })
 
     # Single handler for all cluster recode buttons (avoids observer accumulation
@@ -750,7 +910,8 @@ mod_cluster_view_server <- function(id, shared_state,
     })
 
     taxonomy_matches_r <- shiny::reactive({
-      uv <- unique_values_r()
+      # A blank value has nothing to match against a standard list.
+      uv <- cluster_drop_blank(unique_values_r())
       targets <- taxonomy_targets_r()
       if (is.null(uv) || nrow(uv) == 0 || length(targets) == 0) return(NULL)
       match_taxonomy(

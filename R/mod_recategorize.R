@@ -429,10 +429,51 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
     # Computed on the data AFTER the recodes, because that is the frame the
     # exported recat script runs against. Previewing on raw values reports
     # rows the export then drops, silently.
+    #
+    # The preview is a SNAPSHOT taken when the button is clicked; recomputing
+    # on every keystroke would be slow on a large frame and would count
+    # half-typed terms. A snapshot left on screen after the form changes looks
+    # current, though, so the form fields the rule is built from are recorded
+    # with it, and while they differ the preview is greyed out under a note
+    # saying so. The next Preview clears it. Parsed terms are compared, not
+    # raw text, so a stray blank line does not count as a change; notes are
+    # left out because they cannot change the result.
+    preview_form_key <- shiny::reactive({
+      list(
+        vars          = input$vars %||% character(0),
+        out_col       = trimws(input$out_col %||% ""),
+        category      = trimws(input$category %||% ""),
+        match_type    = input$match_type %||% "literal",
+        include_terms = terms_from_area(input$include_terms),
+        exclude_terms = terms_from_area(input$exclude_terms),
+        priority      = input$priority)
+    })
+    preview_ui       <- shiny::reactiveVal(NULL)
+    preview_form_was <- shiny::reactiveVal(NULL)
+
+    set_preview <- function(ui) {
+      preview_form_was(shiny::isolate(preview_form_key()))
+      preview_ui(ui)
+    }
+
+    output$preview_out <- shiny::renderUI({
+      ui <- preview_ui()
+      if (is.null(ui)) return(NULL)
+      if (identical(preview_form_was(), preview_form_key())) return(ui)
+      shiny::div(
+        class = "rs-preview-stale",
+        shiny::div(
+          class = "alert alert-secondary py-1 px-2 mb-2", role = "status",
+          shiny::icon("clock-rotate-left"), " ",
+          shiny::tags$strong("Out of date. "),
+          "The form changed since this preview. Click Preview again."),
+        shiny::div(style = "opacity:.45;", `aria-hidden` = "true", ui))
+    })
+
     shiny::observeEvent(input$preview, {
       d_raw <- shared_state$data
       if (is.null(d_raw)) {
-        output$preview_out <- shiny::renderUI(
+        set_preview(
           shiny::tags$em("No data loaded. Load a dataset on the Data tab."))
         return()
       }
@@ -450,7 +491,7 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       r <- current_rule()[1, ]
       cols <- intersect(recat_split(r$vars), names(d))
       if (length(cols) == 0) {
-        output$preview_out <- shiny::renderUI(
+        set_preview(
           shiny::div(class = "alert alert-warning",
             "No valid source variables selected."))
         return()
@@ -478,7 +519,7 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       }
       sample_rows <- if (n_hit > 0) utils::head(which(hit), 5) else integer(0)
 
-      output$preview_out <- shiny::renderUI({
+      set_preview({
         shiny::div(class = "alert alert-info",
           shiny::p(shiny::strong(sprintf("%d rows match", n_hit)),
                    sprintf(" (%s%% of %d).", pct, nrow(d))),

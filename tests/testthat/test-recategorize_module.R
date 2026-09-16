@@ -156,6 +156,112 @@ test_that("with no recode basis at all the preview falls back to raw and says so
 })
 
 
+# --- Stale preview -----------------------------------------------------------
+
+.stale_note <- "The form changed since this preview. Click Preview again."
+
+test_that("editing a term after a preview marks the preview out of date", {
+  shiny::testServer(
+    mod_recategorize_server,
+    args = list(shared_state   = .state(),
+                recat_proxy    = .recat_proxy(),
+                recode_basis_r = .basis(.orders, .recode_rules())), {
+    # Before any preview there is nothing to be stale.
+    session$flushReact()
+    expect_null(output$preview_out)
+
+    .preview(session, "espresso")
+    fresh <- .text(output$preview_out)
+    expect_match(fresh, "3 rows match", fixed = TRUE)
+    expect_false(grepl(.stale_note, fresh, fixed = TRUE))
+    expect_false(grepl("rs-preview-stale", fresh, fixed = TRUE))
+
+    session$setInputs(include_terms = "latte")
+    stale <- .text(output$preview_out)
+    expect_match(stale, .stale_note, fixed = TRUE)
+    expect_match(stale, "rs-preview-stale", fixed = TRUE)
+    # Not recomputed on the edit: the old numbers stay, greyed, until Preview.
+    expect_match(stale, "3 rows match", fixed = TRUE)
+
+    session$setInputs(preview = 2)
+    again <- .text(output$preview_out)
+    expect_false(grepl(.stale_note, again, fixed = TRUE))
+    expect_false(grepl("rs-preview-stale", again, fixed = TRUE))
+    expect_match(again, "1 rows match", fixed = TRUE)
+  })
+})
+
+test_that("every field the rule is built from marks the preview stale", {
+  changes <- list(
+    vars          = c("drink1", "drink2"),
+    out_col       = "family",
+    category      = "Espresso drinks",
+    match_type    = "regex",
+    exclude_terms = "decaf",
+    priority      = 20)
+  for (field in names(changes)) {
+    shiny::testServer(
+      mod_recategorize_server,
+      args = list(shared_state   = .state(),
+                  recat_proxy    = .recat_proxy(),
+                  recode_basis_r = .basis(.orders, .recode_rules())), {
+      .preview(session, "espresso")
+      expect_false(grepl(.stale_note, .text(output$preview_out), fixed = TRUE),
+                   info = field)
+      do.call(session$setInputs, changes[field])
+      expect_match(.text(output$preview_out), .stale_note, fixed = TRUE,
+                   info = field)
+    })
+  }
+})
+
+test_that("edits that cannot change the result leave the preview current", {
+  shiny::testServer(
+    mod_recategorize_server,
+    args = list(shared_state   = .state(),
+                recat_proxy    = .recat_proxy(),
+                recode_basis_r = .basis(.orders, .recode_rules())), {
+    .preview(session, "espresso")
+    # Notes, a trailing blank line, surrounding spaces.
+    session$setInputs(notes = "just a note")
+    session$setInputs(include_terms = "espresso\n\n  ")
+    session$setInputs(category = "  Espresso-based ")
+    expect_false(grepl(.stale_note, .text(output$preview_out), fixed = TRUE))
+
+    # Undoing a real change brings the form back to what was previewed.
+    session$setInputs(include_terms = "latte")
+    expect_match(.text(output$preview_out), .stale_note, fixed = TRUE)
+    session$setInputs(include_terms = "espresso")
+    expect_false(grepl(.stale_note, .text(output$preview_out), fixed = TRUE))
+  })
+})
+
+test_that("the no-valid-columns preview goes stale too, and clears on Preview", {
+  shiny::testServer(
+    mod_recategorize_server,
+    args = list(shared_state   = .state(),
+                recat_proxy    = .recat_proxy(),
+                recode_basis_r = .basis(.orders, .recode_rules())), {
+    session$setInputs(
+      vars = "not_a_column", out_col = "drink_family",
+      category = "Espresso-based", match_type = "literal",
+      include_terms = "espresso", exclude_terms = "", priority = 10,
+      notes = "")
+    session$setInputs(preview = 1)
+    expect_match(.text(output$preview_out),
+                 "No valid source variables selected.", fixed = TRUE)
+
+    session$setInputs(vars = "drink1")
+    expect_match(.text(output$preview_out), .stale_note, fixed = TRUE)
+
+    session$setInputs(preview = 2)
+    txt <- .text(output$preview_out)
+    expect_false(grepl(.stale_note, txt, fixed = TRUE))
+    expect_match(txt, "3 rows match", fixed = TRUE)
+  })
+})
+
+
 # --- Source-variable seeding -------------------------------------------------
 
 # MockShinySession drops update*Input messages, so record what the picker

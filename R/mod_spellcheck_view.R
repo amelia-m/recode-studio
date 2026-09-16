@@ -41,6 +41,73 @@
   unique(x[nzchar(x)])
 }
 
+#' Write raw bytes to a file. Its own function so tests can stand in a writer
+#' that fails, loudly or silently.
+.write_bytes <- function(bytes, path) {
+  writeBin(bytes, path)
+  invisible(path)
+}
+
+#' Copy a file byte for byte, then prove the copy landed.
+#'
+#' Not `file.copy()`: on Windows it can return without copying and without an
+#' error (paths with spaces are one known trigger), so its return value cannot
+#' be trusted. This reads the source with `readBin()`, writes it with
+#' `writer`, then reads the destination back and requires identical bytes.
+#'
+#' @param src    path of the file to copy.
+#' @param dest   destination path (overwritten).
+#' @param writer function(bytes, path) that writes `bytes` to `path`.
+#' @return list(ok, message): `message` is a plain-language reason when
+#'   `ok` is FALSE, NA otherwise.
+.copy_file_verified <- function(src, dest, writer = .write_bytes) {
+  fail <- function(msg) list(ok = FALSE, message = msg)
+  size <- suppressWarnings(file.size(src))
+  if (length(size) != 1L || is.na(size)) {
+    return(fail("The uploaded file could not be read."))
+  }
+  bytes <- tryCatch(readBin(src, what = "raw", n = size),
+                    error = function(e) NULL)
+  if (is.null(bytes) || length(bytes) != size) {
+    return(fail("The uploaded file could not be read."))
+  }
+  err <- tryCatch({
+    writer(bytes, dest)
+    NULL
+  },
+  error   = function(e) conditionMessage(e),
+  warning = function(w) conditionMessage(w))
+  if (!is.null(err)) {
+    return(fail(sprintf("Could not write %s (%s).", basename(dest), err)))
+  }
+  dest_size <- suppressWarnings(file.size(dest))
+  if (!file.exists(dest) || is.na(dest_size) || isTRUE(dir.exists(dest))) {
+    return(fail(sprintf("%s was not created.", basename(dest))))
+  }
+  if (dest_size != size) {
+    return(fail(sprintf("%s was written incompletely (%d of %d bytes).",
+                        basename(dest), as.integer(dest_size),
+                        as.integer(size))))
+  }
+  back <- tryCatch(readBin(dest, what = "raw", n = size + 1L),
+                   error = function(e) NULL)
+  if (!identical(back, bytes)) {
+    return(fail(sprintf("%s does not match the uploaded file.",
+                        basename(dest))))
+  }
+  list(ok = TRUE, message = NA_character_)
+}
+
+#' Drop missing, empty and whitespace-only values before spellchecking.
+#'
+#' `unique_values_r()` keeps the empty string so Browse values can target it;
+#' there is nothing in a blank to spellcheck.
+.spell_drop_blank <- function(uv) {
+  if (is.null(uv) || nrow(uv) == 0) return(uv)
+  v <- as.character(uv$value)
+  uv[!is.na(v) & nzchar(trimws(v)), , drop = FALSE]
+}
+
 #' Discipline dictionaries bundled in dictionary/disciplines/.
 #'
 #' @return named character vector: display-name -> file path. Empty if none.
@@ -150,54 +217,92 @@ mod_spellcheck_view_ui <- function(id) {
   )
 }
 
+# JSON-encode a value for use inside inline JavaScript. A JSON string or
+# number is also a valid JavaScript literal, and jsonlite escapes quotes,
+# backslashes and control characters.
+.js_value <- function(x) {
+  as.character(jsonlite::toJSON(x, auto_unbox = TRUE))
+}
+
+# Escape a whole attribute value. The browser decodes the entities before the
+# JavaScript is parsed, so the script sees exactly what was built here, and a
+# `"` in the data can no longer end the attribute.
+.attr_value <- function(x) {
+  as.character(htmltools::htmlEscape(x, attribute = TRUE))
+}
+
+# The JavaScript a suggestion badge runs: sends {"row":..,"val":..} as a JSON
+# string, which .apply_pick() parses with jsonlite::fromJSON().
+.pick_js <- function(input_id, row_idx, val) {
+  payload <- .js_value(list(row = as.integer(row_idx), val = as.character(val)))
+  sprintf(
+    "Shiny.setInputValue(%s, JSON.stringify(%s), {priority: 'event'}); return false;",
+    .js_value(input_id), payload)
+}
+
 #' Render the action cell HTML: clickable suggestion badges + custom input +
 #' add-to-dict button. Built per row.
+#'
+#' The suggestions derive from dataset text, so every value that reaches
+#' markup goes through one of two paths: visible text through
+#' `htmltools::htmlEscape()`, and inline handlers built from JSON-encoded
+#' values (`.js_value()`) and then attribute-escaped whole (`.attr_value()`).
+#' Never paste data into a handler with sprintf("'%s'") quoting.
+#'
+#' @param row_idx     1-based row in the flagged table.
+#' @param suggestions `" | "`-joined suggestions, or NA.
+#' @param ns          the module's namespace function.
+#' @return one HTML string. The table shows it in its LAST column, the only
+#'   one with escaping turned off.
 .render_action_cell <- function(row_idx, suggestions, ns) {
+  row_idx <- as.integer(row_idx)
   parts <- character(0)
 
-  if (!is.na(suggestions) && nzchar(suggestions)) {
+  if (length(suggestions) == 1L && !is.na(suggestions) && nzchar(suggestions)) {
     sugs <- strsplit(suggestions, "\\s*\\|\\s*")[[1]]
     sugs <- sugs[nzchar(sugs)]
     badges <- vapply(sugs, function(s) {
-      s_js <- gsub("'", "\\\\'", s)
       sprintf(
         paste0(
           '<a href="#" class="badge bg-primary" ',
           'style="margin-right:.3em;text-decoration:none;color:#fff;cursor:pointer;" ',
-          'onclick="Shiny.setInputValue(\'%s\', JSON.stringify({row:%d,val:\'%s\'}), {priority:\'event\'}); return false;">%s</a>'
-        ),
-        ns("pick_sug"), row_idx, s_js, htmltools::htmlEscape(s)
-      )
-    }, character(1))
+          'onclick="%s">%s</a>'),
+        .attr_value(.pick_js(ns("pick_sug"), row_idx, s)),
+        htmltools::htmlEscape(s))
+    }, character(1), USE.NAMES = FALSE)
     parts <- c(parts, badges)
   }
 
+  box_id  <- sprintf("%s_%d", ns("custom_in"), row_idx)
+  send_js <- sprintf(
+    "Shiny.setInputValue(%s, JSON.stringify({\"row\": %s, \"val\": v}), {priority: 'event'});",
+    .js_value(ns("pick_custom")), .js_value(row_idx))
+
   custom <- sprintf(
     paste0(
-      '<input type="text" id="%s_%d" class="form-control form-control-sm" ',
+      '<input type="text" id="%s" class="form-control form-control-sm" ',
       'style="display:inline-block;width:11em;margin-right:.3em;" ',
-      'placeholder="Other..." ',
-      'onkeydown="if(event.key===\'Enter\'){var v=this.value;',
-      'Shiny.setInputValue(\'%s\', JSON.stringify({row:%d,val:v}), {priority:\'event\'});event.preventDefault();}">'),
-    ns("custom_in"), row_idx,
-    ns("pick_custom"), row_idx
-  )
+      'placeholder="Other..." onkeydown="%s">'),
+    .attr_value(box_id),
+    .attr_value(paste0(
+      "if (event.key === 'Enter') { var v = this.value; ", send_js,
+      " event.preventDefault(); }")))
   apply_btn <- sprintf(
     paste0(
       '<button class="btn btn-sm btn-outline-primary" style="margin-right:.3em;" ',
-      'onclick="var v=document.getElementById(\'%s_%d\').value;',
-      'Shiny.setInputValue(\'%s\', JSON.stringify({row:%d,val:v}), {priority:\'event\'});">Apply</button>'),
-    ns("custom_in"), row_idx,
-    ns("pick_custom"), row_idx
-  )
+      'onclick="%s">Apply</button>'),
+    .attr_value(paste0(
+      "var v = document.getElementById(", .js_value(box_id), ").value; ",
+      send_js)))
   parts <- c(parts, custom, apply_btn)
 
   dict_btn <- sprintf(
     paste0(
       '<button class="btn btn-sm btn-outline-secondary" ',
-      'onclick="Shiny.setInputValue(\'%s\', %d, {priority:\'event\'});">+ Dict</button>'),
-    ns("add_dict"), row_idx
-  )
+      'onclick="%s">+ Dict</button>'),
+    .attr_value(sprintf(
+      "Shiny.setInputValue(%s, %s, {priority: 'event'});",
+      .js_value(ns("add_dict")), .js_value(row_idx))))
   parts <- c(parts, dict_btn)
 
   paste(parts, collapse = " ")
@@ -229,7 +334,9 @@ mod_spellcheck_view_server <- function(id, shared_state,
     })
 
     # Import a discipline dictionary: copy the uploaded .txt into
-    # dictionary/disciplines/, then refresh + auto-select it.
+    # dictionary/disciplines/, then refresh + auto-select it. Success is
+    # reported only once the copy has been read back and matches the upload
+    # (see .copy_file_verified()); otherwise nothing is selected.
     shiny::observeEvent(input$import_discipline, {
       f <- input$import_discipline
       if (is.null(f)) return()
@@ -238,11 +345,12 @@ mod_spellcheck_view_server <- function(id, shared_state,
       base <- tools::file_path_sans_ext(basename(f$name))
       base <- gsub("[^A-Za-z0-9_-]+", "_", base)
       dest <- file.path(dir, paste0(base, ".txt"))
-      ok <- tryCatch({
-        file.copy(f$datapath, dest, overwrite = TRUE); TRUE
-      }, error = function(e) FALSE)
-      if (!ok) {
-        shiny::showNotification("Import failed.", type = "error")
+      copied <- .copy_file_verified(f$datapath, dest)
+      if (!isTRUE(copied$ok)) {
+        shiny::showNotification(
+          sprintf("Import of '%s' failed: %s The dictionary was not added.",
+                  f$name, copied$message),
+          type = "error", duration = NULL)
         return()
       }
       dict_version(dict_version() + 1L)
@@ -278,7 +386,7 @@ mod_spellcheck_view_server <- function(id, shared_state,
     })
 
     flagged_r <- shiny::reactive({
-      uv <- unique_values_r()
+      uv <- .spell_drop_blank(unique_values_r())
       hun <- hun_r()
       if (is.null(uv) || nrow(uv) == 0) return(NULL)
       if (is.null(hun)) {

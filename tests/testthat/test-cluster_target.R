@@ -397,3 +397,279 @@ test_that("both cluster sub-tabs say their rules are trimmed_ci", {
                    fixed = TRUE)[[1]]
   expect_equal(sum(hits > 0), 2L)
 })
+
+
+# --- Blank values, recompute cap, card cap (pure) ----------------------------
+
+test_that("cluster_drop_blank drops empty, whitespace-only and NA values", {
+  uv <- tibble::tibble(value = c("latte", "", "   ", NA, " mocha "),
+                       n     = c(5L, 4L, 3L, 2L, 1L))
+  out <- cluster_drop_blank(uv)
+  expect_equal(out$value, c("latte", " mocha "))
+  expect_equal(out$n, c(5L, 1L))
+  expect_null(cluster_drop_blank(NULL))
+  expect_equal(nrow(cluster_drop_blank(uv[0, ])), 0L)
+})
+
+test_that("only the matrix-based algorithms count as pairwise", {
+  expect_true(all(vapply(c("jw", "osa", "lv", "lcs", "cosine", "jaccard"),
+                         cluster_is_pairwise, logical(1))))
+  expect_false(any(vapply(c("fingerprint", "ngram_fingerprint", "soundex",
+                            "metaphone"), cluster_is_pairwise, logical(1))))
+  # Every pairwise key is an algorithm the UI offers.
+  expect_true(all(CLUSTER_PAIRWISE_ALGORITHMS %in% CLUSTER_ALGORITHMS))
+  expect_false(cluster_is_pairwise(NULL))
+  expect_false(cluster_is_pairwise(NA_character_))
+})
+
+test_that("cluster_cap_values keeps the most frequent values for pairwise algorithms only", {
+  uv <- tibble::tibble(value = letters[1:6], n = c(1L, 9L, 3L, 9L, 7L, 2L))
+  capped <- cluster_cap_values(uv, "jw", cap = 3)
+  expect_true(capped$capped)
+  expect_equal(capped$n_total, 6L)
+  expect_equal(capped$cap, 3L)
+  # Highest counts first; the tie at 9 keeps input order.
+  expect_equal(capped$uv$value, c("b", "d", "e"))
+
+  linear <- cluster_cap_values(uv, "fingerprint", cap = 3)
+  expect_false(linear$capped)
+  expect_equal(nrow(linear$uv), 6L)
+
+  at_cap <- cluster_cap_values(uv, "cosine", cap = 6)
+  expect_false(at_cap$capped)
+  expect_identical(at_cap$uv, uv)
+
+  expect_equal(PAIRWISE_CLUSTER_CAP, 1000L)
+})
+
+test_that("cluster_cap_note is silent when nothing was capped and explains the cap otherwise", {
+  expect_null(cluster_cap_note(NULL))
+  expect_null(cluster_cap_note(list(capped = FALSE, n_total = 5L, cap = 10L)))
+  note <- as.character(cluster_cap_note(
+    list(capped = TRUE, n_total = 2500L, cap = 1000L)))
+  expect_match(note, "rs-help-line", fixed = TRUE)
+  expect_match(note, "1,000 most frequent of 2,500 distinct values",
+               fixed = TRUE)
+  expect_match(note, "Key collision", fixed = TRUE)
+})
+
+test_that("cluster_cards_to_show caps the cards, largest clusters first", {
+  cl <- tibble::tibble(
+    value      = paste0("v", 1:9),
+    n          = 1L,
+    cluster_id = c(1L, 1L, 2L, 3L, 3L, 3L, 4L, 4L, 5L))
+  all <- cluster_cards_to_show(cl, max_cards = 10)
+  # Singletons (2 and 5) never get a card.
+  expect_equal(all$ids, c(3L, 1L, 4L))
+  expect_equal(all$sizes, c(3L, 2L, 2L))
+  expect_equal(all$n_total, 3L)
+
+  two <- cluster_cards_to_show(cl, max_cards = 2)
+  expect_equal(two$ids, c(3L, 1L))
+  expect_equal(two$n_total, 3L)
+
+  expect_equal(cluster_cards_to_show(NULL)$n_total, 0L)
+  expect_length(cluster_cards_to_show(cl[0, ])$ids, 0)
+})
+
+
+# --- Debounce, cache, caps and blanks (reactive wiring) ----------------------
+
+# Counts calls to cluster_strings() made by the module, which looks the
+# function up in the environment this file sourced it into.
+# local_mocked_bindings() only handles package namespaces, so the binding is
+# swapped by hand and restored when the calling test ends.
+.count_clustering <- function(env = parent.frame()) {
+  counter <- new.env(parent = emptyenv())
+  counter$n <- 0L
+  home <- environment(mod_cluster_view_server)
+  real <- get("cluster_strings", envir = home)
+  assign("cluster_strings", function(...) {
+    counter$n <- counter$n + 1L
+    real(...)
+  }, envir = home)
+  withr::defer(assign("cluster_strings", real, envir = home), envir = env)
+  counter
+}
+
+.cluster_server_args <- function(uv, ...) {
+  c(list(shared_state    = .state(),
+         selected_var_r  = shiny::reactiveVal("drink1"),
+         unique_values_r = shiny::reactive(uv),
+         rules_proxy     = .rules_proxy()),
+    list(...))
+}
+
+.cluster_defaults <- function(session, algorithm = "jw") {
+  session$setInputs(algorithm = algorithm, threshold = 0.92, qgram = 2,
+                    normalize = c("lower", "squish"),
+                    apply_siblings = FALSE)
+}
+
+test_that("a burst of threshold changes clusters once, after the debounce", {
+  calls <- .count_clustering()
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(.uv), {
+    .cluster_defaults(session)
+    clusters_r()
+    expect_equal(calls$n, 1L)
+
+    # A slider drag: several values in quick succession.
+    for (t in c(0.91, 0.90, 0.89, 0.88)) session$setInputs(threshold = t)
+    clusters_r()
+    expect_equal(calls$n, 1L)          # nothing yet: still inside the wait
+
+    session$elapse(600)
+    clusters_r()
+    expect_equal(calls$n, 2L)          # one run for the whole drag
+  })
+})
+
+test_that("returning to an earlier setting is served from the cache", {
+  calls <- .count_clustering()
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(.uv), {
+    .cluster_defaults(session)
+    first <- clusters_r()
+    session$setInputs(threshold = 0.80); session$elapse(600)
+    clusters_r()
+    expect_equal(calls$n, 2L)
+
+    session$setInputs(threshold = 0.92); session$elapse(600)
+    expect_identical(clusters_r(), first)
+    expect_equal(calls$n, 2L)          # cache hit, no rerun
+
+    # Normalizer tick order does not change the key.
+    session$setInputs(normalize = c("squish", "lower")); session$elapse(600)
+    clusters_r()
+    expect_equal(calls$n, 2L)
+
+    # Under a linear algorithm the threshold is not part of the key.
+    session$setInputs(algorithm = "fingerprint"); session$elapse(600)
+    clusters_r()
+    expect_equal(calls$n, 3L)
+    session$setInputs(threshold = 0.75); session$elapse(600)
+    clusters_r()
+    expect_equal(calls$n, 3L)
+  })
+})
+
+test_that("a pairwise algorithm over too many values is capped and says so", {
+  uv <- tibble::tibble(value = c("latte", "Latte ", "mocha", "LATTE",
+                                 "chai", "tea"),
+                       n     = c(10L, 3L, 2L, 1L, 1L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server,
+    args = .cluster_server_args(uv, pairwise_cap = 4L), {
+    .cluster_defaults(session)
+    expect_equal(nrow(clusters_r()), 4L)
+    expect_setequal(clusters_r()$value, c("latte", "Latte ", "mocha", "LATTE"))
+    note <- as.character(output$cap_note$html)
+    expect_match(note, "Clustering the 4 most frequent of 6 distinct values",
+                 fixed = TRUE)
+    expect_match(note, "rs-help-line", fixed = TRUE)
+
+    # A linear algorithm clusters every value and shows no note.
+    session$setInputs(algorithm = "fingerprint"); session$elapse(600)
+    expect_equal(nrow(clusters_r()), 6L)
+    expect_null(output$cap_note)
+  })
+})
+
+test_that("the number of cluster cards is capped, largest first", {
+  uv <- tibble::tibble(
+    value = c("latte", "Latte ", "LATTE", "<b>x</b>", "x b"),
+    n     = c(10L, 3L, 1L, 2L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server,
+    args = .cluster_server_args(uv, max_cards = 1L), {
+    .cluster_defaults(session, "fingerprint")
+    html <- as.character(output$clusters_ui$html)
+    tables <- regmatches(html, gregexpr("<table[^>]*rs-cluster-table", html))[[1]]
+    expect_length(tables, 1)
+    expect_match(html, "Showing 1 of 2 clusters, largest first", fixed = TRUE)
+    # The three-member latte cluster is the one drawn.
+    cid <- .latte_cid(clusters_r())
+    expect_true(grepl(sprintf('id="%s"', session$ns(paste0("target_", cid))),
+                      html, fixed = TRUE))
+  })
+})
+
+test_that("no count line when every cluster fits", {
+  uv <- tibble::tibble(
+    value = c("latte", "Latte ", "LATTE", "<b>x</b>", "x b"),
+    n     = c(10L, 3L, 1L, 2L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(uv), {
+    .cluster_defaults(session, "fingerprint")
+    html <- as.character(output$clusters_ui$html)
+    expect_false(grepl("Showing", html, fixed = TRUE))
+  })
+})
+
+test_that("empty and whitespace-only values never form a cluster", {
+  # Under lower + squish, "" and "   " are identical, so without the guard
+  # they cluster together at any threshold.
+  uv <- tibble::tibble(value = c("latte", "", "   ", "mocha", " "),
+                       n     = c(5L, 4L, 3L, 2L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(uv), {
+    .cluster_defaults(session)
+    for (alg in c("jw", "osa", "cosine", "fingerprint", "soundex")) {
+      session$setInputs(algorithm = alg)
+      session$elapse(600)
+      cl <- clusters_r()
+      expect_setequal(cl$value, c("latte", "mocha"))
+      expect_false(any(duplicated(cl$cluster_id)), info = alg)
+    }
+    expect_match(as.character(output$clusters_ui$html),
+                 "No multi-member clusters", fixed = TRUE)
+  })
+})
+
+test_that("an all-blank column gives no clusters and no error", {
+  uv <- tibble::tibble(value = c("", "  "), n = c(3L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(uv), {
+    .cluster_defaults(session)
+    expect_null(clusters_r())
+    expect_null(output$cap_note)
+    expect_match(paste(output$clusters_ui$html), "No data.", fixed = TRUE)
+  })
+})
+
+test_that("the taxonomy matcher ignores empty and whitespace-only values", {
+  uv <- tibble::tibble(value = c("texas", "", "   ", "Ohio"),
+                       n     = c(4L, 3L, 2L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(uv), {
+    session$setInputs(tax_source_type = "builtin",
+                      tax_builtin = "US 50 States & DC",
+                      tax_method = "jw", tax_threshold = 0.75)
+    m <- taxonomy_matches_r()
+    expect_setequal(m$value, c("texas", "Ohio"))
+
+    session$setInputs(tax_source_type = "paste", tax_paste = "Ohio\nTexas")
+    m <- taxonomy_matches_r()
+    expect_equal(nrow(m), 2L)
+    expect_true(all(nzchar(trimws(m$value))))
+  })
+})
+
+test_that("the taxonomy matcher shows its empty state for an all-blank column", {
+  uv <- tibble::tibble(value = c("", "  "), n = c(3L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(uv), {
+    session$setInputs(tax_source_type = "builtin",
+                      tax_builtin = "US 50 States & DC",
+                      tax_method = "jw", tax_threshold = 0.75)
+    expect_null(taxonomy_matches_r())
+    expect_match(paste(output$tax_empty$html),
+                 "No taxonomy targets or dataset values", fixed = TRUE)
+  })
+})
+
+test_that("the Similarity Clustering UI has a slot for the cap note", {
+  html <- as.character(mod_cluster_view_ui("cv"))
+  expect_true(grepl('id="cv-cap_note"', html, fixed = TRUE))
+})
