@@ -424,15 +424,93 @@ test_that("apply_recodes summary separates matched / changed / shadowed", {
 
 # --- Defect 4 + the agreement guard -----------------------------------------
 
+# Column names that are not plain identifiers. A plain rule must reach its
+# named column and nothing else in BOTH engines:
+#   q1.a / q1_a  - the `.` used to be an unescaped wildcard in the script, so a
+#                  rule on q1.a also rewrote q1_a
+#   price ($)    - `(`, `)` and `$` used to make the script's pattern wrong
+#   my col       - a space; also carries empty and whitespace-only cells
+tricky_df <- function(df = synthetic_df()) {
+  df$`q1.a`      <- c("yes", "no", "yes", "YES", NA, "yes")
+  df$q1_a        <- c("yes", "yes", "no", "yes", "yes", NA)
+  df$`price ($)` <- c("free", "2", "free ", "", "FREE", NA)
+  df$`my col`    <- c("hot", "iced", "", "  ", "hot", NA)
+  df
+}
+
+tricky_rules <- function() {
+  dplyr::bind_rows(
+    mk_rule("q1.a",      "exact",      "yes", "Y"),
+    mk_rule("price ($)", "trimmed_ci", "free", "0"),
+    mk_rule("my col",    "exact",      "hot", "Hot"),
+    # Empty old_value: trimmed_ci also claims the whitespace-only cell.
+    mk_rule("my col",    "trimmed_ci", "",    "unknown")
+  )
+}
+
 test_that("generate_recode_R agrees with apply_recodes cell for cell", {
-  df      <- synthetic_df()
-  rules   <- synthetic_rules()
+  df      <- tricky_df()
+  rules   <- dplyr::bind_rows(synthetic_rules(), tricky_rules())
   applied <- apply_recodes(df, rules)$df
   genned  <- eval_generated_recodes(df, rules)
+  expect_identical(names(genned), names(applied))
   for (col in names(df)) {
     expect_identical(genned[[col]], applied[[col]],
                      info = sprintf("column %s", col))
   }
+  # The tricky columns came out as intended, not merely equally wrong.
+  expect_identical(applied$`q1.a`, c("Y", "no", "Y", "YES", NA, "Y"))
+  expect_identical(applied$q1_a, df$q1_a)                 # untouched
+  expect_identical(applied$`price ($)`, c("0", "2", "0", "", "0", NA))
+  expect_identical(applied$`my col`,
+                   c("Hot", "iced", "unknown", "unknown", "Hot", NA))
+  # Plain rules are single-column mutate()s on a backticked name, never a
+  # matches() pattern.
+  code <- generate_recode_R(rules, "synthetic")
+  expect_true(grepl("mutate(`q1.a` = case_when(", code, fixed = TRUE) ||
+              grepl("mutate(q1.a = case_when(", code, fixed = TRUE))
+  expect_true(grepl("mutate(`price ($)` = case_when(", code, fixed = TRUE))
+  expect_true(grepl("mutate(`my col` = case_when(", code, fixed = TRUE))
+  expect_false(grepl("matches(\"^q1", code, fixed = TRUE))
+  expect_false(grepl("matches(\"^price", code, fixed = TRUE))
+  expect_false(grepl("# WARNING", code, fixed = TRUE))
+})
+
+test_that("a plain rule's pattern is its escaped column name", {
+  # Before the fix: `^q1.a$` grouped and warned as if it reached q1_a too.
+  rules <- dplyr::bind_rows(
+    mk_rule("q1.a", "exact", "yes", "Y"),
+    mk_rule("q1_a", "exact", "yes", "Y"))
+  code <- generate_recode_R(rules, "d")
+  expect_false(grepl("# WARNING", code, fixed = TRUE))
+  expect_equal(lengths(regmatches(code, gregexpr("case_when", code)))[[1]], 2L)
+
+  # Every metacharacter a name can carry, one rule each: the script parses,
+  # runs, and each rule reaches only its own column.
+  nms <- c("a.b", "a_b", "w{2}", "x[1]", "a|b", "c^d", "e+f", "g*h", "i?j",
+           "back\\slash", "tick`name", "if")
+  df  <- tibble::as_tibble(stats::setNames(
+    lapply(nms, function(n) c("v", "w")), nms), .name_repair = "minimal")
+  rules <- dplyr::bind_rows(lapply(nms[nms != "a_b"], function(n)
+    mk_rule(n, "exact", "v", paste0("V:", n))))
+  code <- generate_recode_R(rules, "d")
+  expect_silent(parse(text = code))
+  applied <- apply_recodes(df, rules)$df
+  genned  <- eval_generated_recodes(df, rules)
+  for (n in nms) {
+    expect_identical(genned[[n]], applied[[n]], info = n)
+  }
+  expect_identical(applied$a_b, c("v", "w"))
+  expect_identical(applied$`w{2}`, c("V:w{2}", "w"))
+})
+
+test_that("a sibling rule plus a plain rule on a family member still warns", {
+  rules <- dplyr::bind_rows(
+    mk_rule("q1.a", "exact", "a", "A"),
+    mk_rule("q1.a", "exact", "b", "B", siblings = TRUE,
+            pattern = "^q1[._]a$"))
+  code <- generate_recode_R(rules, "d")
+  expect_true(grepl("#   q1.a", code, fixed = TRUE))
 })
 
 # The same guard with column normalizations in front of the recodes. The app
@@ -498,9 +576,19 @@ eval_generated_with_norms <- function(df, rules, norms) {
 }
 
 test_that("generated script agrees with normalize-then-recode cell for cell", {
-  df    <- synthetic_norm_df()
-  rules <- synthetic_norm_rules()
-  norms <- synthetic_norms()
+  # Plus the metacharacter columns, each normalized, with recodes written
+  # against the normalized values. q1_a must be reached by neither step.
+  df    <- tricky_df(synthetic_norm_df())
+  rules <- dplyr::bind_rows(
+    synthetic_norm_rules(),
+    mk_rule("q1.a",      "exact", "YES",  "Y"),
+    mk_rule("price ($)", "exact", "FREE", "0"),
+    mk_rule("my col",    "exact", "",     "unknown"))
+  norms <- dplyr::bind_rows(
+    synthetic_norms(),
+    mk_norm_rule("q1.a",      "uppercase"),
+    mk_norm_rule("price ($)", c("squish", "uppercase")),
+    mk_norm_rule("my col",    "squish"))
   applied <- apply_recodes(apply_normalizations(df, norms)$df, rules)$df
   genned  <- eval_generated_with_norms(df, rules, norms)
   expect_identical(names(genned), names(applied))
@@ -519,6 +607,15 @@ test_that("generated script agrees with normalize-then-recode cell for cell", {
   code <- generate_recode_R(rules, "synthetic", normalizations = norms)
   expect_true(grepl("`drink notes` = str_to_title(str_squish(`drink notes`))",
                     code, fixed = TRUE))
+  expect_true(grepl("`price ($)` = toupper(str_squish(`price ($)`))",
+                    code, fixed = TRUE))
+  # The metacharacter columns: normalized, then recoded, and nothing else.
+  expect_identical(applied$`q1.a`, c("Y", "NO", "Y", "Y", NA, "Y"))
+  expect_identical(applied$q1_a, df$q1_a)
+  expect_identical(applied$`price ($)`, c("0", "2", "0", "", "0", NA))
+  # "  " squishes to "", so the exact "" rule claims both blank cells.
+  expect_identical(applied$`my col`,
+                   c("hot", "iced", "unknown", "unknown", "hot", NA))
   expect_lt(regexpr("Column normalizations", code, fixed = TRUE)[1],
             regexpr("case_when(", code, fixed = TRUE)[1])
 })
@@ -654,7 +751,12 @@ test_that("an NA-targeting rule survives the recodes CSV round trip", {
 test_that("an unusable match_type emits a FALSE arm rather than a live one", {
   code <- generate_recode_R(mk_rule("x", "regx", "a", "A"), "d")
   expect_silent(parse(text = code))
-  expect_true(grepl("FALSE ~ \"A\"", code, fixed = TRUE))
+  expect_true(grepl("rep_len(FALSE, length(x)) ~ \"A\"", code, fixed = TRUE))
+  # As the ONLY arm it must still run: a scalar FALSE made case_when() fail
+  # to recycle `.default`.
+  df <- tibble::tibble(x = c("a", "b"))
+  expect_identical(eval_generated_recodes(df, mk_rule("x", "regx", "a", "A"))$x,
+                   c("a", "b"))
 })
 
 test_that(".fingerprint_key standardizes word order and whitespace/punctuation", {

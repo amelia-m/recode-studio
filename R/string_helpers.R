@@ -87,6 +87,15 @@ normalize_value <- function(x,
 #' compared for equality. A match REPLACES THE WHOLE CELL (regex does not do
 #' partial substitution / backreferences).
 #'
+#' Empty values: an `old_value` of "" targets the column's EMPTY cells under
+#' `exact` and `exact_ci`, and under `trimmed_ci` also the whitespace-only
+#' cells (they squish to ""). A `regex` rule with an EMPTY pattern matches
+#' nothing: base grepl("") would match every non-missing cell (wiping the
+#' column), and the generated script's stringr::str_detect() refuses an empty
+#' pattern outright, so any other answer breaks apply/codegen agreement. Use
+#' the pattern `^$` to target empty cells with a regex. validate_recodes()
+#' reports the empty pattern as `invalid_regex`.
+#'
 #' NA handling: an NA `old_value` (which is how the CSV's `<NA>` sentinel
 #' round-trips) targets the MISSING cells of the column. It used to produce an
 #' all-NA hit vector, which made the caller's `if (any(hit))` throw "missing
@@ -108,6 +117,8 @@ normalize_value <- function(x,
   if (length(old_value) != 1 || is.na(old_value)) return(is.na(values))
 
   hits <- if (match_type == "regex") {
+    # An empty pattern is not a usable pattern (see above).
+    if (!nzchar(old_value)) return(rep(FALSE, n))
     suppressWarnings(tryCatch(
       !is.na(values) & grepl(old_value, values),
       error = function(e) rep(FALSE, n)
@@ -140,6 +151,22 @@ normalize_value <- function(x,
     rule$variable
   }
   intersect(cols, all_cols)
+}
+
+# Escape every regex metacharacter so the result matches `x` literally.
+# stringr (ICU), not base gsub (TRE): a TRE character class holding `{}`
+# throws "Invalid contents of {}" (see the Gotchas in CLAUDE.md). The class is
+# the one suggest_sibling_pattern() in R/data_loader.R uses; that file keeps
+# its own copy so it can be sourced without this one.
+.escape_regex <- function(x) {
+  stringr::str_replace_all(x, "([.^$*+?()\\[\\]{}|\\\\])", "\\\\\\1")
+}
+
+# TRUE for rules that target their `variable` alone (not a sibling family),
+# vectorised. The exact complement of the sibling test in
+# .recode_cols_from_names() and generate_recode_R().
+.is_plain_rule <- function(apply_to_siblings, sibling_pattern) {
+  !(!is.na(apply_to_siblings) & apply_to_siblings & !is.na(sibling_pattern))
 }
 
 # Cell-level "did this actually change?" test, NA-aware. One side NA and the
@@ -626,7 +653,8 @@ recode_rule_id <- function(variable, match_type, old_value) {
 #'   blank_new_value    : action == "recode" but new_value is NA or ""
 #'   rule_chains        : per variable, values that appear as both old and new
 #'   invalid_enum       : match_type or action outside the allowed set
-#'   invalid_regex      : match_type == "regex" but old_value won't compile
+#'   invalid_regex      : match_type == "regex" but old_value won't compile,
+#'                       or is empty (an empty pattern matches nothing)
 #'   stale              : rule whose old_value is no longer in any target column
 #'                       (computed only if `data` is provided)
 validate_recodes <- function(rules, data = NULL) {
@@ -642,10 +670,12 @@ validate_recodes <- function(rules, data = NULL) {
                   !(action %in% RECODE_ACTIONS)) |>
     dplyr::select(rule_id, variable, match_type, action)
 
-  # Regex rules whose pattern fails to compile.
+  # Regex rules whose pattern fails to compile, or is empty (an empty pattern
+  # matches nothing; see .rule_hits()).
   rx <- rules[!is.na(rules$match_type) & rules$match_type == "regex", ]
   if (nrow(rx) > 0) {
     bad <- vapply(rx$old_value, function(p) {
+      if (!is.na(p) && !nzchar(p)) return(TRUE)
       isTRUE(suppressWarnings(tryCatch({ grepl(p, "probe"); FALSE },
                                        error = function(e) TRUE)))
     }, logical(1))
@@ -816,12 +846,23 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
   }
 
   # NOTE: isTRUE() is NOT vectorised, so we use a length-safe expression.
+  #
+  # A plain rule's pattern is its column name ESCAPED and anchored, so it
+  # matches that one column and nothing else. Unescaped, a rule on `q1.a` also
+  # reached `q1_a` (the `.` is a wildcard) and a name like `price ($)` was not
+  # a pattern for its own column at all. The pattern is still what groups the
+  # rules (one case_when() per target, which keeps the script single-pass) and
+  # what the overlap WARNING below tests column names against; plain groups
+  # are then EMITTED as a backticked single-column mutate() (see below), so no
+  # regex engine is involved in reaching their column in the script.
+  # Sibling patterns are the user's own regexes and are used as given.
   rules <- rules |>
     dplyr::mutate(
+      .plain = .is_plain_rule(apply_to_siblings, sibling_pattern),
       effective_pattern = ifelse(
-        !is.na(apply_to_siblings) & apply_to_siblings & !is.na(sibling_pattern),
-        sibling_pattern,
-        paste0("^", variable, "$")
+        .plain,
+        paste0("^", .escape_regex(variable), "$"),
+        sibling_pattern
       )
     )
 
@@ -862,12 +903,20 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
                else deparse(as.character(r$new_value))
         cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                  paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
+        # An arm that matches nothing is a FULL-LENGTH FALSE: a bare scalar
+        # FALSE as the only arm makes case_when() fail ("Can't recycle
+        # `.default` (size n) to size 1").
+        never <- sprintf("rep_len(FALSE, length(%s))", col_token)
         lhs <- if (is.na(mt) || !(mt %in% RECODE_MATCH_TYPES)) {
           # Unusable match_type: matches nothing, same as .rule_hits().
-          "FALSE"
+          never
         } else if (is.na(r$old_value)) {
           # `<NA>` in the CSV: the rule targets the column's missing cells.
           sprintf("is.na(%s)", col_token)
+        } else if (identical(mt, "regex") && !nzchar(r$old_value)) {
+          # Empty pattern: matches nothing, same as .rule_hits() (and
+          # str_detect() would refuse it).
+          never
         } else if (identical(mt, "regex")) {
           # Regex match: detect the (raw) pattern, replace the whole cell.
           sprintf("str_detect(%s, %s)", col_token,
@@ -891,8 +940,21 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
       arms
     }
 
-    if (grepl("^\\^([a-zA-Z_][a-zA-Z0-9_]*)\\$$", pattern)) {
-      var <- sub("^\\^([a-zA-Z_][a-zA-Z0-9_]*)\\$$", "\\1", pattern)
+    # Single-column block when the group targets exactly one named column: a
+    # plain rule is in it (every rule in the group then reaches exactly that
+    # column, because the escaped pattern matches only it), or a sibling
+    # pattern that is just `^<syntactic name>$`. The column is written as an
+    # R token, backticked when it is not syntactic.
+    single_var <- if (any(g$.plain)) {
+      g$variable[g$.plain][1]
+    } else if (grepl("^\\^([a-zA-Z_][a-zA-Z0-9_]*)\\$$", pattern)) {
+      sub("^\\^([a-zA-Z_][a-zA-Z0-9_]*)\\$$", "\\1", pattern)
+    } else {
+      NULL
+    }
+
+    if (!is.null(single_var)) {
+      var <- .r_col_token(single_var)
       block <- c(
         "df <- df |>",
         sprintf("  mutate(%s = case_when(", var),

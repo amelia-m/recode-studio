@@ -13,6 +13,91 @@
                          "apply_to_siblings", "sibling_pattern", "match_type",
                          "notes", "rule_id", "delete")
 
+# The rule-key columns an edit can change. `rule_id` hashes
+# (variable, match_type, old_value); `variable` is locked in the editor.
+.RECODE_KEY_COLS <- c("variable", "match_type", "old_value")
+
+#' Apply one cell edit from the Recodes table to a rule set. Pure (no Shiny).
+#'
+#' Why this exists: `rule_id` is a hash of the rule key. An edit to
+#' `old_value` or `match_type` used to keep the old id, so a rule minted later
+#' for the ORIGINAL value collided with the edited rule, and the rules proxy's
+#' in-place merge silently overwrote it. A key edit now recomputes the id. If
+#' the new id already belongs to ANOTHER rule the edit is refused (two rules
+#' with one key cannot both exist; the user decides which to keep), and the
+#' rule set is returned unchanged.
+#'
+#' `norm_spec` is never touched here: it records the normalization of the
+#' rule's COLUMNS when the rule was added, and editing a value or match type
+#' does not change which columns the rule reaches.
+#'
+#' @param rules Recode rule tibble.
+#' @param row   1-based row index of the edited rule.
+#' @param col   Name of the edited column.
+#' @param value New cell value, as DT sends it (character).
+#' @param now   Timestamp string for `updated_at`.
+#' @return list(status = "ok" | "refused" | "ignored", rules, message).
+#'   `rules` is the input unchanged unless status is "ok".
+apply_recode_edit <- function(rules, row, col, value,
+                              now = format(Sys.time(), "%Y-%m-%dT%H:%M:%S")) {
+  out <- function(status, r = rules, message = NULL) {
+    list(status = status, rules = r, message = message)
+  }
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0 ||
+      length(row) != 1 || is.na(row) || row < 1 || row > nrow(rules) ||
+      length(col) != 1 || is.na(col) ||
+      col %in% c("delete", "rule_id", "variable") || !(col %in% names(rules))) {
+    return(out("ignored"))
+  }
+  value <- if (length(value) == 0 || is.null(value)) NA_character_
+           else as.character(value[[1]])
+
+  if (col == "match_type" && !(value %in% RECODE_MATCH_TYPES)) {
+    return(out("refused", message = sprintf(
+      "Invalid match_type '%s'. Allowed: %s.",
+      value, paste(RECODE_MATCH_TYPES, collapse = ", "))))
+  }
+  if (col == "action" && !(value %in% RECODE_ACTIONS)) {
+    return(out("refused", message = sprintf(
+      "Invalid action '%s'. Allowed: %s.",
+      value, paste(RECODE_ACTIONS, collapse = ", "))))
+  }
+
+  r <- rules
+  if (col == "apply_to_siblings") {
+    r[[col]][row] <- value %in% c("TRUE", "true", "T", "1")
+  } else {
+    r[[col]][row] <- value
+  }
+
+  if (col %in% .RECODE_KEY_COLS) {
+    new_id <- recode_rule_id(r$variable[row], r$match_type[row],
+                             r$old_value[row])
+    if (!identical(new_id, as.character(rules$rule_id[row]))) {
+      clash <- which(as.character(rules$rule_id) == new_id &
+                     seq_len(nrow(rules)) != row)
+      if (length(clash) > 0) {
+        k <- clash[1]
+        shown <- function(x) {
+          if (is.na(x)) "<NA> (missing cells)"
+          else if (!nzchar(x)) "'' (empty cells)"
+          else sprintf("'%s'", x)
+        }
+        return(out("refused", message = sprintf(paste0(
+          "Not changed: rule %d (id %s) already matches %s with match_type ",
+          "'%s' in column '%s'. Two rules cannot share that key. Edit or ",
+          "delete rule %d first."),
+          k, rules$rule_id[k], shown(rules$old_value[k]),
+          rules$match_type[k], rules$variable[k], k)))
+      }
+      r$rule_id[row] <- new_id
+    }
+  }
+
+  r$updated_at[row] <- now
+  out("ok", r)
+}
+
 mod_recode_editor_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::card(
@@ -55,6 +140,7 @@ mod_recode_editor_ui <- function(id) {
         )
       ),
       shiny::hr(),
+      dt_empty_value_css(),
       DT::DTOutput(ns("tbl"))
     )
   )
@@ -92,43 +178,47 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
         editable  = list(target = "cell",
                          disable = list(columns = c(0, 8, 9))),  # variable, rule_id, delete
         selection = "none",
-        options   = list(pageLength = 25, autoWidth = FALSE)
+        options   = list(
+          pageLength = 25, autoWidth = FALSE,
+          # Label an EMPTY old_value / new_value "(empty)", so it is not
+          # mistaken for a missing one (both would otherwise be a blank
+          # cell). dt_empty_value_defs() is in R/mod_value_table.R.
+          columnDefs = dt_empty_value_defs(
+            targets  = match(c("old_value", "new_value"),
+                             .RECODE_EDITOR_COLS) - 1L,
+            truncate = FALSE))
       )
     })
 
+    # Put the browser's copy of the table back to the stored rules. A refused
+    # edit leaves the rule store untouched, and assigning an identical value to
+    # a reactiveValues entry does not invalidate anything, so re-setting the
+    # rules would NOT redraw: the typed value would stay on screen until the
+    # next sort or page. replaceData() makes the table fetch the stored rows.
+    tbl_proxy <- DT::dataTableProxy("tbl", session = session)
+    revert_table <- function() {
+      tryCatch(
+        DT::replaceData(tbl_proxy, shiny::isolate(table_data()),
+                        resetPaging = FALSE, rownames = FALSE),
+        error = function(e) NULL)
+    }
+
+    # Edits go through apply_recode_edit() (above), which recomputes rule_id
+    # when a key column changes and refuses an edit that would collide with
+    # another rule. Always set(), never add(): add() re-stamps norm_spec.
     shiny::observeEvent(input$tbl_cell_edit, {
       info <- input$tbl_cell_edit
       r <- rules_proxy$get()
       if (nrow(r) == 0) return()
-      col <- .RECODE_EDITOR_COLS[info$col + 1]
-      row <- info$row
-      val <- info$value
-      if (col %in% c("delete", "rule_id", "variable")) return()  # locked
-
-      # Reject out-of-range enum edits; force a redraw so the cell reverts.
-      if (col == "match_type" && !(val %in% RECODE_MATCH_TYPES)) {
-        shiny::showNotification(
-          sprintf("Invalid match_type '%s'. Allowed: %s.",
-                  val, paste(RECODE_MATCH_TYPES, collapse = ", ")),
-          type = "error")
-        rules_proxy$set(r)   # re-assign unchanged rules -> renderDT redraws
-        return()
+      col <- .RECODE_EDITOR_COLS[as.integer(info$col) + 1]
+      res <- apply_recode_edit(r, row = as.integer(info$row), col = col,
+                               value = info$value)
+      if (identical(res$status, "ok")) {
+        rules_proxy$set(res$rules)
+      } else if (identical(res$status, "refused")) {
+        shiny::showNotification(res$message, type = "error", duration = 10)
+        revert_table()
       }
-      if (col == "action" && !(val %in% RECODE_ACTIONS)) {
-        shiny::showNotification(
-          sprintf("Invalid action '%s'. Allowed: %s.",
-                  val, paste(RECODE_ACTIONS, collapse = ", ")),
-          type = "error")
-        rules_proxy$set(r)
-        return()
-      }
-
-      if (col == "apply_to_siblings") {
-        val <- val %in% c("TRUE", "true", "T", "1", TRUE)
-      }
-      r[[col]][row] <- val
-      r$updated_at[row] <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
-      rules_proxy$set(r)
     })
 
     shiny::observeEvent(input$delete_row, ignoreInit = TRUE, {

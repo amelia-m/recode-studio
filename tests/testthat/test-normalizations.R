@@ -13,6 +13,9 @@ source(file.path("..", "..", "R", "recat_helpers.R"))
 source(file.path("..", "..", "R", "data_loader.R"))
 source(file.path("..", "..", "R", "rule_proxies.R"))
 source(file.path("..", "..", "R", "rule_warnings.R"))
+# mod_preview_export.R calls app_version_from_description(); without this the
+# file only passed when an earlier test file had sourced export_bundle.R.
+source(file.path("..", "..", "R", "export_bundle.R"))
 source(file.path("..", "..", "R", "mod_preview_export.R"))
 source(file.path("..", "..", "R", "mod_normalize.R"))
 
@@ -338,6 +341,29 @@ test_that("generated normalization code parses and uses the right calls", {
   expect_true(grepl("`drink notes` = tolower(`drink notes`)", code, fixed = TRUE))
   expect_true(grepl("`2nd drink` = str_trim(`2nd drink`)", code, fixed = TRUE))
   expect_true(grepl("No recode rules defined", code, fixed = TRUE))
+})
+
+test_that("a normalization on a metacharacter column reaches only that column", {
+  df <- tibble::tibble(`q1.a` = c(" yes ", "no"), q1_a = c(" yes ", "no"),
+                       `price ($)` = c(" free", "2"))
+  norms <- dplyr::bind_rows(
+    mk_norm("q1.a", c("trim", "uppercase")),
+    mk_norm("price ($)", "trim"))
+  applied <- apply_normalizations(df, norms)$df
+  genned  <- eval_script(df, empty_recodes_tibble(), norms)
+  expect_identical(applied$`q1.a`, c("YES", "NO"))
+  expect_identical(applied$q1_a, df$q1_a)
+  expect_identical(applied$`price ($)`, c("free", "2"))
+  for (col in names(df)) {
+    expect_identical(genned[[col]], applied[[col]], info = col)
+  }
+  # Normalization plus recode on the same metacharacter column.
+  rules <- mk_recode("price ($)", "exact", "free", "0")
+  genned <- eval_script(df, rules, norms)
+  expect_identical(genned$`price ($)`, c("0", "2"))
+  expect_identical(genned$`price ($)`,
+                   apply_recodes(applied, rules)$df$`price ($)`)
+  expect_identical(genned$q1_a, df$q1_a)
 })
 
 test_that("a normalization with no usable ops emits no code at all", {

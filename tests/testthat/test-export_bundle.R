@@ -393,6 +393,77 @@ test_that("the bundle script rebuilds the cleaned data from the original file", 
                            file.size(file.path(dir, "cafe_orders_cleaned.csv"))))
 })
 
+# Build a bundle for `df` (written to CSV and read back the way the app reads
+# it), run its script from the original file's folder, and return both.
+.run_bundle_script <- function(df, rules, recat, norms, file_name) {
+  src <- tempfile("fx_meta_")
+  dir.create(src)
+  path <- file.path(src, file_name)
+  readr::write_csv(df, path, na = "")
+  raw <- read_dataset(path)
+  res <- build_cleaned_dataset(raw, rules, recat, norms)
+  prov <- build_provenance(source_file_meta(path, file_name = path), raw, res,
+                           rules, recat, norms, "0.1.0")
+  id  <- bundle_dataset_id(file_name)
+  dir <- tempfile("bundle_meta_")
+  write_export_bundle(dir, res, prov, rules, recat, norms, id)
+  old <- setwd(src)
+  on.exit(setwd(old), add = TRUE)
+  env <- new.env(parent = globalenv())
+  suppressMessages(eval(parse(file.path(dir, sprintf("clean_%s.R", id))),
+                        envir = env))
+  list(cleaned = res$df, script_df = env$df,
+       bundle_csv = file.path(dir, sprintf("%s_cleaned.csv", id)),
+       script_csv = file.path(src, sprintf("%s_cleaned_reproduced.csv", id)))
+}
+
+test_that("the bundle script reproduces columns whose names hold regex metacharacters", {
+  # Before the fix the recode rule on `q1.a` also rewrote `q1_a` in the script
+  # (unescaped `.`), and `price ($)` was not reachable by its own pattern.
+  df <- tibble::tibble(
+    order_id    = as.character(1:5),
+    `q1.a`      = c("yes", "no", "Yes ", "yes", NA),
+    q1_a        = c("yes", "yes", "no", "yes", "yes"),
+    `price ($)` = c("free", "2.50", "FREE", NA, "free"),
+    `my col`    = c("hot", "iced", "HOT", "hot", NA))
+  norms <- dplyr::bind_rows(
+    .fx_norm("q1.a", c("squish", "lowercase")),
+    .fx_norm("price ($)", "uppercase"))
+  rules <- dplyr::bind_rows(
+    .fx_rule("q1.a", "yes", "Y"),
+    .fx_rule("price ($)", "FREE", "0.00"),
+    .fx_rule("my col", "hot", "Hot"))
+  recat <- .fx_recat_rule("temp", "Hot drink", "hot", vars = "my col")
+  out <- .run_bundle_script(df, rules, recat, norms, "meta names.csv")
+
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(out$cleaned$`q1.a`, c("Y", "no", "Y", "Y", NA))
+  expect_identical(out$cleaned$q1_a, df$q1_a)
+  expect_identical(out$cleaned$`price ($)`, c("0.00", "2.50", "0.00", NA, "0.00"))
+  expect_identical(out$cleaned$`my col`, c("Hot", "iced", "HOT", "Hot", NA))
+  expect_identical(out$cleaned$temp, c("Hot drink", NA, "Hot drink", "Hot drink", NA))
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+})
+
+test_that("an empty-to-missing rule leaves no visible trace in the cleaned CSV", {
+  # Documented limitation, pinned: the cleaned CSV writes "" and NA the same
+  # way (an empty cell), so a rule turning "" into NA changes nothing a reader
+  # of that one file can see. The rule file still carries it.
+  cleaned <- list(df = tibble::tibble(a = c("", NA, "x")))
+  f1 <- tempfile(fileext = ".csv"); f2 <- tempfile(fileext = ".csv")
+  readr::write_csv(tibble::tibble(a = c("", "", "x")), f1, na = BUNDLE_CSV_NA)
+  readr::write_csv(cleaned$df, f2, na = BUNDLE_CSV_NA)
+  expect_identical(readLines(f1), readLines(f2))
+  rule <- .fx_rule("a", "", NA_character_)
+  rule$action <- "delete"
+  rf <- tempfile(fileext = ".csv")
+  write_recodes(rule, rf)
+  back <- read_recodes(rf)
+  expect_identical(back$old_value, "")
+  expect_identical(back$action, "delete")
+})
+
 test_that("the script warns when the input is not the recorded file", {
   x   <- .fx_prov()
   dir <- tempfile("bundle_sha_")
