@@ -85,6 +85,12 @@ defects in section 4; the rest are marked where upstream was not checked.
     into `reactiveValues` does not invalidate, so the rejected value stays on
     screen (this also affected the invalid-enum rejection). Fix here:
     `DT::replaceData()`. Upstream not checked.
+17. **Spellcheck replaced the whole value with the suggested word.** The rule
+    made from a suggestion had `old_value` = the whole value and `new_value` =
+    the corrected WORD, so `iced coffe` became `coffee`. Found 2026-09-16; a
+    fix that corrects only the flagged word inside the value is in progress
+    here. Upstream's spellcheck builds rules the same way; not checked by
+    running it.
 
 ## 2. Features and robustness here that upstream lacks
 
