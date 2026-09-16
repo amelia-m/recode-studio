@@ -164,7 +164,10 @@ always agree.
      and never change a value; a Normalize rule rewrites the column.
 4. **Browse values**: frequency table of unique values; rows with duplicated
    adjacent tokens (e.g. `"oat milk oat milk"`) are highlighted. Long values are
-   shortened to one line; hover to read the whole value.
+   shortened to one line; hover to read the whole value. A value with no text
+   at all is listed as an outlined, italic **(empty)**, and a rule made from it
+   targets empty cells. Note that blank cells in a CSV or Excel file are read
+   as **missing**, not as empty text, so they usually do not appear here.
 5. **Clusters**: values grouped by similarity. Choose the metric (edit-distance:
    Jaro-Winkler, OSA, Levenshtein, longest-common-substring; token overlap:
    cosine, Jaccard q-gram; fingerprints: key collision, n-gram; phonetic:
@@ -174,7 +177,12 @@ always agree.
    spelling as canonical; pick a different member or type your own target,
    then recode the rest to it, optionally across sibling columns. A second
    sub-tab matches the column against a reference list. (Best for **short**
-   columns.)
+   columns.) Blank values are left out. On a column with more than 1,000
+   different values, the algorithms that compare every value with every other
+   (Jaro-Winkler, OSA, Levenshtein, longest common substring, cosine, Jaccard)
+   use only the 1,000 most frequent and say so; key collision, n-gram
+   fingerprint, Soundex and Metaphone stay fast on any number of values. At
+   most 50 clusters are shown at once, largest first.
 6. **Spellcheck**: Hunspell flags + clickable suggestions, a free-form
    correction box, selectable discipline dictionaries, and an "add to
    dictionary" button. (Best for **short** columns.)
@@ -186,13 +194,17 @@ always agree.
 8. **Recodes**: an editable grid of all rules with a validator (duplicate
    keys, rule chains, blanks, invalid enums/regex, stale rules). Rules apply in
    a single pass: each cell is claimed by the first rule that matches it.
-   Editing a rule keeps it in its place in the list.
+   Editing a rule keeps it in its place in the list. If you change a rule's
+   old value or match type so that it becomes identical to another rule, the
+   edit is refused and the message names the other rule.
 9. **Recategorize**: derive a *new* column from term logic across several
    existing columns, instead of rewriting values in place. A row matches when
    **any** of the rule's columns contains **any** include term and **none**
    contains an exclude term; rules sharing an output column run in priority
    order, first match wins. The match counts are taken after normalizations
-   and recodes. Exports its own CSV + R script.
+   and recodes. If you change the form after clicking Preview, the old result
+   is greyed out and marked **Out of date** until you preview again. Exports
+   its own CSV + R script.
 10. **Preview & export**:
     - Three counts per rule: **matched** (cells the rule hit), **changed**
       (cells whose value actually differs afterwards) and **shadowed** (cells
@@ -234,7 +246,7 @@ quietly corrupting your rules.
 - `trimmed_ci` (default): compare after `str_squish(tolower(...))`. `" Cappuccino "` matches `"cappuccino"`.
 - `exact_ci`: case-insensitive exact compare.
 - `exact`: byte-for-byte exact compare.
-- `regex`: `old_value` is an (unanchored) regular expression matched against the value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid pattern is flagged by Validate and matches nothing.
+- `regex`: `old_value` is an (unanchored) regular expression matched against the value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid or empty pattern is flagged by Validate and matches nothing; use `^$` to match empty cells.
 
 Rules are matched against the values **after** column normalizations. An
 `exact` or `regex` rule written against the raw values may stop matching once

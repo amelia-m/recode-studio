@@ -78,15 +78,23 @@ R/
                          #   variable_selection_server()
   mod_normalize.R        # whole-column trim/squish/case rules + before/after preview
   mod_value_table.R      # frequency table + "create rule from selected rows"
+                         #   also PURE value_frequency_table() (feeds
+                         #   unique_values_r) + dt_empty_value_defs()/_css()
   mod_cluster_view.R     # TWO sub-tabs: "Similarity Clustering" (target +
                          #   exclude + conflict refusal + algorithm guide) and
                          #   "Reference Taxonomy Matcher" (match a column against
                          #   a standard list, then emit recode rules)
                          #   also defines PURE cluster_target_decision() +
-                         #   cluster_recode_pairs() and BUILTIN_TAXONOMIES
+                         #   cluster_recode_pairs(), cluster_drop_blank(),
+                         #   cluster_cap_values(), cluster_cards_to_show(),
+                         #   PAIRWISE_CLUSTER_CAP / MAX_CLUSTER_CARDS and
+                         #   BUILTIN_TAXONOMIES
   mod_spellcheck_view.R  # hunspell flags + clickable suggestions + dictionaries
+                         #   (.js_value()/.attr_value() action-cell escaping,
+                         #   .copy_file_verified(), .spell_drop_blank())
   mod_text_analysis.R    # long-text columns: length dist, token/n-gram freq, KWIC
-  mod_recode_editor.R    # editable DT of rules + Validate
+  mod_recode_editor.R    # editable DT of rules + Validate; PURE
+                         #   apply_recode_edit() handles one cell edit
   mod_recategorize.R     # derive a new column from cross-variable term logic
   mod_preview_export.R   # counts, rule warnings, diff, downloads, cleaned-data zip
   mod_import_recodes.R   # merge external recodes / normalizations CSVs
@@ -136,7 +144,18 @@ The "Recoding:" variable banner sits above the tab set.
 - `normalized_r` (raw data with normalizations applied) and `unique_values_r`
   (reactive `tibble(value, n)` of the selected column AFTER normalization) are
   computed once in `server()` and passed to the value/cluster/spellcheck
-  modules. Don't recompute uniques per module.
+  modules. Don't recompute uniques per module. `unique_values_r` is built by
+  `value_frequency_table()` (`R/mod_value_table.R`): it KEEPS the empty
+  string `""` (so Browse values can mint a rule for empty cells) and drops NA.
+  Clusters, the taxonomy matcher and Spellcheck drop blanks themselves
+  (`cluster_drop_blank()`, `.spell_drop_blank()`).
+- **Loaded blanks are NA, not `""`.** `read_dataset()` uses readr's defaults
+  (`na = c("", "NA")`, `trim_ws = TRUE`), so empty, quoted-blank and
+  whitespace-only CSV cells arrive as NA (readxl does the same for Excel). A
+  loaded file therefore never contains `""`; the `""` handling matters mainly
+  for values a normalization squishes to `""` and data arriving other ways.
+  NA cells cannot currently be targeted from Browse values (open question in
+  `docs/upstream-port-candidates.md`).
 
 ### Order of operations (do not break this)
 
@@ -215,6 +234,15 @@ types share the block. Single-column rules â†’ plain `mutate()`; sibling rules â
 `mutate(across(matches("<pattern>", ignore.case = FALSE), function(.x)
 case_when(...)))`.
 
+A PLAIN (non-sibling) rule's `effective_pattern` is `^<name>$` with the name
+regex-escaped by `.escape_regex()` (stringr/ICU), so it groups and
+overlap-checks against exactly its own column (`q1.a` no longer reaches
+`q1_a`, and the overlap WARNING no longer false-fires for that pair). The
+block is then emitted as a single-column `mutate()` with the column written by
+`.r_col_token()`, backticked when non-syntactic (`price ($)`, `my col`), so no
+regex engine is involved in reaching it. Sibling patterns are the user's own
+regexes and are used as typed. `.is_plain_rule()` is the vectorised test.
+
 Arm LHS by match type (**both sides are normalized identically**):
 
 | match_type | emitted arm |
@@ -224,7 +252,7 @@ Arm LHS by match type (**both sides are normalized identically**):
 | `trimmed_ci` | `str_squish(tolower(<col>)) == "<squished lower v>"` |
 | `regex` | `str_detect(<col>, "<pattern>")` |
 | `old_value` is NA | `is.na(<col>)` |
-| unusable match_type | `FALSE` |
+| unusable match_type, or `regex` with `""` | `rep_len(FALSE, length(<col>))` |
 
 Always ends each arm set with `.default = <col>` so unmatched values pass
 through. Prepends a WARNING comment block when any column is reached by more
@@ -253,10 +281,12 @@ Guards, keep them passing:
 - `test-string_helpers.R` has two **agreement tests** that evaluate the
   generated script and compare it cell-for-cell against the app: one against
   `apply_recodes()` over a synthetic frame covering all four match types,
-  sibling expansion, a chained-rule pair and an NA target; one against
+  sibling expansion, a chained-rule pair, an NA target and awkward column
+  names (`q1.a` beside `q1_a`, `price ($)`, `my col`); one against
   normalize-then-recode.
 - `test-export_bundle.R` runs the bundle's `clean_<id>.R` on the original file
-  and requires a **byte-identical** CSV to the bundle's cleaned CSV.
+  and requires a **byte-identical** CSV to the bundle's cleaned CSV,
+  including a frame with those awkward column names.
 
 `apply_recodes()$summary` carries `cells_matched` (cells the rule hit),
 `cells_changed` (cells whose value actually differs; a no-op rule reports 0),
@@ -333,6 +363,15 @@ the stale check in `validate_recodes()`, so they can never diverge. Invalid
 regex patterns are caught (all-FALSE, no error) and surfaced by
 `validate_recodes()$invalid_regex`.
 
+Empty `old_value` (`""`): under `exact` and `exact_ci` it matches only empty
+cells; under `trimmed_ci` it also matches whitespace-only cells (they squish
+to `""`). Under `regex` an EMPTY pattern matches NOTHING, in the app and the
+script (base `grepl("")` would hit every non-missing cell, and `str_detect()`
+refuses an empty pattern), and `validate_recodes()$invalid_regex` reports it.
+Use `^$` to target empty cells with a regex. A rule minted from Browse values'
+"(empty)" row starts with a blank `new_value`, which Validate flags until the
+user fills it in or sets `action = delete`.
+
 `.rule_hits()` must always return a plain logical with **no NA**: it guards
 zero-length input, unusable `match_type`, returns `is.na(values)` for an NA
 `old_value`, and scrubs residual NAs to FALSE. Callers do `if (any(hit))`, so
@@ -343,6 +382,49 @@ aborts Apply & Export. Don't remove the scrub.
 `RECODE_MATCH_TYPES` / `RECODE_ACTIONS` (string_helpers.R), and recat's in
 `RECAT_MATCH_TYPES` (recat_helpers.R). The editor rejects out-of-range edits
 live; `validate_recodes()$invalid_enum` catches bad enums in imported CSVs.
+
+### Recodes editor (`R/mod_recode_editor.R`)
+
+Every cell edit goes through the pure `apply_recode_edit()`, which returns
+`status` `ok` / `refused` / `ignored`:
+
+- An edit to `old_value` or `match_type` RECOMPUTES `rule_id`. If the new id
+  belongs to ANOTHER rule the edit is refused with an error notification
+  naming that rule, and the rule set is unchanged. (A stale id used to let a
+  later rule for the original value silently overwrite the edited one in
+  `add()`.)
+- Invalid `match_type` / `action` values are refused the same way.
+- Saves use `set()`, never `add()`, so `norm_spec` is not restamped. That is
+  correct for key edits: the stamp describes the rule's COLUMNS, which an
+  `old_value` / `match_type` edit does not change. Editing
+  `apply_to_siblings` / `sibling_pattern` DOES change the columns but keeps
+  the old stamp, which can surface as a `norm_spec_drift` warning (errs
+  toward warning).
+- A refused edit is reverted in the browser with `DT::replaceData()` (see
+  Gotchas). `""` in `old_value` / `new_value` shows as "(empty)" via
+  `dt_empty_value_defs()`.
+
+### Clusters and Recategorize preview
+
+- Clustering settings (algorithm, threshold, q, normalizers) are debounced
+  500 ms, and `clusters_r()` uses `bindCache(cluster_input_r(), cache =
+  "session")`; the threshold is blanked out of the key for non-pairwise
+  algorithms. Session-scoped on purpose: one user's values never sit in a
+  cache another session can hit.
+- Pairwise algorithms (`jw`, `osa`, `lv`, `lcs`, `cosine`, `jaccard`) cluster
+  at most `PAIRWISE_CLUSTER_CAP = 1000` distinct values (most frequent kept),
+  with a `help_line()` pointing to key collision, n-gram fingerprint, soundex
+  and metaphone, which are linear and never capped. Measured: 1000 values
+  about 1 s (edit-distance) to 2.5 s (cosine/jaccard); 2000 about 3 s to 8 s.
+- At most `MAX_CLUSTER_CARDS = 50` cards, largest first, with a "Showing N of
+  M" line. The server takes `debounce_ms`, `pairwise_cap`, `max_cards`
+  arguments so tests can use small values.
+- Blank values (NA, `""`, whitespace-only) are dropped before clustering, the
+  taxonomy matcher and Spellcheck.
+- The Recategorize preview is a snapshot. It records the form (parsed terms,
+  not raw text; notes excluded) when computed, and while the form differs the
+  result is greyed out under an "Out of date" line; the next Preview clears
+  it. It does NOT track later recode-rule changes.
 
 ## Conventions
 
@@ -428,6 +510,23 @@ live; `validate_recodes()$invalid_enum` catches bad enums in imported CSVs.
   payload, {priority:'event'})`. Multi-field payloads are JSON-encoded and
   parsed with `jsonlite::fromJSON` server-side (see spellcheck
   suggestion/custom-correction handlers).
+- **Never quote data into inline JS with `'%s'`.** Escaping only `'` left
+  `"`, `<` and `\` free to break the attribute. JSON-encode each value
+  (`.js_value()`), build the handler, then attribute-escape the WHOLE
+  attribute (`.attr_value()`); the browser decodes entities before the JS is
+  parsed. See `.render_action_cell()` in `mod_spellcheck_view.R`.
+- **Assigning an identical value to a `reactiveValues` entry does not
+  invalidate.** The old `rules_proxy$set(r)` "revert" after a refused edit
+  never redrew, so the typed value stayed on screen. Revert with
+  `DT::replaceData(proxy, ...)` instead (`revert_table()` in
+  `mod_recode_editor.R`).
+- **A bare scalar `FALSE` arm breaks `case_when()`** when it is the only arm:
+  "Can't recycle `.default` (size n) to size 1". An arm that matches nothing
+  is emitted as `rep_len(FALSE, length(<col>))`.
+- **`file.copy()` can fail silently on Windows** (paths with spaces are one
+  trigger) and its return value is not trustworthy. Dictionary import uses
+  `.copy_file_verified()`: `readBin` / `writeBin`, then reads the destination
+  back and requires identical bytes.
 - **NEVER `escape = FALSE` on a DT holding dataset content.** This app ingests
   arbitrary third-party CSV/Excel, so untrusted input is the PRIMARY path;
   `escape = FALSE` unescapes EVERY column, and a cell containing
@@ -496,31 +595,35 @@ Run a single file with
 
 | file | covers | assertions |
 |---|---|---|
-| `test-string_helpers.R` | schema, normalize_value, cluster (incl. fingerprint / n-gram fingerprint), taxonomy matching, CSV round-trip + conform-on-read, merge in place, `.rule_hits` truth table, validate (regex/enum/stale), apply (siblings/delete/regex/NA), codegen incl. `ignore.case = FALSE`, **both agreement tests**, rule-order independence | 233 |
-| `test-normalizations.R` | normalization ops, id, apply, preview, validate, CSV IO (incl. 13-column recodes files), `norm_spec` stamp (on rules proxy `add()` only), codegen, norms proxy upsert, Normalize tab | 166 |
+| `test-string_helpers.R` | schema, normalize_value, cluster (incl. fingerprint / n-gram fingerprint), taxonomy matching, CSV round-trip + conform-on-read, merge in place, `.rule_hits` truth table (incl. `""` per match type, empty regex), validate (regex/enum/stale), apply (siblings/delete/regex/NA), codegen incl. `ignore.case = FALSE`, escaped plain-rule patterns, backticked names, `rep_len(FALSE, ...)` arms, **both agreement tests** (incl. awkward column names), rule-order independence | 276 |
+| `test-normalizations.R` | normalization ops, id, apply, preview, validate, CSV IO (incl. 13-column recodes files), `norm_spec` stamp (on rules proxy `add()` only), codegen, norms proxy upsert, Normalize tab | 175 |
+| `test-spellcheck_view.R` | action-cell escaping (`.js_value()` / `.attr_value()`) with awkward characters round-tripping to the created rule, action column last, `.spell_drop_blank()` and the all-blank empty state | 171 |
 | `test-recat_helpers.R` | recat match/apply/priority/codegen/IO + the three worked examples end-to-end against the bundled CSV | 148 |
-| `test-export_bundle.R` | pipeline order, row-count stop, `source_file_meta`, provenance, files written, empty-cell NA round-trip, **script reproduces a byte-identical CSV**, SHA-256 warning, `zip::zip`, download wiring | 130 |
+| `test-export_bundle.R` | pipeline order, row-count stop, `source_file_meta`, provenance, files written, empty-cell NA round-trip, **script reproduces a byte-identical CSV** (incl. awkward column names), SHA-256 warning, `zip::zip`, download wiring | 146 |
+| `test-cluster_target.R` | `cluster_target_decision()`, exclusion pair-building, single-table cluster cards, `testServer` wiring for the Apply refusal, blank dropping (clusters and taxonomy matcher), pairwise cap + note, card cap, debounce, session cache | 141 |
 | `test-rule_warnings.R` | every warning kind, `collect_rule_warnings()` | 81 |
-| `test-cluster_target.R` | `cluster_target_decision()`, exclusion pair-building, single-table cluster cards, `testServer` wiring for the Apply refusal | 72 |
+| `test-empty_values.R` | `value_frequency_table()` keeps `""` and drops NA, `""` matching per match type, empty-value agreement between app and script per match type, validate, `""` vs `<NA>` CSV round-trip, the "(empty)" label, Browse values minting a `""` rule | 65 |
 | `test-import_recodes.R` | import schema guard (`source_quarter` rename, optional `norm_spec`, refusals), in-place `merge_incoming_rules()`, normalizations import | 59 |
+| `test-recategorize_module.R` | Recategorize preview on the recoded frame, picker seeding, "Out of date" marker and what does and does not trigger it | 58 |
 | `test-data_loader.R` | metadata + classifiers (`build_meta`, `column_group`, `suggest_sibling_pattern` incl. metachar escaping, date/numeric/id detection, `read_dataset`) + example-dataset regression | 53 |
+| `test-recode_editor.R` | `apply_recode_edit()`: `rule_id` recomputed on key edits, clash refusal naming the other rule, enum refusal, locked columns, `norm_spec` untouched, position kept; `testServer` wiring | 46 |
 | `test-dt_truncate.R` | `dt_truncate_defs()` / css / hint | 40 |
-| `test-recategorize_module.R` | Recategorize preview on the recoded frame, picker seeding | 29 |
+| `test-spellcheck_dict.R` | `.read_dict_terms()` strips `.dic` artifacts; `.copy_file_verified()` and the import handler, incl. silent and loud write failures | 40 |
 | `test-variable_picker.R` | banner choices, `current_var` two-way sync without ping-pong, filter lifted for a hidden column | 29 |
 | `test-preview_export.R` | `preview_diff_table()` counts, incl. rules with no data loaded | 26 |
 | `test-guide_helpers.R` | help layer: accessibility attributes, collapsed by default, escaping | 24 |
 | `test-preview_rule_warnings.R` | "did less than expected" panel and its server wiring | 24 |
 | `test-text_helpers.R` | sentences, length classification, tokens, n-grams, KWIC | 20 |
 | `test-app_wiring.R` | rules / recat proxies: `add()` merges in place and conforms partial rows, `set()` replaces | 16 |
-| `test-spellcheck_dict.R` | `.read_dict_terms()` strips `.dic` artifacts | 11 |
 | `test-em_dash_guard.R` | no em dash or em dash entity in any project text file (skips `renv/`, `ext/`, `inst/extdata/`) | 6 |
 | `test-all-files-parse.R` | every R file in the project parses | 2 |
 
-1169 total.
+1646 total (22 files).
 
 Tests `source()` the R files they need by relative path. Pure files are always
 safe; the `mod_*.R` files that tests source (cluster view, data input, import,
-normalize, preview & export, recategorize, spellcheck, variable picker) are
+normalize, preview & export, recategorize, recode editor, spellcheck, value
+table, variable picker) are
 Shiny-free at load time because every `shiny::` call sits inside a function
 body, and their server wiring is exercised with `shiny::testServer()`. Keep
 new modules that way. CI runs the suite on every push/PR via

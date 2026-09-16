@@ -53,6 +53,39 @@ Rank these above any feature.
    fixed here (`ignore.case = FALSE`) while porting normalizations. Upstream's
    generator uses the same construct; not yet confirmed there by running it.
 
+Fixed here on 2026-09-16 (commits "Fix codegen for awkward column names, stale
+rule ids, empty values" and "Fix cluster recomputation, stale recat preview,
+spellcheck escaping"). Items 9 and 12 through 15 were established as upstream
+defects in section 4; the rest are marked where upstream was not checked.
+
+9. **Plain-rule codegen does not escape the column name.** Upstream still has
+   it (section 4, item 1). Fix here: `.escape_regex()` for the grouping
+   pattern and a backticked single-column `mutate()` via `.r_col_token()` in
+   `generate_recode_R()` (`R/string_helpers.R`).
+10. **A scalar `FALSE` arm breaks `case_when()`.** When it is the only arm the
+    script fails with "Can't recycle `.default`". Fix here: emit
+    `rep_len(FALSE, length(<col>))`. Upstream not checked.
+11. **An empty regex pattern wipes a column in the app.** Base `grepl("")`
+    matches every non-missing cell while the script's `str_detect()` refuses
+    the pattern. Fix here: an empty pattern matches nothing in both, and
+    `validate_recodes()` reports it as `invalid_regex`. Upstream not checked.
+12. **Editing `old_value` or `match_type` keeps a stale `rule_id`.** Upstream
+    still has it (section 4, item 2). Fix here: `apply_recode_edit()` in
+    `R/mod_recode_editor.R`.
+13. **Cluster recomputation is neither debounced nor capped.** Upstream still
+    has it (section 4, item 3). Fix here: debounce, session `bindCache()`,
+    `PAIRWISE_CLUSTER_CAP`, `MAX_CLUSTER_CARDS` in `R/mod_cluster_view.R`.
+14. **Recat preview goes stale silently.** Upstream still has it (section 4,
+    item 4). Fix here: form snapshot and "Out of date" marker in
+    `R/mod_recategorize.R`.
+15. **Spellcheck action-cell attribute escaping.** Upstream still has it
+    (section 4, item 5). Fix here: `.js_value()` then `.attr_value()` in
+    `R/mod_spellcheck_view.R`.
+16. **A refused Recodes edit does not redraw.** Re-setting unchanged rules
+    into `reactiveValues` does not invalidate, so the rejected value stays on
+    screen (this also affected the invalid-enum rejection). Fix here:
+    `DT::replaceData()`. Upstream not checked.
+
 ## 2. Features and robustness here that upstream lacks
 
 - **Key-collision and n-gram fingerprint clustering** (`R/string_helpers.R`).
@@ -91,35 +124,48 @@ Rank these above any feature.
 - The same README says the app writes via temp file plus rename;
   `write_recodes()` calls `readr::write_csv` directly.
 
-## 4. Defects in both codebases, fixed in neither
+## 4. Defects found in both codebases
 
-Not ports in either direction. Recorded so they are not lost.
+Not ports in either direction. Recorded so they are not lost. Items 1 through
+5 were fixed here on 2026-09-16 and STILL EXIST UPSTREAM (see section 1, items
+9 and 12 through 15). Item 6 was this repo only and is fixed here.
 
 1. **Regex metacharacters in a variable name break apply/codegen agreement.**
-   `generate_recode_R()` builds `paste0("^", variable, "$")` unescaped while
-   `apply_recodes()` targets the name exactly. A rule on `q1.a` also recodes
-   `q1_a` in the script; a name containing `(` makes the script error. Not
-   covered by the agreement test. Fix: escape the variable, or emit a
-   backticked plain `mutate()` for single-column rules.
+   `generate_recode_R()` built `paste0("^", variable, "$")` unescaped while
+   `apply_recodes()` targets the name exactly. A rule on `q1.a` also recoded
+   `q1_a` in the script; a name containing `(` made the script error.
+   **Fixed here 2026-09-16:** the pattern is escaped with `.escape_regex()`
+   and the block is a backticked single-column `mutate()`; the agreement and
+   bundle tests now cover `q1.a`/`q1_a`, `price ($)` and `my col`. Still
+   upstream.
 2. **Editing a rule's `old_value` or `match_type` keeps a stale `rule_id`.**
    `recode_rule_id()` hashes `(variable, match_type, old_value)`. A later rule
    minted for the original value collides and `rules_proxy$add()` silently
-   drops the edited rule. Fix: recompute the id on edits to key columns and warn
-   on collision.
+   drops the edited rule. **Fixed here 2026-09-16:** `apply_recode_edit()`
+   recomputes the id and refuses an edit whose new id belongs to another
+   rule, naming it. Still upstream.
 3. **No debounce or cap on cluster recomputation.** Every threshold, q-gram or
    normalizer change reruns the quadratic clustering and rebuilds every card
-   through `renderUI`.
+   through `renderUI`. **Fixed here 2026-09-16:** 500 ms debounce, per-session
+   `bindCache()`, pairwise algorithms capped at 1000 values with a pointer to
+   the linear ones, at most 50 cards. Still upstream.
 4. **Recat preview goes stale.** It is a snapshot assigned inside
    `observeEvent` and does not update or grey out after the form changes.
+   **Fixed here 2026-09-16:** the form is recorded with the preview, which is
+   greyed out under an "Out of date" line while the form differs. Still
+   upstream.
 5. **Spellcheck suggestion escaping** in the action cell only escapes `'`
-   inside the `onclick` attribute. Low risk.
+   inside the `onclick` attribute. Low risk. **Fixed here 2026-09-16:** values
+   are JSON-encoded (`.js_value()`) and the whole attribute is escaped
+   (`.attr_value()`). Still upstream.
 
 This repo only:
 
 6. **Dictionary import reports success when the copy failed.** The upload
-   handler wraps `file.copy()` in a `tryCatch` that always returns TRUE, and
-   `file.copy()` can fail silently on Windows. Check `file.exists()` on the
-   destination instead.
+   handler wrapped `file.copy()` in a `tryCatch` that always returned TRUE,
+   and `file.copy()` can fail silently on Windows. **Fixed here 2026-09-16:**
+   `.copy_file_verified()` copies with `readBin` / `writeBin` and compares the
+   bytes before reporting success.
 7. ~~**The taxonomy matcher's empty state** was a one-column DT with a
    "Message" header.~~ Fixed 2026-09-15: now `empty_state()`.
 
@@ -150,20 +196,27 @@ This repo only:
    deliberately use misspellings that may need entries in
    `.cspell/example-typos.txt`. Needs a decision on installing cspell (via npx
    or globally) to check.
-2. **Should the shared defects in section 4 be fixed in this repo?** They are
-   not upstream ports, so the sync did not touch them. Item 1 (regex
-   metacharacters in a variable name breaking apply/codegen agreement) and
-   item 2 (stale `rule_id` after editing a key column) are silent
-   wrong-output bugs.
+2. ~~**Should the shared defects in section 4 be fixed in this repo?**~~
+   Answered yes, and done 2026-09-16: section 4 items 1 through 6 are fixed
+   here. Items 1 through 5 still exist upstream.
 3. **Report the escape defect upstream.** Upstream still renders dataset text
    as HTML in four tables; see section 1, item 1.
 4. **Text normalization plan** (`docs/superpowers/plans/2026-08-13-text-normalization.md`):
    the execution approach (subagent-driven or inline) was never chosen, and the
    plan has not been built. It overlaps partly with the column normalizations
    port above; reconcile before building either further.
-5. **Empty string values.** Upstream keeps `""` in the unique-values list; this
-   repo drops them, so an empty string cannot be targeted from Browse values.
-   Unconfirmed whether that difference is deliberate.
+5. **Empty string values.** Upstream keeps `""` in the unique-values list;
+   this repo dropped them, so an empty string could not be targeted from
+   Browse values. The owner wanted that fixed, and it is done (2026-09-16):
+   `value_frequency_table()` keeps `""`, shown as "(empty)" in Browse values
+   and the Recodes table. Finding: `read_dataset()` uses readr's defaults, so
+   empty, quoted-blank and whitespace-only CSV cells load as NA, never as
+   `""`. The fix therefore matters mainly for values a normalization squishes
+   to `""` and for data arriving other ways.
+   **Still open:** should Browse values also offer a "(missing)" row that
+   creates an NA-targeting rule? Loaded blanks are NA, and NA cells cannot
+   currently be targeted from Browse values (only through a rules CSV
+   holding `<NA>` in `old_value`).
 6. **Loose ends found during the normalizations port** (not fixed):
    - A recode or normalization rule on a column missing from the data makes
      the generated script error (the recode case predates the port).
@@ -172,10 +225,32 @@ This repo only:
    - An imported normalization with an invalid regex makes
      `apply_normalizations()` error; the app falls back to raw values, but
      `validate_normalizations()` has no invalid-regex issue class.
-   - Editing `old_value` in the Recodes table keeps the old `norm_spec` stamp.
+   - (Resolved as intended, 2026-09-16.) Editing `old_value` or
+     `match_type` keeps the `norm_spec` stamp, which is correct: the stamp
+     describes the normalization of the rule's COLUMNS, and those edits do
+     not change the columns. Editing `apply_to_siblings` or
+     `sibling_pattern` does change them but also keeps the old stamp; that
+     can surface as a `norm_spec_drift` warning, which errs toward warning.
    - Re-selecting an existing value on Browse values resets that rule's
      `new_value` to the old value (in place, but it overwrites the edit).
    - The Variable tab's empty state is still a one-column "message" table.
+
+   Loose ends found during the 2026-09-16 defect fixes (not fixed):
+   - An invalid sibling regex makes `apply_recodes()` and the overlap check
+     error, rather than being caught and reported.
+   - Two rules whose `old_value` differs only in whitespace get different
+     `rule_id`s even under `trimmed_ci`, where they match the same cells.
+   - Regex matching uses base R's TRE engine in the app (`grepl`) and ICU in
+     the generated script (`str_detect`), so unusual patterns could disagree.
+   - The Recategorize "Out of date" marker tracks the form only, not later
+     changes to the recode rules the preview was computed on.
+   - Applied clusters stay on screen, because recodes do not feed back into
+     clustering, so the "Showing N of M" count never shrinks as you work.
+   - Importing a discipline dictionary with a bundled name (for example
+     `medical.txt`) overwrites the bundled file.
+   - Key-collision clustering took about 6 s for 3000 random values. It is
+     linear and deliberately uncapped, so very large columns are still slow.
 7. **Docs updated for the September sync** (2026-09-15): CLAUDE.md and
    README.md now cover normalizations, the rule warnings, the variable banner
-   and the cleaned data export bundle.
+   and the cleaned data export bundle. Updated again 2026-09-16 for the
+   defect fixes above.
