@@ -329,3 +329,50 @@ New findings from upstream, and whether they apply here:
 
 Upstream-specific, not ported: new recat output names must be snake_case
 there; its recategorize "append today's date" save issue (no equivalent here).
+
+## 8. Paused work (2026-09-18)
+
+Paused at the owner's request with a clean tree on local branch
+`upstream-followups` (from `text-tools` at `e96860e`, plus the port-log
+commits). Not pushed since `text-tools` at `5af49d5`.
+
+Next steps, in order:
+
+1. Port upstream's follow-up fixes to the pure-R core (section 7): the regex
+   engine gap in regex recode rules (script to emit `grepl()`), invalid and
+   empty sibling patterns (report and skip, never throw; `""` treated as NA),
+   `.recat_match_type()` case-insensitive with unknown types matching
+   nothing, a new `validate_recat()`, an `id_mismatch` Validate class plus a
+   key-based id helper for import, warning versus note severity for
+   stamp-only rule warnings, a `spellcheck_lost_words` Validate class, a
+   guard test against bare `escape = FALSE`, and verifying whether tidyselect
+   `matches()` uses the same regex engine as the app. No files were changed
+   before the pause.
+2. Then the UI half: refuse invalid sibling patterns at entry (Recodes,
+   Normalize, Recategorize), store a cleared sibling pattern as NA, import
+   conflict check by key, mark imported rules with an unusable sibling
+   pattern as "will not apply", Spellcheck rules as `exact` and not
+   switchable to `regex`, drop the hunspell fallback that retries the same
+   en_US file, and show stamp-only warnings as quiet notes.
+3. Verify, commit, update CLAUDE.md and README.
+
+Questions still waiting for the owner:
+
+- The five open questions in
+  [2026-09-16-word-fixes.md](superpowers/specs/2026-09-16-word-fixes.md):
+  can a word fix delete a word; mirror the original word's casing or use the
+  replacement as typed; leave word fixes out of `norm_spec`; a section on the
+  Normalize tab or a separate tab; Spellcheck's default action by column kind
+  or always ask.
+- Should Browse values offer a "(missing)" row that creates a rule for
+  missing (NA) cells, since loaded blanks become NA? (section 6 item 5)
+- Showcase data (report from the dataset scout): is data with an unconfirmed
+  licence acceptable if the app or vignettes load it from a URL; should
+  `ISOcodes` be added to DESCRIPTION for a country-name taxonomy demo; is a
+  cocktails (alcohol) dataset acceptable for a public demo; should the
+  free-text classifier stop flagging date, licence-number and image-URL
+  columns as free text?
+- May cspell be run once with `npx cspell lint` (downloads cspell into the
+  npx cache; changes nothing in the repo)?
+- When should `shared-defect-fixes`, `text-tools` and `upstream-followups`
+  be merged into `main`?
