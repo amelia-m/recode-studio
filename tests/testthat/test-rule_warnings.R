@@ -75,7 +75,9 @@ expect_warning_schema <- function(w) {
 test_that("empty_rule_warnings has the documented typed schema", {
   w <- empty_rule_warnings()
   expect_equal(nrow(w), 0L)
-  expect_named(w, c("kind", "id", "target", "message", "n_before", "n_after"))
+  expect_named(w, c("kind", "id", "target", "message", "n_before", "n_after",
+                   "severity"))
+  expect_type(w$severity, "character")
   expect_type(w$kind, "character")
   expect_type(w$id, "character")
   expect_type(w$target, "character")

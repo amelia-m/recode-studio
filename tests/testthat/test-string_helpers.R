@@ -267,7 +267,7 @@ test_that("validate_recodes flags an invalid regex pattern", {
   expect_equal(issues$invalid_regex$old_value, "broken[unclosed")
 })
 
-test_that("generate_recode_R emits str_detect for regex rules", {
+test_that("generate_recode_R emits grepl() for regex rules (the app's engine)", {
   rules <- tibble::tibble(
     rule_id = "r1", variable = "drink", apply_to_siblings = FALSE,
     sibling_pattern = NA_character_, match_type = "regex",
@@ -277,8 +277,14 @@ test_that("generate_recode_R emits str_detect for regex rules", {
   )
   code <- generate_recode_R(rules, "d")
   expect_silent(parse(text = code))
-  expect_true(grepl("str_detect", code))
+  expect_true(grepl("grepl(\"espresso\", drink)", code, fixed = TRUE))
+  expect_false(grepl("str_detect", code, fixed = TRUE))
   expect_false(grepl("== \"espresso\"", code))
+  # A pattern the app's engine rejects is an arm that matches nothing.
+  rules$old_value <- "\\p{Lu}"
+  code <- generate_recode_R(rules, "d")
+  expect_true(grepl("rep_len(FALSE, length(drink)) ~", code, fixed = TRUE))
+  expect_equal(nrow(validate_recodes(rules)$invalid_regex), 1L)
 })
 
 test_that("generate_recode_R sibling rule uses across()", {
@@ -448,9 +454,35 @@ tricky_rules <- function() {
   )
 }
 
+# Rules the two regex engines (base TRE in the app, ICU in stringr) disagree
+# on, plus unusable sibling patterns. The script used to emit str_detect()
+# (ICU): `\p{Lu}` (TRE rejects it) then matched in the script only, and
+# `a{,2}` (ICU rejects it) crashed the script. Sibling rules with a pattern
+# that does not compile used to throw everywhere; a blank pattern reached
+# every column in the app and crashed the script's matches("").
+engine_df <- function(df = tricky_df()) {
+  df$code  <- c("Abc", "abc", "ABC", "x1", NA, "a")
+  df$code2 <- c("b", "a", NA, "aa", "", "c")
+  df$fam1  <- c("v", "w", "v", NA, "v", "w")
+  df$fam2  <- c("v", "v", "w", "w", NA, "v")
+  df
+}
+
+engine_rules <- function() {
+  dplyr::bind_rows(
+    mk_rule("code",  "regex", "\\p{Lu}",       "ICU-only"),  # TRE: invalid
+    mk_rule("code",  "regex", "[a",            "broken"),    # invalid in both
+    mk_rule("code",  "regex", "^[[:upper:]]",  "UP"),
+    mk_rule("code2", "regex", "a{,2}",         "TRE-only"),  # ICU: invalid
+    mk_rule("fam1",  "exact", "v", "V", siblings = TRUE, pattern = "fam["),
+    mk_rule("fam1",  "exact", "w", "W", siblings = TRUE, pattern = "  ")
+  )
+}
+
 test_that("generate_recode_R agrees with apply_recodes cell for cell", {
-  df      <- tricky_df()
-  rules   <- dplyr::bind_rows(synthetic_rules(), tricky_rules())
+  df      <- engine_df(tricky_df())
+  rules   <- dplyr::bind_rows(synthetic_rules(), tricky_rules(),
+                              engine_rules())
   applied <- apply_recodes(df, rules)$df
   genned  <- eval_generated_recodes(df, rules)
   expect_identical(names(genned), names(applied))
@@ -464,6 +496,14 @@ test_that("generate_recode_R agrees with apply_recodes cell for cell", {
   expect_identical(applied$`price ($)`, c("0", "2", "0", "", "0", NA))
   expect_identical(applied$`my col`,
                    c("Hot", "iced", "unknown", "unknown", "Hot", NA))
+  # One regex engine on both sides; unusable patterns match nothing.
+  expect_identical(applied$code, c("UP", "abc", "UP", "x1", NA, "a"))
+  expect_identical(applied$code2,
+                   c("TRE-only", "TRE-only", NA, "TRE-only", "TRE-only",
+                     "TRE-only"))
+  # The invalid sibling rule is skipped; the blank-pattern rule is plain.
+  expect_identical(applied$fam1, c("v", "W", "v", NA, "v", "W"))
+  expect_identical(applied$fam2, df$fam2)
   # Plain rules are single-column mutate()s on a backticked name, never a
   # matches() pattern.
   code <- generate_recode_R(rules, "synthetic")
@@ -578,17 +618,22 @@ eval_generated_with_norms <- function(df, rules, norms) {
 test_that("generated script agrees with normalize-then-recode cell for cell", {
   # Plus the metacharacter columns, each normalized, with recodes written
   # against the normalized values. q1_a must be reached by neither step.
-  df    <- tricky_df(synthetic_norm_df())
+  # Plus the engine-divergent and unusable-pattern rules, and a
+  # normalization whose sibling pattern does not compile (skipped by both).
+  df    <- engine_df(tricky_df(synthetic_norm_df()))
   rules <- dplyr::bind_rows(
     synthetic_norm_rules(),
     mk_rule("q1.a",      "exact", "YES",  "Y"),
     mk_rule("price ($)", "exact", "FREE", "0"),
-    mk_rule("my col",    "exact", "",     "unknown"))
+    mk_rule("my col",    "exact", "",     "unknown"),
+    engine_rules())
   norms <- dplyr::bind_rows(
     synthetic_norms(),
     mk_norm_rule("q1.a",      "uppercase"),
     mk_norm_rule("price ($)", c("squish", "uppercase")),
-    mk_norm_rule("my col",    "squish"))
+    mk_norm_rule("my col",    "squish"),
+    mk_norm_rule("fam1",      "uppercase", siblings = TRUE,
+                 pattern = "fam[0-9"))
   applied <- apply_recodes(apply_normalizations(df, norms)$df, rules)$df
   genned  <- eval_generated_with_norms(df, rules, norms)
   expect_identical(names(genned), names(applied))
@@ -616,6 +661,9 @@ test_that("generated script agrees with normalize-then-recode cell for cell", {
   # "  " squishes to "", so the exact "" rule claims both blank cells.
   expect_identical(applied$`my col`,
                    c("hot", "iced", "unknown", "unknown", "hot", NA))
+  # The bad-pattern normalization was skipped in both engines.
+  expect_identical(applied$fam2, df$fam2)
+  expect_true(grepl("# SKIPPED: the normalization", code, fixed = TRUE))
   expect_lt(regexpr("Column normalizations", code, fixed = TRUE)[1],
             regexpr("case_when(", code, fixed = TRUE)[1])
 })

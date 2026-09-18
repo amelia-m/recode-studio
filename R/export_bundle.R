@@ -228,9 +228,14 @@ build_provenance <- function(source_meta, df_raw, cleaned, rules, recat,
                                                "cells_changed"),
     cleaned_csv_missing_values      = "empty cell",
     cleaned_csv_encoding            = "UTF-8",
+    # severity: "warning" or "note" (see empty_rule_warnings()); a rule
+    # warnings tibble from before the column existed reads as "warning".
     warnings                        = tibble::tibble(
-                                        kind    = as.character(w$kind),
-                                        message = as.character(w$message)),
+                                        kind     = as.character(w$kind),
+                                        severity = if ("severity" %in% names(w))
+                                                     as.character(w$severity)
+                                                   else rep("warning", nrow(w)),
+                                        message  = as.character(w$message)),
     files                           = bundle_file_names(dataset_id)
   )
 }
@@ -323,12 +328,24 @@ provenance_text <- function(prov) {
     ""
   )
 
+  # Notes are stamp-only findings that cannot change the result; they are
+  # listed after the warnings and marked, so they do not read as failures.
+  sev    <- if (n_w > 0 && "severity" %in% names(w)) as.character(w$severity)
+            else rep("warning", n_w)
+  is_note <- !is.na(sev) & sev == "note"
+  n_note <- sum(is_note)
   warn_lines <- c(
-    sprintf("Warnings (%d)", n_w),
+    sprintf("Warnings (%d)", n_w - n_note),
     "------------",
-    if (n_w == 0) "None. No rule was found to do less than expected."
-    else paste0("- ", w$message),
-    ""
+    if (n_w - n_note == 0) "None. No rule was found to do less than expected."
+    else paste0("- ", w$message[!is_note]),
+    "",
+    if (n_note > 0) c(
+      sprintf("Notes (%d)", n_note),
+      "---------",
+      "These cannot change the cleaned data; they are listed for the record.",
+      paste0("- (note) ", w$message[is_note]),
+      "")
   )
 
   paste(c(header, details, file_lines, warn_lines), collapse = "\n")

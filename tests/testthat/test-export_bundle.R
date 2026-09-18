@@ -446,6 +446,69 @@ test_that("the bundle script reproduces columns whose names hold regex metachara
                    readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
 })
 
+test_that("the bundle script skips unusable rules exactly as the app does", {
+  # Rules that used to crash the export (a sibling pattern that does not
+  # compile, in all three rule types) or that the script ran differently
+  # (a regex recode valid in one regex engine only, a blank sibling pattern,
+  # an unrecognised recat match type, a recat regex term that does not
+  # compile). The app skips each one and the script must skip it identically.
+  df <- tibble::tibble(
+    order_id = as.character(1:4),
+    drink1   = c("Latte", "mocha", "latte", NA),
+    drink2   = c("mocha", "Latte", NA, "cap"),
+    other    = c("latte", "latte", "latte", "latte"))
+  norms <- dplyr::bind_rows(
+    .fx_norm("drink1", "uppercase", "drink[0-9"),          # does not compile
+    .fx_norm("other", "titlecase"))
+  bad_sib   <- .fx_rule("drink1", "mocha", "MOCHA", "drink[")
+  blank_sib <- .fx_rule("drink2", "cap", "cappuccino", "  ")
+  rx_tre    <- .fx_rule("drink1", "a{,2}", "HIT")        # TRE ok, ICU error
+  rx_tre$match_type <- "regex"
+  rx_lu     <- .fx_rule("drink2", "\\p{Lu}", "UPPER")    # ICU ok, TRE error
+  rx_lu$match_type  <- "regex"
+  rules <- dplyr::bind_rows(bad_sib, blank_sib, rx_tre, rx_lu)
+  recat <- dplyr::bind_rows(
+    .fx_recat_rule("fam", "Bad pattern", "latte", vars = "drink1",
+                   pattern = "("),
+    .fx_recat_rule("fam", "Bogus type", "latte", vars = "drink1"),
+    .fx_recat_rule("fam", "Bad term", "[x;latte", vars = "drink2"),
+    .fx_recat_rule("fam", "Blank pattern", "mocha", vars = "drink2",
+                   pattern = ""))
+  recat$match_type[2] <- "fuzzy"
+  recat$match_type[3] <- "Regex "
+  expect_no_error(out <- .run_bundle_script(df, rules, recat, norms,
+                                            "unusable rules.csv"))
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+  # What the app did: bad-pattern rules skipped, blank pattern = own column.
+  expect_identical(out$cleaned$drink1, c("HIT", "HIT", "HIT", NA))
+  expect_identical(out$cleaned$drink2, c("mocha", "Latte", NA, "cappuccino"))
+  expect_identical(out$cleaned$other, rep("Latte", 4))
+  # Recat: the bad-pattern and bogus-type rules match nothing; the bad term
+  # is dropped and "latte" still matches; the blank pattern reads as none.
+  expect_identical(out$cleaned$fam, c("Blank pattern", "Bad term", NA, NA))
+})
+
+test_that("provenance carries warning severity, and notes are marked", {
+  df <- tibble::tibble(city = c("Portland", "portland "))
+  rule <- .fx_rule("city", "portland", "Portland")
+  rule$match_type <- "trimmed_ci"
+  rule$rule_id <- recode_rule_id("city", "trimmed_ci", "portland")
+  rule$norm_spec <- ""                              # written unnormalized
+  norms <- .fx_norm("city", "titlecase")            # now title case: a note
+  res  <- build_cleaned_dataset(df, rule, NULL, norms)
+  expect_identical(res$warnings$severity, "note")
+  prov <- build_provenance(list(file_name = "x.csv"), df, res, rule, NULL,
+                           norms, NA)
+  expect_named(prov$warnings, c("kind", "severity", "message"))
+  expect_identical(prov$warnings$severity, "note")
+  txt <- provenance_text(prov)
+  expect_match(txt, "Warnings (0)", fixed = TRUE)
+  expect_match(txt, "Notes (1)", fixed = TRUE)
+  expect_match(txt, "- (note) ", fixed = TRUE)
+})
+
 test_that("an empty-to-missing rule leaves no visible trace in the cleaned CSV", {
   # Documented limitation, pinned: the cleaned CSV writes "" and NA the same
   # way (an empty cell), so a rule turning "" into NA changes nothing a reader

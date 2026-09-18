@@ -203,8 +203,8 @@ test_that("validate_normalizations reports each issue class", {
   data <- tibble::tibble(a = "x", b = "x", d = "x", drink1 = "x", drink2 = "y")
   iss <- validate_normalizations(rules, data = data)
   expect_named(iss, c("no_ops", "invalid_ops", "conflicting_case",
-                      "duplicate_targets", "missing_column",
-                      "overlapping_targets"))
+                      "duplicate_targets", "invalid_sibling_pattern",
+                      "missing_column", "overlapping_targets"))
   expect_equal(iss$no_ops$variable, "a")
   expect_equal(iss$conflicting_case$variable, "b")
   expect_match(iss$invalid_ops$detail, "banana")
