@@ -23,6 +23,7 @@ Load any CSV or Excel file, pick a text column, and Recode Studio helps you:
 - **Cluster** with 10 algorithms (Jaro-Winkler, Levenshtein, OSA, longest common substring, Cosine, Jaccard, linear $O(N)$ Key-Collision Fingerprint, N-gram Fingerprint, Soundex, Metaphone) with built-in pros/cons reference guides.
 - **Match Taxonomies** against uploaded reference standard lists (e.g. ISO codes, state names, customer taxonomies).
 - **Spot** likely typos via Hunspell spellcheck and rare-member-in-cluster flags.
+- **Explore** long text: common words and phrases (with your own stopword lists), a word cloud, and which languages the entries are written in.
 - **Build** "old value → new value" recode rules, with optional propagation to sibling columns (e.g. `drink1`, `drink2`, ...).
 - **Recategorize** across multiple variables with conditional include/exclude rule priorities.
 - **Preview** exactly which cells change, and which rules did nothing, before exporting.
@@ -125,12 +126,16 @@ Without `renv`, install the direct dependencies manually:
 ```r
 install.packages(c(
   "shiny", "bslib", "DT", "dplyr", "stringr", "readr", "tibble", "purrr",
-  "tidyr", "ggplot2", "htmltools", "stringdist", "igraph", "phonics",
-  "hunspell", "readxl", "clipr", "jsonlite", "rlang", "wordcloud2",
-  "digest", "zip"
+  "tidyr", "ggplot2", "htmltools", "cld2", "stringdist", "igraph",
+  "phonics", "hunspell", "readxl", "clipr", "jsonlite", "rlang",
+  "wordcloud2", "digest", "zip"
 ))
 shiny::runApp()
 ```
+
+`cld2` powers the language breakdown on the Text analysis tab. If it will not
+install on your machine, the rest of the app still works and that section
+tells you it is unavailable.
 
 Then on the **Data** tab, click **Load bundled example dataset** to try it
 immediately, or upload your own CSV/Excel.
@@ -185,25 +190,58 @@ always agree.
    most 50 clusters are shown at once, largest first.
 6. **Spellcheck**: Hunspell flags + clickable suggestions, a free-form
    correction box, selectable discipline dictionaries, and an "add to
-   dictionary" button. (Best for **short** columns.)
+   dictionary" button. (Best for **short** columns.) Picking a correction
+   replaces **only the misspelled word**: `iced capuccino` becomes
+   `iced cappuccino`, not `cappuccino`. Capitals follow the original word
+   (`CAPUCCINO` becomes `CAPPUCCINO`). The rule matches that value **exactly
+   as written**, so a differently capitalized copy elsewhere in the column is
+   left alone. If the English dictionary cannot be loaded, the tab says
+   spellcheck is unavailable.
 7. **Text analysis**: for **long** (sentence/paragraph) columns where
    clustering and spellcheck don't help: length distribution (chars / words /
    sentences), top words and phrases (n-grams) with stopword removal,
-   interactive `wordcloud2` word cloud, and keyword-in-context search. This
-   tab reads the values as they are in your file, before any normalization.
-8. **Recodes**: an editable grid of all rules with a validator (duplicate
-   keys, rule chains, blanks, invalid enums/regex, stale rules). Rules apply in
-   a single pass: each cell is claimed by the first rule that matches it.
-   Editing a rule keeps it in its place in the list. If you change a rule's
-   old value or match type so that it becomes identical to another rule, the
-   edit is refused and the message names the other rule.
+   interactive `wordcloud2` word cloud, a language breakdown, and
+   keyword-in-context search. This tab reads the values as they are in your
+   file, before any normalization, and creates no rules.
+   - **Stopwords** (common words such as "the" and "and") are left out of the
+     word and phrase tables and the word cloud. Tick which lists to use: a
+     standard English list, a project list shared with your team, and a
+     personal list. Press **+ Stop** next to a word to add it to the project
+     or personal list; it disappears from the views straight away. See
+     [Stopword lists](#stopword-lists).
+   - **Language** shows how many entries are in each language and lists the
+     entries not detected as English. Entries shorter than 20 characters are
+     counted as undetected rather than guessed.
+8. **Recodes**: an editable grid of all rules with a **Validate** button.
+   Rules apply in a single pass: each cell is claimed by the first rule that
+   matches it. Editing a rule keeps it in its place in the list. If you
+   change a rule's old value or match type so that it becomes identical to
+   another rule, the edit is refused and the message names the other rule.
+   Validate lists, without changing anything:
+   - rules that clash, chain into each other, or have a blank new value;
+   - a match type, action or regular expression that is not valid;
+   - a **sibling pattern that is not a valid regular expression**. Such a rule
+     is skipped, in the app and in the exported script, until you fix it. The
+     grid refuses an invalid pattern when you type one, and clearing the
+     pattern makes the rule apply to its own column only;
+   - a **rule id that no longer matches its rule** (saved before an edit, or
+     written by another tool). It still applies, but delete and re-make it to
+     fix the id;
+   - **older Spellcheck rules that may have dropped words** (from before the
+     fix above), so you can review them;
+   - rules whose old value is no longer in the data.
+
+   A rule made by Spellcheck cannot be switched to `regex`.
 9. **Recategorize**: derive a *new* column from term logic across several
    existing columns, instead of rewriting values in place. A row matches when
    **any** of the rule's columns contains **any** include term and **none**
    contains an exclude term; rules sharing an output column run in priority
    order, first match wins. The match counts are taken after normalizations
    and recodes. If you change the form after clicking Preview, the old result
-   is greyed out and marked **Out of date** until you preview again. Exports
+   is greyed out and marked **Out of date** until you preview again. **Add**
+   refuses a rule that would match nothing (no include terms, an unknown
+   match type, or a term or sibling pattern that is not a valid regular
+   expression), and a panel lists any problems with the saved rules. Exports
    its own CSV + R script.
 10. **Preview & export**:
     - Three counts per rule: **matched** (cells the rule hit), **changed**
@@ -213,11 +251,19 @@ always agree.
       or recode that changed nothing, a recode written under a different
       normalization than the column has now, or a recategorization rule that
       lost rows because a recode rewrote the words it looks for.
+    - **Notes**, kept apart from the warnings in a collapsed block: a rule
+      written under a different normalization whose match type already
+      ignores the difference (for example a case-insensitive rule when only
+      the capitalization changed). These cannot change the result; nothing
+      needs fixing. Notes do not hide the "No problems found" line.
     - A before / after diff, and downloads for the recodes CSV, the
       normalizations CSV and the R script.
     - **Download cleaned data**: a zip with a cleaned copy of your data (see
       [Cleaned data download](#cleaned-data-download)).
-    - Import an existing recodes or normalizations CSV to merge.
+    - Import an existing recodes or normalizations CSV to merge. Two recode
+      rules count as the same when they have the same column, match type and
+      old value, even if their stored ids differ. An incoming rule with an
+      invalid sibling pattern is imported but marked **will not apply**.
 
 ## The recode CSV
 
@@ -246,7 +292,7 @@ quietly corrupting your rules.
 - `trimmed_ci` (default): compare after `str_squish(tolower(...))`. `" Cappuccino "` matches `"cappuccino"`.
 - `exact_ci`: case-insensitive exact compare.
 - `exact`: byte-for-byte exact compare.
-- `regex`: `old_value` is an (unanchored) regular expression matched against the value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid or empty pattern is flagged by Validate and matches nothing; use `^$` to match empty cells.
+- `regex`: `old_value` is an (unanchored) regular expression matched against the value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid or empty pattern is flagged by Validate and matches nothing; use `^$` to match empty cells. The app and the exported script use the same regular-expression engine (base R's), so a pattern behaves the same in both.
 
 Rules are matched against the values **after** column normalizations. An
 `exact` or `regex` rule written against the raw values may stop matching once
@@ -292,6 +338,10 @@ df <- df |>
   }))
 ```
 
+A regex rule becomes a `grepl("<pattern>", <col>)` arm. A rule whose sibling
+pattern is not a valid regular expression gets a `# SKIPPED` comment instead
+of code, because the app skips it too.
+
 Run it against a data frame named `df` to apply the normalizations and
 recodes. The script and the app's in-app preview are guaranteed to agree: a
 test evaluates the generated script and compares it cell-for-cell against the
@@ -309,7 +359,7 @@ file. Your original file is not touched. Inside:
 | `recodes_master.csv` | the recode rules that were applied |
 | `recat_<name>.csv` | the recategorization rules that were applied (present even if there are none) |
 | `clean_<name>.R` | one R script that repeats the whole cleaning on your original file |
-| `provenance.txt` | a plain-language record: which file was cleaned (name only, no folder), its size and fingerprint, when, rows and columns before and after, how many rules, and any warnings |
+| `provenance.txt` | a plain-language record: which file was cleaned (name only, no folder), its size and fingerprint, when, rows and columns before and after, how many rules, and any warnings (notes listed separately) |
 | `provenance.json` | the same record, for software |
 
 Cleaning never adds or removes rows; if it somehow did, the export stops
@@ -339,7 +389,8 @@ recode-studio/
   app.R                    # entry point
   R/                       # helpers + modules
     string_helpers.R       # cluster / validate / apply / codegen, normalizations (pure R)
-    text_helpers.R         # long-text: tokens, n-grams, KWIC (pure R)
+    text_helpers.R         # long-text: tokens, n-grams, KWIC, languages (pure R)
+    stopword_helpers.R     # stopword lists for Text analysis (pure R)
     recat_helpers.R        # recategorization logic + codegen (pure R)
     rule_warnings.R        # "rules that did nothing" checks (pure R)
     export_bundle.R        # cleaned data zip + provenance + script (pure R)
@@ -358,6 +409,7 @@ recode-studio/
     mod_preview_export.R
     mod_import_recodes.R
   dictionary/              # spellcheck tiers (seed / custom / user)
+  stopwords/               # Text analysis stopword tiers (base / custom / user)
   inst/extdata/            # bundled example dataset
   tests/testthat/          # unit and module tests
 ```
@@ -400,12 +452,29 @@ and auto-selected. To share it with the team, `git add` and commit it.
 To add one manually, create `dictionary/disciplines/<name>.txt` (one
 lowercase term per line, `#` for comments), then restart the app.
 
+## Stopword lists
+
+The Text analysis tab leaves stopwords out of its word and phrase tables and
+its word cloud. Like the dictionaries, they come in tiers, and a word is left
+out if **any** ticked list has it:
+
+| File | List | Git |
+|---|---|---|
+| `stopwords/base_stopwords.txt` | Standard English stopwords | committed |
+| `stopwords/custom_stopwords.txt` | Project additions (**+ Stop**, target Project) | committed |
+| `stopwords/user_stopwords.txt` | Personal additions (**+ Stop**, target User) | **gitignored** |
+
+To share a project word with the team, commit `custom_stopwords.txt`. The app
+never changes the base list. Stopwords only change what the Text analysis tab
+counts; they never change your data, rules or exports. See
+[stopwords/README.md](stopwords/README.md).
+
 ## Contributing
 
 1. Fork the repo and create a feature branch off `main`.
 2. Run `renv::restore()` to get the pinned dependencies.
 3. Make your changes. The pure-R core (`R/string_helpers.R`,
-   `R/text_helpers.R`, `R/recat_helpers.R`, `R/rule_warnings.R`,
+   `R/text_helpers.R`, `R/stopword_helpers.R`, `R/recat_helpers.R`, `R/rule_warnings.R`,
    `R/export_bundle.R`, `R/data_loader.R`) must stay Shiny-free so it remains
    unit-testable.
 4. Run `testthat::test_dir("tests/testthat")`. All tests must pass.

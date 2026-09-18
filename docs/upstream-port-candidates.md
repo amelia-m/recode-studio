@@ -1,7 +1,8 @@
 # Upstream port candidates
 
 Where this repo is ahead of the upstream Recode Studio it was spun off from, and
-what might be worth porting back later. Nothing here has been ported upstream.
+what might be worth porting back later. Upstream has since fixed most of the
+bugs in section 1; see section 7 for what it fixed and declined.
 
 Compiled 2026-09-15 from a side-by-side review of both codebases. File paths for
 upstream are relative to its repo root; paths without a prefix are this repo.
@@ -42,7 +43,9 @@ section 7 for its response and the new findings it sent back.
 5. **Spellcheck tab dies when the en_US dictionary is missing.** Upstream calls
    `hunspell::dictionary("en_US")` with no fallback. Fix here: nested
    `tryCatch` with a default-dictionary fallback and a notification in
-   `R/mod_spellcheck_view.R`.
+   `R/mod_spellcheck_view.R`. **Superseded 2026-09-18:** the default
+   dictionary IS en_US, so the fallback could never help; it is gone and the
+   tab says spellcheck is unavailable (section 7).
 6. **An NA keep target recodes a whole cluster to NA.** Upstream
    `cluster_recode_pairs()` returns every member mapped to NA when `keep` is NA.
    Latent, since the decision helper never returns ok with an NA target. Guard
@@ -91,10 +94,10 @@ defects in section 4; the rest are marked where upstream was not checked.
     `DT::replaceData()`. Upstream not checked.
 17. **Spellcheck replaced the whole value with the suggested word.** The rule
     made from a suggestion had `old_value` = the whole value and `new_value` =
-    the corrected WORD, so `iced coffe` became `coffee`. Found 2026-09-16; a
-    fix that corrects only the flagged word inside the value is in progress
-    here. Upstream's spellcheck builds rules the same way; not checked by
-    running it.
+    the corrected WORD, so `iced coffe` became `coffee`. Found 2026-09-16 and
+    fixed here the same day: `spell_replace_token()` replaces only the flagged
+    word. Since 2026-09-18 the rule is `exact` (section 7). Upstream has
+    fixed it too.
 
 ## 2. Features and robustness here that upstream lacks
 
@@ -209,8 +212,8 @@ This repo only:
 2. ~~**Should the shared defects in section 4 be fixed in this repo?**~~
    Answered yes, and done 2026-09-16: section 4 items 1 through 6 are fixed
    here. Items 1 through 5 still exist upstream.
-3. **Report the escape defect upstream.** Upstream still renders dataset text
-   as HTML in four tables; see section 1, item 1.
+3. ~~**Report the escape defect upstream.**~~ Closed 2026-09-18: reported,
+   and upstream fixed it and added a guard test (section 7).
 4. **Text normalization plan** (`docs/superpowers/plans/2026-08-13-text-normalization.md`):
    the execution approach (subagent-driven or inline) was never chosen, and the
    plan has not been built. It overlaps partly with the column normalizations
@@ -230,11 +233,15 @@ This repo only:
 6. **Loose ends found during the normalizations port** (not fixed):
    - A recode or normalization rule on a column missing from the data makes
      the generated script error (the recode case predates the port).
-   - Sibling patterns in the generated script go through tidyselect's regex
-     engine, which may differ from base `grep()` on unusual patterns.
-   - An imported normalization with an invalid regex makes
+   - ~~Sibling patterns in the generated script go through tidyselect's
+     regex engine, which may differ from base `grep()` on unusual
+     patterns.~~ Closed 2026-09-18: never a gap; `matches()` is base `grep()`
+     (TRE), the app's engine, and a test pins it.
+   - ~~An imported normalization with an invalid regex makes
      `apply_normalizations()` error; the app falls back to raw values, but
-     `validate_normalizations()` has no invalid-regex issue class.
+     `validate_normalizations()` has no invalid-regex issue class.~~ Closed
+     2026-09-18: the rule is skipped without error and reported as
+     `invalid_sibling_pattern`.
    - (Resolved as intended, 2026-09-16.) Editing `old_value` or
      `match_type` keeps the `norm_spec` stamp, which is correct: the stamp
      describes the normalization of the rule's COLUMNS, and those edits do
@@ -246,12 +253,14 @@ This repo only:
    - The Variable tab's empty state is still a one-column "message" table.
 
    Loose ends found during the 2026-09-16 defect fixes (not fixed):
-   - An invalid sibling regex makes `apply_recodes()` and the overlap check
-     error, rather than being caught and reported.
+   - ~~An invalid sibling regex makes `apply_recodes()` and the overlap check
+     error, rather than being caught and reported.~~ Closed 2026-09-18:
+     skipped and reported, never thrown, and refused at entry in the UI.
    - Two rules whose `old_value` differs only in whitespace get different
      `rule_id`s even under `trimmed_ci`, where they match the same cells.
-   - Regex matching uses base R's TRE engine in the app (`grepl`) and ICU in
-     the generated script (`str_detect`), so unusual patterns could disagree.
+   - ~~Regex matching uses base R's TRE engine in the app (`grepl`) and ICU in
+     the generated script (`str_detect`), so unusual patterns could
+     disagree.~~ Closed 2026-09-18: the script now emits `grepl()`, one engine.
    - The Recategorize "Out of date" marker tracks the form only, not later
      changes to the recode rules the preview was computed on.
    - Applied clusters stay on screen, because recodes do not feed back into
@@ -265,17 +274,18 @@ This repo only:
      same word and a second typo in it can never be fixed from that tab.
      Addressed by the word-fixes spec
      ([2026-09-16-word-fixes.md](superpowers/specs/2026-09-16-word-fixes.md)).
-   - A Spellcheck rule is a whole-cell `trimmed_ci` rule, so a differently
+   - ~~A Spellcheck rule is a whole-cell `trimmed_ci` rule, so a differently
      cased copy of the same value elsewhere in the column takes the clicked
-     value's casing.
+     value's casing.~~ Closed 2026-09-18: Spellcheck rules are now `exact`.
    - renv's startup synchronized check can take minutes on every `Rscript`
      run from the repo root; `RENV_CONFIG_SYNCHRONIZED_CHECK=FALSE` in the
-     environment skips it for local test runs. Possibly worth a note in
-     CLAUDE.md.
+     environment skips it for local test runs. (Noted in CLAUDE.md
+     Gotchas, 2026-09-18.)
 7. **Docs updated for the September sync** (2026-09-15): CLAUDE.md and
    README.md now cover normalizations, the rule warnings, the variable banner
    and the cleaned data export bundle. Updated again 2026-09-16 for the
-   defect fixes above.
+   defect fixes above, and 2026-09-18 for Spellcheck word replacement,
+   language detection, stopword tiers and upstream's follow-up fixes.
 
 ## 7. Upstream's response (received 2026-09-18)
 
@@ -304,11 +314,12 @@ Differences in how upstream fixed things, worth knowing here:
   user-typed pattern with capitals matching no column in the app but every
   lowercase column in the script. Upstream reports that tidyselect `matches()`
   uses base `grep()` (TRE), the same engine as the app, so sibling blocks have
-  no engine gap. This contradicts the loose end in section 6 item 6 and is
-  being verified here.
+  no engine gap. Confirmed here 2026-09-18 (a test pins it), which closes
+  that loose end in section 6 item 6.
 - **Hunspell fallback (item 5):** hunspell's default dictionary IS en_US, so a
   "default dictionary" fallback retries the same file. Upstream now says
-  spellcheck is unavailable instead. This repo's fallback has the same flaw.
+  spellcheck is unavailable instead. This repo had the same flaw; fixed the
+  same way 2026-09-18.
 - **Escaping (item 1):** upstream added a source-level guard test that fails
   on a bare `escape = FALSE` anywhere in the app.
 - **Recat match type (item 2):** there a blank type round-tripped as `""`, not
@@ -319,42 +330,27 @@ New findings from upstream, and whether they apply here:
 
 | Upstream finding | Applies here |
 |---|---|
-| NEW-1: a sibling pattern that does not compile makes validate, apply and codegen throw | Yes (already a loose end); being ported |
-| NEW-2: an archive step removed the previous cleaned file after an unchecked `file.copy()` | No: the export bundle builds only in a temp directory (being confirmed) |
-| NEW-3: an unrecognised recat match type silently acts as literal; recat rules had no validation | Likely; being ported |
+| NEW-1: a sibling pattern that does not compile makes validate, apply and codegen throw | Yes; done 2026-09-18 (skipped and reported, refused at entry) |
+| NEW-2: an archive step removed the previous cleaned file after an unchecked `file.copy()` | Confirmed not applicable: `export_bundle_zip()` writes only into a fresh `tempfile()` directory and the download, with no `file.copy()` |
+| NEW-3: an unrecognised recat match type silently acts as literal; recat rules had no validation | Yes; done 2026-09-18 (matches nothing, `validate_recat()`) |
 | NEW-4: a session starting with no rules could overwrite a shared saved rule file | No: this app has no saved-rules folder; exports are downloads |
-| NEW-5: regex RECODE rules used TRE in the app and ICU in the script (`\p{Lu}` differed) | Yes (already a loose end); being ported (script emits `grepl()`) |
-| NEW-6: clearing a sibling pattern stored `""`, which selects every column | Likely; being ported |
-| NEW-7: stamp-only findings reported like real failures | Yes; being ported (warning vs note severity) |
+| NEW-5: regex RECODE rules used TRE in the app and ICU in the script (`\p{Lu}` differed) | Yes; done 2026-09-18 (script emits `grepl()`) |
+| NEW-6: clearing a sibling pattern stored `""`, which selects every column | Yes; done 2026-09-18 (blank read and stored as NA) |
+| NEW-7: stamp-only findings reported like real failures | Yes; done 2026-09-18 (warning vs note severity) |
 
 Upstream-specific, not ported: new recat output names must be snake_case
 there; its recategorize "append today's date" save issue (no equivalent here).
 
 ## 8. Paused work (2026-09-18)
 
-Paused at the owner's request with a clean tree on local branch
-`upstream-followups` (from `text-tools` at `e96860e`, plus the port-log
-commits). Not pushed since `text-tools` at `5af49d5`.
+Paused at the owner's request on local branch `upstream-followups` (from
+`text-tools` at `e96860e`, plus the port-log commits). Not pushed since
+`text-tools` at `5af49d5`.
 
-Next steps, in order:
-
-1. Port upstream's follow-up fixes to the pure-R core (section 7): the regex
-   engine gap in regex recode rules (script to emit `grepl()`), invalid and
-   empty sibling patterns (report and skip, never throw; `""` treated as NA),
-   `.recat_match_type()` case-insensitive with unknown types matching
-   nothing, a new `validate_recat()`, an `id_mismatch` Validate class plus a
-   key-based id helper for import, warning versus note severity for
-   stamp-only rule warnings, a `spellcheck_lost_words` Validate class, a
-   guard test against bare `escape = FALSE`, and verifying whether tidyselect
-   `matches()` uses the same regex engine as the app. No files were changed
-   before the pause.
-2. Then the UI half: refuse invalid sibling patterns at entry (Recodes,
-   Normalize, Recategorize), store a cleared sibling pattern as NA, import
-   conflict check by key, mark imported rules with an unusable sibling
-   pattern as "will not apply", Spellcheck rules as `exact` and not
-   switchable to `regex`, drop the hunspell fallback that retries the same
-   en_US file, and show stamp-only warnings as quiet notes.
-3. Verify, commit, update CLAUDE.md and README.
+**Resumed and done 2026-09-18:** upstream's follow-up fixes are ported, core
+("Port upstream follow-up fixes to the rule engine") and UI ("Wire the
+follow-up fixes into the UI"), and CLAUDE.md and README.md are updated.
+Section 7 records what each fix covers.
 
 Questions still waiting for the owner:
 
