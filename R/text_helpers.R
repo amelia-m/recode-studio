@@ -62,12 +62,16 @@ text_length_stats <- function(values) {
 #'
 #' @param values            Character vector (all rows, not just unique).
 #' @param n                 Max rows to return.
-#' @param remove_stopwords  Drop EN_STOPWORDS.
+#' @param remove_stopwords  Drop the tokens listed in `stopwords`.
 #' @param min_chars         Drop tokens shorter than this.
-top_tokens <- function(values, n = 25, remove_stopwords = FALSE, min_chars = 1) {
+#' @param stopwords         The list `remove_stopwords` drops. Defaults to the
+#'   built-in EN_STOPWORDS; the Text analysis tab passes the active stopword
+#'   tiers (see R/stopword_helpers.R).
+top_tokens <- function(values, n = 25, remove_stopwords = FALSE, min_chars = 1,
+                       stopwords = EN_STOPWORDS) {
   toks <- unlist(.tokens_of(values), use.names = FALSE)
   if (min_chars > 1)        toks <- toks[nchar(toks) >= min_chars]
-  if (remove_stopwords)     toks <- toks[!toks %in% EN_STOPWORDS]
+  if (remove_stopwords)     toks <- toks[!toks %in% stopwords]
   if (length(toks) == 0)
     return(tibble::tibble(token = character(0), n = integer(0)))
   tibble::tibble(token = toks) |>
@@ -76,12 +80,17 @@ top_tokens <- function(values, n = 25, remove_stopwords = FALSE, min_chars = 1) 
 }
 
 #' Top n-grams (contiguous word sequences) across a column.
+#'
+#' Tokens dropped by `min_chars` / `stopwords` are removed BEFORE the n-grams
+#' are formed, so "alpha the gamma" with "the" removed yields "alpha gamma".
+#' `stopwords` works as in top_tokens().
 top_ngrams <- function(values, ngram = 2, n = 25,
-                       remove_stopwords = FALSE, min_chars = 1) {
+                       remove_stopwords = FALSE, min_chars = 1,
+                       stopwords = EN_STOPWORDS) {
   per <- .tokens_of(values)
   grams <- unlist(lapply(per, function(t) {
     if (min_chars > 1)    t <- t[nchar(t) >= min_chars]
-    if (remove_stopwords) t <- t[!t %in% EN_STOPWORDS]
+    if (remove_stopwords) t <- t[!t %in% stopwords]
     if (length(t) < ngram) return(character(0))
     vapply(seq_len(length(t) - ngram + 1),
            function(i) paste(t[i:(i + ngram - 1)], collapse = " "),
@@ -118,4 +127,68 @@ kwic <- function(values, term, window = 6, ignore_case = TRUE, max = 100) {
     if (length(keyword) >= max) break
   }
   tibble::tibble(before = before, keyword = keyword, after = after)
+}
+
+# --- Language detection -------------------------------------------------------
+
+# Values shorter than this are not classified: detection on a few characters
+# is a guess, and a wrong guess reads as a fact in the table.
+LANG_MIN_CHARS <- 20
+
+#' Is per-value language detection available in this R session?
+#'
+#' `cld2` is an optional runtime dependency (compiled). Its own function so the
+#' UI can show an install hint and tests can stand in an unavailable package.
+lang_detection_available <- function() {
+  requireNamespace("cld2", quietly = TRUE)
+}
+
+#' Detect the language of each value.
+#'
+#' Wraps `cld2::detect_language()`. When `cld2` is not installed this returns
+#' all-NA rather than erroring, so the Text analysis tab stays usable on an
+#' install that skipped the compiled package.
+#'
+#' @param values    character vector (any length, NA allowed).
+#' @param min_chars values with fewer characters (after trimming) are NA.
+#' @return character vector parallel to `values`: an ISO 639-1 code such as
+#'   "en", or NA when the value is missing, too short, or undetectable.
+detect_languages <- function(values, min_chars = LANG_MIN_CHARS) {
+  v   <- as.character(values)
+  out <- rep(NA_character_, length(v))
+  if (length(v) == 0L || !lang_detection_available()) return(out)
+  ok <- !is.na(v) & nchar(trimws(v)) >= min_chars
+  if (!any(ok)) return(out)
+  got <- tryCatch(as.character(cld2::detect_language(v[ok])),
+                  error = function(e) rep(NA_character_, sum(ok)))
+  out[ok] <- got
+  out
+}
+
+#' Language breakdown for a column.
+#'
+#' @return tibble(language, n, share), sorted by n descending. Values that
+#'   could not be classified are counted as "(undetected)". `share` is a
+#'   proportion (0 to 1) and sums to 1; format it for display, do not store it
+#'   as text.
+language_summary <- function(values, min_chars = LANG_MIN_CHARS) {
+  summarise_languages(detect_languages(values, min_chars = min_chars))
+}
+
+#' Language breakdown from already-detected codes.
+#'
+#' The counting half of language_summary(), for callers that hold the codes
+#' already and should not run detection twice.
+#'
+#' @param langs output of detect_languages().
+#' @return tibble(language, n, share), as language_summary().
+summarise_languages <- function(langs) {
+  if (length(langs) == 0L) {
+    return(tibble::tibble(language = character(0), n = integer(0),
+                          share = numeric(0)))
+  }
+  langs[is.na(langs)] <- "(undetected)"
+  tibble::tibble(language = langs) |>
+    dplyr::count(language, sort = TRUE, name = "n") |>
+    dplyr::mutate(share = n / sum(n))
 }

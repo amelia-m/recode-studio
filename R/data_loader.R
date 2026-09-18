@@ -97,6 +97,12 @@ source_file_meta <- function(path, file_name = path, sheet = NULL,
 #' read like sentences/paragraphs (see classify_text_length); `median_words`
 #' and `text_kind` ("short"/"long"/"-") are reported for the picker.
 #'
+#' `lang_share_en` is the share of a free-text candidate's detectable values
+#' that were detected as English (see detect_languages(); up to
+#' LANG_SAMPLE_N values are sampled). NA for non-candidates, and NA when
+#' nothing was detectable (values too short, or `cld2` not installed). It is
+#' reported only: it never affects the candidate flag.
+#'
 #' @param df  tibble from read_dataset().
 #' @return tibble of per-column meta.
 build_meta <- function(df) {
@@ -105,7 +111,7 @@ build_meta <- function(df) {
     column = character(0), group = character(0), n_unique = integer(0),
     na_share = numeric(0), median_len = numeric(0), median_words = numeric(0),
     is_free_text_candidate = logical(0), is_long_text = logical(0),
-    text_kind = character(0)
+    text_kind = character(0), lang_share_en = numeric(0)
   )
   if (n == 0 || ncol(df) == 0) return(empty)
 
@@ -136,10 +142,12 @@ build_meta <- function(df) {
       median_words <- stats::median(lengths(.tokens_of(non_na)))
       is_long      <- classify_text_length(non_na) == "long"
       kind         <- if (is_long) "long" else "short"
+      lang_en      <- .lang_share_en(non_na)
     } else {
       median_words <- 0
       is_long      <- FALSE
       kind         <- "-"
+      lang_en      <- NA_real_
     }
 
     tibble::tibble(
@@ -151,12 +159,28 @@ build_meta <- function(df) {
       median_words           = median_words,
       is_free_text_candidate = is_candidate,
       is_long_text           = is_long,
-      text_kind              = kind
+      text_kind              = kind,
+      lang_share_en          = lang_en
     )
   })
 }
 
 # --- Internal classifiers ----------------------------------------------------
+
+# How many values build_meta() hands to language detection per column.
+LANG_SAMPLE_N <- 200
+
+# Share of a column's detectable values detected as English, from the first
+# `sample_n` non-empty values (the same head-of-column sampling the date and
+# number checks use). NA when nothing was detectable.
+.lang_share_en <- function(values, sample_n = LANG_SAMPLE_N) {
+  v <- values[!is.na(values) & nzchar(values)]
+  if (length(v) == 0L) return(NA_real_)
+  langs <- detect_languages(utils::head(v, sample_n))
+  langs <- langs[!is.na(langs)]
+  if (length(langs) == 0L) return(NA_real_)
+  mean(langs == "en")
+}
 
 # Identifier-named: the column name is `id` or ends in `_id` (case-insensitive).
 # NOTE: this repo deliberately does NOT also exclude names ending in "label"

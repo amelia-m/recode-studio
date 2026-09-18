@@ -25,6 +25,7 @@ Imports:
     tidyr,
     ggplot2,
     htmltools,
+    cld2,
     stringdist,
     igraph,
     phonics,

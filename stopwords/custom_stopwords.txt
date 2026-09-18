@@ -1,0 +1,4 @@
+# Project-shared stopwords (tier 2, committed).
+# Everyone on the project gets these. The Text analysis tab's '+ Stop'
+# button (target: Project) appends here; commit the file to share it.
+# One lowercase term per line; lines starting with # are comments.

@@ -1,6 +1,9 @@
 # Per-user dictionary additions (project-shared tier IS committed)
 dictionary/user_terms.txt
 
+# Per-user stopword additions (project-shared tier IS committed)
+stopwords/user_stopwords.txt
+
 # R session artifacts
 .Rhistory
 .RData
