@@ -13,6 +13,10 @@ from the same review.
 
 Rank these above any feature.
 
+**Update 2026-09-18:** upstream has since fixed every item in this section
+except 13 (declined), after confirming each against its own code. See
+section 7 for its response and the new findings it sent back.
+
 1. **Dataset text rendered as HTML in DT tables.** Upstream still uses
    `escape = FALSE` in `modules/mod_recode_editor.R`, `mod_spellcheck_view.R`,
    `mod_recategorize.R`, and in a newer `mod_normalize.R` (the same defect class
@@ -272,3 +276,56 @@ This repo only:
    README.md now cover normalizations, the rule warnings, the variable banner
    and the cleaned data export bundle. Updated again 2026-09-16 for the
    defect fixes above.
+
+## 7. Upstream's response (received 2026-09-18)
+
+The bug report built from section 1 (items 1 to 17 there, plus the section 3
+doc drift) went to the agent maintaining upstream. It verified every item
+against its own code before acting: 10 were real there, 8 were latent for its
+inputs (its column names are cleaned snake_case). It fixed all of them,
+latent ones included, except one.
+
+- **Fixed upstream:** section 1 items 1 to 12 and 14 to 17, and the section 3
+  doc drift.
+- **Declined upstream:** item 13 (cluster debounce and caps). Real, but moot
+  at upstream's data volume; worth revisiting only if much larger data is
+  pooled.
+
+Differences in how upstream fixed things, worth knowing here:
+
+- **Spellcheck (item 17):** upstream's corrected rule is an `exact`
+  whole-value rule, not `trimmed_ci`, and a spellcheck rule cannot be switched
+  to `regex`. Validate lists older spellcheck rules that may have lost words,
+  without changing them.
+- **Stale ids (item 12):** its import conflict check had the same fault.
+  Saved ids are not rewritten; Validate lists any rule whose id does not match
+  its key.
+- **Sibling case sensitivity (item 8):** the reachable direction there was a
+  user-typed pattern with capitals matching no column in the app but every
+  lowercase column in the script. Upstream reports that tidyselect `matches()`
+  uses base `grep()` (TRE), the same engine as the app, so sibling blocks have
+  no engine gap. This contradicts the loose end in section 6 item 6 and is
+  being verified here.
+- **Hunspell fallback (item 5):** hunspell's default dictionary IS en_US, so a
+  "default dictionary" fallback retries the same file. Upstream now says
+  spellcheck is unavailable instead. This repo's fallback has the same flaw.
+- **Escaping (item 1):** upstream added a source-level guard test that fails
+  on a bare `escape = FALSE` anywhere in the app.
+- **Recat match type (item 2):** there a blank type round-tripped as `""`, not
+  NA. `Regex` / `Literal` are now read case- and whitespace-insensitively, and
+  a new `validate_recat()` checks recat rules.
+
+New findings from upstream, and whether they apply here:
+
+| Upstream finding | Applies here |
+|---|---|
+| NEW-1: a sibling pattern that does not compile makes validate, apply and codegen throw | Yes (already a loose end); being ported |
+| NEW-2: an archive step removed the previous cleaned file after an unchecked `file.copy()` | No: the export bundle builds only in a temp directory (being confirmed) |
+| NEW-3: an unrecognised recat match type silently acts as literal; recat rules had no validation | Likely; being ported |
+| NEW-4: a session starting with no rules could overwrite a shared saved rule file | No: this app has no saved-rules folder; exports are downloads |
+| NEW-5: regex RECODE rules used TRE in the app and ICU in the script (`\p{Lu}` differed) | Yes (already a loose end); being ported (script emits `grepl()`) |
+| NEW-6: clearing a sibling pattern stored `""`, which selects every column | Likely; being ported |
+| NEW-7: stamp-only findings reported like real failures | Yes; being ported (warning vs note severity) |
+
+Upstream-specific, not ported: new recat output names must be snake_case
+there; its recategorize "append today's date" save issue (no equivalent here).
