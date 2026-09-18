@@ -224,7 +224,7 @@ test_that("a badge payload with awkward characters creates the rule unchanged", 
 # --- Word-level correction inside a whole-cell rule --------------------------
 #
 # Spellcheck flags ONE token inside a value. A pick must replace only that
-# token: the rule is still whole-cell (trimmed_ci, old_value = the value), but
+# token: the rule is still whole-cell (exact, old_value = the value), but
 # its new_value keeps every other word. The old handler set new_value to the
 # bare correction, so `iced coffe` became `coffee`.
 
@@ -342,9 +342,11 @@ test_that("clicking a suggestion on a multi-word value keeps the other words", {
     expect_equal(nrow(rules), 1L)
     expect_identical(rules$old_value, "Iced coffe, no sugar")
     expect_identical(rules$new_value, "Iced coffee, no sugar")
-    expect_identical(rules$match_type, "trimmed_ci")
+    # exact, on the value as written (upstream item 17): a trimmed_ci rule
+    # recased every differently cased copy of the value to this one's casing.
+    expect_identical(rules$match_type, "exact")
     expect_identical(rules$rule_id,
-                     recode_rule_id("drink1", "trimmed_ci",
+                     recode_rule_id("drink1", "exact",
                                     "Iced coffe, no sugar"))
     expect_match(rules$notes, "'coffe' -> 'coffee'", fixed = TRUE)
   })
@@ -381,4 +383,94 @@ test_that("a correction that changes nothing adds no rule", {
     session$setInputs(pick_sug = .pick_payload(9L, "coffee"))
     expect_equal(nrow(proxy$peek()), 0L)
   })
+})
+
+
+# --- Spellcheck rules are exact ---------------------------------------------
+#
+# A Spellcheck rule used to be trimmed_ci, so a differently cased copy of the
+# clicked value elsewhere in the column took the clicked value's casing
+# (logged loose end; upstream item 17 made the rule exact).
+
+test_that("a Spellcheck rule leaves a differently cased copy alone", {
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+  uv <- tibble::tibble(value = "Iced coffe", n = 1L)
+  proxy <- .rules_store()
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv, proxy), {
+    session$flushReact()
+    session$setInputs(pick_sug = .pick_payload(1L, "coffee"))
+  })
+  rules <- proxy$peek()
+  expect_identical(rules$match_type, "exact")
+  df <- data.frame(drink1 = c("Iced coffe", "ICED COFFE", " Iced coffe "),
+                   stringsAsFactors = FALSE)
+  out <- apply_recodes(df, rules)$df
+  expect_identical(out$drink1, c("Iced coffee", "ICED COFFE", " Iced coffe "))
+})
+
+test_that("the Spellcheck help line names exact, not trimmed_ci", {
+  ui <- as.character(mod_spellcheck_view_ui("sp"))
+  expect_match(ui, "<code>exact</code>", fixed = TRUE)
+  expect_false(grepl("<code>trimmed_ci</code>", ui, fixed = TRUE))
+})
+
+
+# --- No en_US: spellcheck unavailable, no second load -------------------------
+#
+# hunspell's default dictionary IS en_US, so the old fallback (retry without a
+# language) loaded the same file again. Now a failed load says spellcheck is
+# unavailable and is not retried.
+
+test_that(".build_hunspell tries en_US once and names the reason", {
+  calls <- 0L
+  failing <- function(add_words) {
+    calls <<- calls + 1L
+    stop("dictionary file not found")
+  }
+  expect_error(.build_hunspell(loader = failing),
+               "en_US.*dictionary file not found")
+  expect_identical(calls, 1L)
+})
+
+test_that("the source has no default-dictionary fallback any more", {
+  src <- paste(readLines(file.path("..", "..", "R", "mod_spellcheck_view.R"),
+                         warn = FALSE), collapse = "\n")
+  expect_false(grepl("hunspell::dictionary(add_words", src, fixed = TRUE))
+  expect_match(src, "hunspell::dictionary(lang = \"en_US\"", fixed = TRUE)
+})
+
+test_that("a failed en_US load shows the unavailable state and is not retried", {
+  home <- environment(mod_spellcheck_view_server)
+  real <- get(".hunspell_loader", envir = home)
+  calls <- 0L
+  assign(".hunspell_loader", function(add_words) {
+    calls <<- calls + 1L
+    stop("simulated: en_US.dic missing")
+  }, envir = home)
+  withr::defer(assign(".hunspell_loader", real, envir = home))
+  notes <- character(0)
+  testthat::local_mocked_bindings(
+    showNotification = function(ui, ..., type = "default") {
+      notes <<- c(notes, paste(as.character(ui), collapse = ""))
+      invisible("id")
+    },
+    .package = "shiny")
+
+  uv <- tibble::tibble(value = c("cappucino", "latte"), n = 2:1)
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv), {
+    session$flushReact()
+    expect_equal(nrow(flagged_r()), 0L)
+    empty <- paste(output$tbl_empty$html)
+    expect_match(empty, "Spellcheck is unavailable", fixed = TRUE)
+    expect_match(empty, "simulated: en_US.dic missing", fixed = TRUE)
+    expect_identical(calls, 1L)
+    # Picking a discipline dictionary re-runs the reactive, but makes no
+    # second attempt at loading en_US.
+    session$setInputs(disciplines = "medical")
+    session$flushReact()
+    expect_equal(nrow(flagged_r()), 0L)
+    expect_identical(calls, 1L)
+  })
+  expect_length(notes, 1L)
+  expect_match(notes[1], "Spellcheck is unavailable", fixed = TRUE)
 })

@@ -558,10 +558,11 @@ test_that("the sibling choice builds the family pattern in plain language", {
       expect_true(out$apply_to_siblings)
       expect_equal(out$sibling_pattern, "^drink[0-9]+$")
 
-      # An invalid typed pattern degrades to a single-column rule.
+      # An invalid typed pattern yields no draft at all (it used to degrade
+      # quietly to a single-column rule), and Add refuses it.
       session$setInputs(sibling_mode = "custom", sibling_pattern = "drink[")
       expect_null(pattern_cols_r())
-      expect_false(draft_rule_r()$apply_to_siblings)
+      expect_null(draft_rule_r())
       note <- paste(unlist(output$sibling_note), collapse = " ")
       expect_match(note, "not a valid regular expression")
     })

@@ -2,7 +2,10 @@
 # Import recodes
 # =============================================================================
 # Upload an externally-edited recodes_master.csv. Merge with conflict
-# resolution per rule_id: keep-mine / keep-theirs / keep-newer.
+# resolution per rule KEY (variable, match_type, old_value; compared with
+# recode_key_id(), so a stale stored rule_id cannot hide a collision):
+# keep-mine / keep-theirs / keep-newer. An incoming rule whose sibling pattern
+# does not compile is accepted, and the preview says it will not apply.
 #
 # The same card imports a normalizations_master.csv, with the same three
 # conflict choices keyed on norm_id. Normalization rules carry `updated_at`
@@ -126,7 +129,7 @@
           what, paste(bits, collapse = "; "))
 }
 
-#' Merge incoming rules into the current set, resolving id collisions.
+#' Merge incoming rules into the current set, resolving collisions.
 #'
 #' Pure. Rules only in `cur` keep their place; a colliding rule is decided by
 #' `strategy` (mine / theirs / newer `updated_at`) and stays in `cur`'s
@@ -136,15 +139,30 @@
 #' row order). The previous merge appended every collision winner at the end,
 #' which could reorder rules.
 #'
+#' What counts as a collision: by default the stored `id_col`. With `key_fn`
+#' (for recodes, `recode_key_id()`), both sides are compared by the id their
+#' KEY implies instead. A stored `rule_id` can be stale (saved before its
+#' rule's key was edited, or written by another tool); comparing stored ids
+#' then misses two rules with the same key, which both survive the merge and
+#' fight over the same cells, and can pair two different rules that merely
+#' share a stale id. Upstream found exactly that in its own import. The
+#' winning rule keeps the id it carries (ids are never rewritten here;
+#' Validate lists any that do not match).
+#'
 #' @param cur,inc schema-shaped rule tibbles.
 #' @param id_col the id column: "rule_id" or "norm_id".
 #' @param strategy "mine", "theirs" or "newer".
+#' @param key_fn optional function(rules) returning one comparison key per
+#'   row. NULL compares `id_col` itself.
 #' @return tibble with `cur`'s columns.
-merge_incoming_rules <- function(cur, inc, id_col, strategy = "newer") {
+merge_incoming_rules <- function(cur, inc, id_col, strategy = "newer",
+                                 key_fn = NULL) {
   if (nrow(inc) == 0) return(cur)
   if (nrow(cur) == 0) return(inc[, names(cur), drop = FALSE])
+  key_cur <- if (is.null(key_fn)) as.character(cur[[id_col]]) else key_fn(cur)
+  key_inc <- if (is.null(key_fn)) as.character(inc[[id_col]]) else key_fn(inc)
   out <- cur
-  idx <- match(cur[[id_col]], inc[[id_col]])
+  idx <- match(key_cur, key_inc)
   for (i in which(!is.na(idx))) {
     t <- inc[idx[i], names(cur), drop = FALSE]
     m <- cur[i, , drop = FALSE]
@@ -156,8 +174,80 @@ merge_incoming_rules <- function(cur, inc, id_col, strategy = "newer") {
       FALSE)
     if (take_theirs) out[i, ] <- t
   }
-  novel <- inc[!(inc[[id_col]] %in% cur[[id_col]]), names(cur), drop = FALSE]
+  novel <- inc[!(key_inc %in% key_cur), names(cur), drop = FALSE]
   dplyr::bind_rows(out, novel)
+}
+
+#' What merging an incoming recodes file would do, for the import preview.
+#'
+#' Pure. Conflicts are found by KEY (`recode_key_id()` on both sides), the
+#' same test `merge_incoming_rules()` uses for recodes, so the preview counts
+#' exactly the rules the merge will treat as "in both".
+#'
+#' @param cur,inc recode rule tibbles (session rules, incoming rules).
+#' @return list(n_incoming, n_novel, n_conflicts, n_stale_id_conflicts,
+#'   will_not_apply). `n_stale_id_conflicts` counts conflicts whose two stored
+#'   ids differ (a stored-id check would have missed them).
+#'   `will_not_apply` is a tibble (variable, old_value, sibling_pattern) of
+#'   incoming sibling rules whose pattern does not compile: they are accepted
+#'   but reach no column until the pattern is fixed.
+import_recodes_summary <- function(cur, inc) {
+  if (is.null(cur)) cur <- empty_recodes_tibble()
+  key_cur <- recode_key_id(cur)
+  key_inc <- recode_key_id(inc)
+  in_both <- key_inc %in% key_cur
+  stale <- 0L
+  if (any(in_both)) {
+    pos   <- match(key_inc[in_both], key_cur)
+    stale <- sum(as.character(inc$rule_id[in_both]) !=
+                 as.character(cur$rule_id[pos]) |
+                 is.na(inc$rule_id[in_both]) | is.na(cur$rule_id[pos]))
+  }
+  bad <- .bad_sibling_rule(inc$apply_to_siblings, inc$sibling_pattern)
+  list(
+    n_incoming           = nrow(inc),
+    n_novel              = sum(!in_both),
+    n_conflicts          = sum(in_both),
+    n_stale_id_conflicts = as.integer(stale),
+    will_not_apply       = tibble::tibble(
+      variable        = as.character(inc$variable[bad]),
+      old_value       = as.character(inc$old_value[bad]),
+      sibling_pattern = as.character(inc$sibling_pattern[bad]))
+  )
+}
+
+#' The recodes import preview, from import_recodes_summary(). Pure (tags).
+import_recodes_preview_ui <- function(sm) {
+  wna <- sm$will_not_apply
+  shown <- function(x) if (is.na(x)) "<NA>" else if (!nzchar(x)) "(empty)" else x
+  shiny::tagList(
+    shiny::p(shiny::strong("Incoming rules: "), sm$n_incoming),
+    shiny::p(shiny::strong("Novel (not in session): "), sm$n_novel),
+    shiny::p(shiny::strong("Conflicts (same column, match type and old value): "),
+             sm$n_conflicts),
+    if (sm$n_stale_id_conflicts > 0) shiny::p(class = "small text-muted",
+      sprintf(paste0("%d of these carr%s a different rule id on each side ",
+                     "(an id saved before an edit, or by another tool). They ",
+                     "are matched by what the rule does, not by the id."),
+              sm$n_stale_id_conflicts,
+              if (sm$n_stale_id_conflicts == 1) "ies" else "y")),
+    if (nrow(wna) > 0) shiny::div(
+      class = "alert alert-warning py-1 px-2 small rs-import-will-not-apply",
+      shiny::strong(sprintf("%d incoming rule%s will not apply. ", nrow(wna),
+                            if (nrow(wna) == 1) "" else "s")),
+      if (nrow(wna) == 1) paste0(
+        "Its sibling pattern is not a valid regular expression, so it reaches ",
+        "no column. It is imported as it is; fix the pattern on the Recodes ",
+        "tab.")
+      else paste0(
+        "Their sibling patterns are not valid regular expressions, so they ",
+        "reach no column. They are imported as they are; fix the patterns on ",
+        "the Recodes tab."),
+      shiny::tags$ul(class = "mb-0", lapply(seq_len(nrow(wna)), function(i)
+        shiny::tags$li(shiny::tags$code(shown(wna$variable[i])), " ",
+                       shiny::tags$code(shown(wna$old_value[i])), ": pattern ",
+                       shiny::tags$code(shown(wna$sibling_pattern[i]))))))
+  )
 }
 
 mod_import_recodes_ui <- function(id) {
@@ -267,15 +357,8 @@ mod_import_recodes_server <- function(id, shared_state, rules_proxy,
           .schema_error_msg(chk)
         ))
       }
-      inc <- chk$df
-      cur <- rules_proxy$get()
-      coll <- intersect(cur$rule_id, inc$rule_id)
-      novel <- setdiff(inc$rule_id, cur$rule_id)
-      shiny::tagList(
-        shiny::p(shiny::strong("Incoming rules: "), nrow(inc)),
-        shiny::p(shiny::strong("Novel (not in session): "), length(novel)),
-        shiny::p(shiny::strong("Conflicts (rule_id collision): "), length(coll))
-      )
+      import_recodes_preview_ui(
+        import_recodes_summary(rules_proxy$get(), chk$df))
     })
 
     shiny::observeEvent(input$apply, {
@@ -293,7 +376,9 @@ mod_import_recodes_server <- function(id, shared_state, rules_proxy,
       cur <- .conform_recodes_schema(rules_proxy$get())
       cur <- cur[, names(empty_recodes_tibble()), drop = FALSE]
 
-      merged <- merge_incoming_rules(cur, inc, "rule_id", input$conflict)
+      # Collisions by KEY, not by stored rule_id (see merge_incoming_rules()).
+      merged <- merge_incoming_rules(cur, inc, "rule_id", input$conflict,
+                                     key_fn = recode_key_id)
 
       # Defensive: both sides are schema-shaped, so this is a no-op reorder,
       # but it guarantees the session rule set can never gain a stray column.
@@ -301,8 +386,14 @@ mod_import_recodes_server <- function(id, shared_state, rules_proxy,
 
       # set(), not add(): imported rules keep the norm_spec stamp they carry.
       rules_proxy$set(merged)
+      n_bad <- sum(.bad_sibling_rule(merged$apply_to_siblings,
+                                     merged$sibling_pattern))
       shiny::showNotification(
-        sprintf("Merged. Now %d rule(s) in session.", nrow(merged)), type = "message")
+        sprintf("Merged. Now %d rule(s) in session.%s", nrow(merged),
+                if (n_bad > 0) sprintf(paste0(
+                  " %d will not apply until its sibling pattern is fixed ",
+                  "(see Validate on the Recodes tab)."), n_bad) else ""),
+        type = if (n_bad > 0) "warning" else "message")
     })
 
     # --- Normalizations CSV ---------------------------------------------------

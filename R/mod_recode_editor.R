@@ -62,6 +62,28 @@ apply_recode_edit <- function(rules, row, col, value,
       "Invalid action '%s'. Allowed: %s.",
       value, paste(RECODE_ACTIONS, collapse = ", "))))
   }
+  # A Spellcheck rule is an `exact` whole-value rule whose new value is the
+  # old one with a single word corrected. As a regex its old value would be
+  # read as a pattern (a "." or "(" in the text changes what it matches) and
+  # every matching cell replaced whole, so the switch is refused.
+  if (col == "match_type" && identical(value, "regex") &&
+      .is_spellcheck_rule(rules$notes[row])) {
+    return(out("refused", message = paste0(
+      "Not changed: this rule was made by the Spellcheck tab, which corrects ",
+      "one word inside a whole value, so it cannot be switched to regex. ",
+      "Make a new rule on Browse values if you need a pattern.")))
+  }
+  if (col == "sibling_pattern") {
+    # Cleared (empty or whitespace-only) is stored as NA, never "": an empty
+    # sibling pattern would reach every column.
+    value <- clean_sibling_pattern(value)
+    if (!is.na(value) && !regex_compiles(value)) {
+      return(out("refused", message = sprintf(paste0(
+        "Not changed: the sibling pattern '%s' is not a valid regular ",
+        "expression, so the rule would reach no column. Fix the pattern, or ",
+        "clear the cell to apply the rule to its own column only."), value)))
+    }
+  }
 
   r <- rules
   if (col == "apply_to_siblings") {
@@ -96,6 +118,130 @@ apply_recode_edit <- function(rules, row, col, value,
 
   r$updated_at[row] <- now
   out("ok", r)
+}
+
+# TRUE for a rule the Spellcheck tab made: its notes start with "Spellcheck"
+# (current format "Spellcheck: token 'x' -> 'y'", older "Spellcheck (token
+# 'x')"). The same test validate_recodes() uses for spellcheck_lost_words.
+.is_spellcheck_rule <- function(notes) {
+  notes <- as.character(notes)
+  !is.na(notes) & grepl("^[[:space:]]*Spellcheck([^[:alnum:]_]|$)", notes)
+}
+
+# Show a rule value in the validation report: NA and "" are named, since both
+# would otherwise print as nothing.
+.shown_value <- function(x) {
+  x <- as.character(x)
+  ifelse(is.na(x), "<NA> (missing cells)",
+         ifelse(!nzchar(x), "(empty)", x))
+}
+
+# One report section: a badge with the count, an optional plain-language
+# explanation, then either a list of items or the issue rows as printed text.
+# Everything reaches the page as text, so htmltools escapes it.
+.validation_section <- function(title, color, n, intro = NULL, items = NULL,
+                                rows = NULL) {
+  shiny::tagList(
+    shiny::h5(badge(sprintf("%s (%d)", title, n), color)),
+    if (!is.null(intro)) shiny::p(class = "small", intro),
+    if (!is.null(items)) shiny::tags$ul(class = "small", items),
+    if (!is.null(rows)) shiny::pre(paste(utils::capture.output(print(
+      as.data.frame(rows), row.names = FALSE)), collapse = "\n"))
+  )
+}
+
+.n_words <- function(n) {
+  if (identical(as.integer(n), 1L)) "1 word" else paste(n, "words")
+}
+
+#' The Recodes Validate report, built from validate_recodes() output.
+#'
+#' Pure (tags only). Every class with rows gets a section with its count. The
+#' classes added for upstream's follow-ups (invalid_sibling_pattern,
+#' id_mismatch, spellcheck_lost_words) are explained in plain language. A
+#' class this function does not know yet is still shown, under a title built
+#' from its name (issue_class_title()), instead of being dropped or crashing
+#' the report.
+#'
+#' @param issues named list of tibbles from validate_recodes().
+#' @return a tag or tagList.
+recode_validation_ui <- function(issues) {
+  keep <- vapply(issues, function(x) is.data.frame(x) && nrow(x) > 0,
+                 logical(1))
+  issues <- issues[keep]
+  if (length(issues) == 0) {
+    return(shiny::p(badge("All good", "green"), ": no issues detected."))
+  }
+  code <- function(x) shiny::tags$code(.shown_value(x))
+  one  <- function(n) n == 1
+
+  sections <- list(
+    duplicate_keys = function(x) .validation_section(
+      "Duplicate keys", "red", nrow(x), rows = x),
+    invalid_enum = function(x) .validation_section(
+      "Invalid match_type / action", "red", nrow(x), rows = x),
+    invalid_regex = function(x) .validation_section(
+      "Invalid regex pattern", "red", nrow(x), rows = x),
+    invalid_sibling_pattern = function(x) .validation_section(
+      "Invalid sibling pattern", "red", nrow(x),
+      intro = paste0(
+        if (one(nrow(x))) "This sibling rule has a pattern that is"
+        else sprintf("These %d sibling rules have a pattern that is", nrow(x)),
+        " not a valid regular expression, so ",
+        if (one(nrow(x))) "it is" else "they are",
+        " skipped: nothing changes, in the app or in the exported script. Fix ",
+        "the pattern in the sibling_pattern column, or clear it to apply the ",
+        "rule to its own column only."),
+      items = lapply(seq_len(nrow(x)), function(i) shiny::tags$li(
+        code(x$variable[i]), ": pattern ", code(x$sibling_pattern[i])))),
+    id_mismatch = function(x) .validation_section(
+      "Rule id does not match the rule", "yellow", nrow(x),
+      intro = paste0(
+        if (one(nrow(x))) "This rule carries an id"
+        else sprintf("These %d rules carry an id", nrow(x)),
+        " that no longer matches the rule's column, match type and old value ",
+        "(saved before an edit, or written by another tool). Ids are not ",
+        "rewritten here. The rule still applies as shown, but a rule made ",
+        "later for the same value will sit beside it instead of replacing it. ",
+        "To give it the right id, delete it and make it again."),
+      items = lapply(seq_len(nrow(x)), function(i) shiny::tags$li(
+        code(x$variable[i]), " ", code(x$old_value[i]), " (",
+        .shown_value(x$match_type[i]), "): id ", code(x$rule_id[i]),
+        ", expected ", code(x$expected_id[i])))),
+    spellcheck_lost_words = function(x) .validation_section(
+      "Spellcheck rule may have dropped words", "yellow", nrow(x),
+      intro = paste0(
+        "An older version of the Spellcheck tab replaced the whole value ",
+        "with the corrected word, so \"iced coffe\" became \"coffee\". ",
+        if (one(nrow(x))) "This rule's new value has"
+        else sprintf("These %d rules' new values have", nrow(x)),
+        " fewer words than the old value. Review ",
+        if (one(nrow(x))) "it" else "each one",
+        ": edit new_value to keep the other words, or delete the rule and ",
+        "pick the correction again on the Spellcheck tab. Nothing was ",
+        "changed."),
+      items = lapply(seq_len(nrow(x)), function(i) shiny::tags$li(
+        code(x$variable[i]), ": ", code(x$old_value[i]), " to ",
+        code(x$new_value[i]),
+        sprintf(" (%s to %s)", .n_words(x$old_words[i]),
+                .n_words(x$new_words[i]))))),
+    blank_new_value = function(x) .validation_section(
+      "Blank new_value with action=recode", "yellow", nrow(x),
+      rows = x[, intersect(c("variable", "old_value", "action"), names(x)),
+               drop = FALSE]),
+    rule_chains = function(x) .validation_section(
+      "Rule chains", "yellow", nrow(x), rows = x),
+    stale = function(x) .validation_section(
+      "Stale (old_value not in current data)", "grey", nrow(x), rows = x)
+  )
+
+  known <- intersect(names(sections), names(issues))
+  other <- setdiff(names(issues), names(sections))
+  shiny::tagList(
+    lapply(known, function(nm) sections[[nm]](issues[[nm]])),
+    lapply(other, function(nm) .validation_section(
+      issue_class_title(nm), "grey", nrow(issues[[nm]]), rows = issues[[nm]]))
+  )
 }
 
 mod_recode_editor_ui <- function(id) {
@@ -249,48 +395,7 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
     shiny::observeEvent(input$validate, {
       r <- rules_proxy$get()
       issues <- validate_recodes(r, data = shared_state$data)
-
-      msg <- shiny::tagList()
-      if (nrow(issues$duplicate_keys) > 0) {
-        msg <- shiny::tagAppendChild(msg, shiny::tagList(
-          shiny::h5(badge("Duplicate keys", "red")),
-          shiny::pre(paste(capture.output(print(issues$duplicate_keys)), collapse = "\n"))
-        ))
-      }
-      if (nrow(issues$rule_chains) > 0) {
-        msg <- shiny::tagAppendChild(msg, shiny::tagList(
-          shiny::h5(badge("Rule chains", "yellow")),
-          shiny::pre(paste(capture.output(print(issues$rule_chains)), collapse = "\n"))
-        ))
-      }
-      if (nrow(issues$blank_new_value) > 0) {
-        msg <- shiny::tagAppendChild(msg, shiny::tagList(
-          shiny::h5(badge("Blank new_value with action=recode", "yellow")),
-          shiny::pre(paste(capture.output(print(
-            issues$blank_new_value[, c("variable", "old_value", "action")])), collapse = "\n"))
-        ))
-      }
-      if (nrow(issues$invalid_enum) > 0) {
-        msg <- shiny::tagAppendChild(msg, shiny::tagList(
-          shiny::h5(badge("Invalid match_type / action", "red")),
-          shiny::pre(paste(capture.output(print(issues$invalid_enum)), collapse = "\n"))
-        ))
-      }
-      if (nrow(issues$invalid_regex) > 0) {
-        msg <- shiny::tagAppendChild(msg, shiny::tagList(
-          shiny::h5(badge("Invalid regex pattern", "red")),
-          shiny::pre(paste(capture.output(print(issues$invalid_regex)), collapse = "\n"))
-        ))
-      }
-      if (nrow(issues$stale) > 0) {
-        msg <- shiny::tagAppendChild(msg, shiny::tagList(
-          shiny::h5(badge("Stale (old_value not in current data)", "grey")),
-          shiny::pre(paste(capture.output(print(issues$stale)), collapse = "\n"))
-        ))
-      }
-      if (length(msg) == 0) {
-        msg <- shiny::p(badge("All good", "green"), ": no issues detected.")
-      }
+      msg <- recode_validation_ui(issues)
       shiny::showModal(shiny::modalDialog(
         title = "Validation report", msg, size = "l", easyClose = TRUE
       ))

@@ -41,28 +41,35 @@ normalize_op_choices <- function() {
 #' @param issues named list from validate_normalizations(), or NULL.
 normalization_issues_ui <- function(issues) {
   if (is.null(issues)) return(NULL)
-  shown <- issues[vapply(issues, function(x) nrow(x) > 0, logical(1))]
+  shown <- issues[vapply(issues, function(x) is.data.frame(x) && nrow(x) > 0,
+                         logical(1))]
   if (length(shown) == 0) {
     return(shiny::div(class = "small text-muted mb-2 rs-norm-issues-ok",
                       "No problems found in the normalization rules."))
   }
   titles <- c(
-    no_ops              = "Nothing selected",
-    invalid_ops         = "Unrecognised normalization",
-    conflicting_case    = "Conflicting case choices",
-    duplicate_targets   = "Same target twice",
-    missing_column      = "Column not in the loaded data",
-    overlapping_targets = "Two rules reach one column")
+    no_ops                  = "Nothing selected",
+    invalid_ops             = "Unrecognised normalization",
+    conflicting_case        = "Conflicting case choices",
+    duplicate_targets       = "Same target twice",
+    invalid_sibling_pattern = "Sibling pattern is not a valid regular expression",
+    missing_column          = "Column not in the loaded data",
+    overlapping_targets     = "Two rules reach one column")
   shiny::div(
     class = "alert alert-warning rs-norm-issues", role = "alert",
     shiny::strong("Check these normalization rules:"),
     shiny::tags$ul(class = "mb-0", lapply(names(shown), function(nm) {
       x <- shown[[nm]]
+      var <- if ("variable" %in% names(x)) as.character(x$variable)
+             else rep(NA_character_, nrow(x))
+      det <- if ("detail" %in% names(x)) as.character(x$detail)
+             else rep("", nrow(x))
       shiny::tags$li(
-        shiny::strong(titles[[nm]] %||% nm), ": ",
+        shiny::strong(issue_class_title(nm, titles)), ": ",
         lapply(seq_len(nrow(x)), function(i) shiny::tagList(
           if (i > 1) "; ",
-          shiny::tags$code(x$variable[i]), " ", x$detail[i])))
+          if (!is.na(var[i])) shiny::tagList(shiny::tags$code(var[i]), " "),
+          if (!is.na(det[i])) det[i])))
     }))
   )
 }
@@ -182,8 +189,9 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
     sibling_pattern_r <- shiny::reactive({
       if (!isTRUE(input$apply_siblings)) return(NA_character_)
       if (identical(input$sibling_mode %||% "auto", "custom")) {
-        p <- trimws(input$sibling_pattern %||% "")
-        return(if (nzchar(p)) p else NA_character_)
+        # A cleared (empty or whitespace-only) pattern is NO pattern, never
+        # "": an empty sibling pattern would reach every column.
+        return(clean_sibling_pattern(trimws(input$sibling_pattern %||% "")))
       }
       v <- var_r()
       d <- data_r()
@@ -191,13 +199,21 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
       suggest_sibling_pattern(v, names(d))
     })
 
+    # TRUE when the controls hold a sibling pattern that does not compile
+    # (regex_compiles(), the test apply and codegen use). Such a rule would be
+    # skipped on export, so it is refused at entry instead.
+    pattern_invalid_r <- shiny::reactive({
+      pat <- sibling_pattern_r()
+      !is.na(pat) && !regex_compiles(pat)
+    })
+
     # Columns the pattern reaches, or NULL for an invalid regex.
     pattern_cols_r <- shiny::reactive({
       pat <- sibling_pattern_r()
       d <- data_r()
+      if (pattern_invalid_r()) return(NULL)
       if (is.na(pat) || is.null(d)) return(character(0))
-      suppressWarnings(tryCatch(grep(pat, names(d), value = TRUE),
-                                error = function(e) NULL))
+      grep(pat, names(d), value = TRUE)
     })
 
     # What the sibling choice covers, named in plain words.
@@ -231,8 +247,10 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
       if (is.null(v)) return(NULL)
       ops <- normalize_ops_join(input$ops)
       if (!nzchar(ops)) return(NULL)
+      # An invalid typed pattern yields NO draft (not a quiet single-column
+      # rule): the add button refuses it and the preview says why.
+      if (pattern_invalid_r()) return(NULL)
       pattern  <- sibling_pattern_r()
-      if (is.null(pattern_cols_r())) pattern <- NA_character_
       siblings <- isTRUE(input$apply_siblings) && !is.na(pattern)
       if (!siblings) pattern <- NA_character_
       now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
@@ -303,6 +321,11 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
       if (is.null(data_r())) {
         return(empty_state("Load a dataset on the Data tab to preview."))
       }
+      if (pattern_invalid_r()) {
+        return(empty_state(paste0(
+          "The sibling pattern is not a valid regular expression. Fix it, or ",
+          "untick \"Also apply to sibling columns\", to see what would change.")))
+      }
       r <- draft_rule_r()
       if (is.null(r)) {
         return(empty_state(paste0(
@@ -335,6 +358,15 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
     })
 
     shiny::observeEvent(input$add_rule, {
+      if (pattern_invalid_r()) {
+        shiny::showNotification(
+          sprintf(paste0("Not added: the sibling pattern \"%s\" is not a valid ",
+                         "regular expression. Fix the pattern, or untick ",
+                         "\"Also apply to sibling columns\"."),
+                  sibling_pattern_r()),
+          type = "error", duration = 8)
+        return()
+      }
       r <- draft_rule_r()
       if (is.null(r)) {
         shiny::showNotification(

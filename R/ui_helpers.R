@@ -151,6 +151,26 @@ card_header_help <- function(title, ...) {
 #' in the same state. Do NOT render `DT::datatable(tibble(message = ...))`:
 #' DT draws a header row with the literal column name "message" and a sort
 #' arrow, which reads as an unfinished placeholder.
+#' Readable title for a validation or warning class name.
+#'
+#' Renderers look class names up in a fixed vector of titles. A plain
+#' `titles[[nm]]` throws "subscript out of bounds" on a name the vector does
+#' not have, so a class added to a validator later would crash the panel that
+#' shows it. This returns the known title, or a readable fallback built from
+#' the class name itself ("invalid_sibling_pattern" -> "Invalid sibling
+#' pattern").
+#'
+#' @param nm     class name (single string).
+#' @param titles named character vector of known titles.
+#' @return single string.
+issue_class_title <- function(nm, titles = character(0)) {
+  nm <- as.character(nm)
+  if (length(nm) != 1 || is.na(nm) || !nzchar(nm)) return("Other issue")
+  if (nm %in% names(titles)) return(unname(titles[nm][1]))
+  words <- gsub("[_.]+", " ", nm)
+  paste0(toupper(substr(words, 1, 1)), substring(words, 2))
+}
+
 empty_state <- function(text) {
   shiny::div(class = "text-muted fst-italic py-2", text)
 }

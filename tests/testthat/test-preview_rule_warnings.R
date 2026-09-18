@@ -8,6 +8,7 @@ source(file.path("..", "..", "R", "ui_helpers.R"))
 source(file.path("..", "..", "R", "string_helpers.R"))
 source(file.path("..", "..", "R", "recat_helpers.R"))
 source(file.path("..", "..", "R", "rule_warnings.R"))
+source(file.path("..", "..", "R", "export_bundle.R"))
 source(file.path("..", "..", "R", "mod_preview_export.R"))
 
 .html <- function(x) as.character(htmltools::renderTags(x)$html)
@@ -145,10 +146,15 @@ test_that("server without a recat proxy still checks the recodes", {
 }
 
 test_that("drift warnings carry the normalization order note", {
+  # exact, so the case change is a real WARNING: trimmed_ci ignores case, and
+  # its drift is only a note (which carries no normalization-order hint).
   r <- .rule("drink1", "expresso", "espresso")
+  r$match_type <- "exact"
+  r$rule_id <- recode_rule_id("drink1", "exact", "expresso")
   r$norm_spec <- ""
   w <- collect_rule_warnings(.df, r, normalizations = .norm("drink1", "uppercase"))
   expect_true("norm_spec_drift" %in% w$kind)
+  expect_identical(w$severity[w$kind == "norm_spec_drift"], "warning")
   h <- .html(rule_warnings_ui(w))
   expect_match(h, "Normalizations are applied before the recodes", fixed = TRUE)
 })
@@ -176,4 +182,76 @@ test_that("normalizations alone are enough to show the panel", {
       expect_equal(nrow(rule_warnings_r()), 0L)
       expect_match(output$rule_warnings$html, "No problems found", fixed = TRUE)
     })
+})
+
+
+# --- Notes (severity "note") vs warnings --------------------------------------
+#
+# Stamp-only findings the rule's match type already ignores are notes: they
+# cannot change the result, so they are not counted as rules that did less
+# than expected, and they sit in a quiet collapsed block of their own.
+
+.w <- function(kind, message, severity) {
+  tibble::tibble(kind = kind, id = "r1", target = "drink1", message = message,
+                 n_before = NA_integer_, n_after = NA_integer_,
+                 severity = severity)
+}
+
+test_that("notes alone keep the all-clear line and add a collapsed notes block", {
+  w <- .w("norm_spec_drift", "Stamp differs but trimmed_ci ignores it.", "note")
+  h <- .html(rule_warnings_ui(w))
+  expect_match(h, "No problems found", fixed = TRUE)
+  expect_false(grepl("alert-warning", h, fixed = TRUE))
+  expect_false(grepl("did less than expected", h, fixed = TRUE))
+  expect_match(h, "rs-rule-notes", fixed = TRUE)
+  expect_match(h, "1 note: stamp differences that cannot change the result",
+               fixed = TRUE)
+  expect_match(h, "Stamp differs but trimmed_ci ignores it.", fixed = TRUE)
+  # Collapsed: a <details> without the open attribute.
+  expect_match(h, "<details class=\"rs-guide-note\">", fixed = TRUE)
+})
+
+test_that("warnings are counted without the notes, which are listed apart", {
+  w <- dplyr::bind_rows(
+    .w("recode_no_match", "Rule A did nothing.", "warning"),
+    .w("norm_spec_drift", "Note one.", "note"),
+    .w("norm_spec_unstamped", "Note two.", "note"))
+  h <- .html(rule_warnings_ui(w))
+  expect_match(h, "1 rule did less than expected.", fixed = TRUE)
+  expect_match(h, "2 notes: stamp differences", fixed = TRUE)
+  expect_false(grepl("No problems found", h, fixed = TRUE))
+  # The yellow box holds the one warning only.
+  box <- regmatches(h, regexpr("alert-warning.*?</div>", h))
+  expect_match(box, "Rule A did nothing.", fixed = TRUE)
+  expect_false(grepl("Note one.", box, fixed = TRUE))
+  # The normalization-order hint belongs to drift WARNINGS; a note is not one.
+  expect_false(grepl("Normalizations are applied before the recodes", h,
+                     fixed = TRUE))
+})
+
+test_that("a tibble without severity, or an unknown severity, counts as warnings", {
+  w <- .w("recode_no_match", "Old-style row.", "warning")
+  w$severity <- NULL
+  h <- .html(rule_warnings_ui(w))
+  expect_match(h, "1 rule did less than expected.", fixed = TRUE)
+  w2 <- .w("recode_no_match", "Odd severity.", "something-new")
+  expect_match(.html(rule_warnings_ui(w2)), "1 rule did less than expected.",
+               fixed = TRUE)
+})
+
+test_that("note text is escaped", {
+  h <- .html(rule_warnings_ui(.w("norm_spec_drift", "<b>x</b>", "note")))
+  expect_false(grepl("<b>x</b>", h, fixed = TRUE))
+  expect_match(h, "&lt;b&gt;x&lt;/b&gt;", fixed = TRUE)
+})
+
+test_that("a real neutral stamp change reaches the panel as a note", {
+  r <- .rule("drink1", "latte", "Latte")
+  r$norm_spec <- ""
+  w <- collect_rule_warnings(.df, r, normalizations = .norm("drink1", "uppercase"))
+  expect_identical(w$kind, "norm_spec_drift")
+  expect_identical(w$severity, "note")
+  h <- .html(rule_warnings_ui(w))
+  expect_match(h, "No problems found", fixed = TRUE)
+  expect_match(h, "1 note:", fixed = TRUE)
 })

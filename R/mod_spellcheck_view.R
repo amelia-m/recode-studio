@@ -226,11 +226,25 @@ list_discipline_dicts <- function() {
   files[order(names(files))]
 }
 
+#' Load the en_US Hunspell dictionary with extra words. Its own function so
+#' tests can stand in a loader that fails (the module looks it up by name).
+.hunspell_loader <- function(add_words) {
+  hunspell::dictionary(lang = "en_US", add_words = add_words)
+}
+
 #' Build a Hunspell dictionary from the three base tiers plus any selected
 #' discipline dictionaries.
 #'
+#' en_US only, with no fallback. hunspell's "default" dictionary IS en_US, so
+#' the old fallback (retry without a language) loaded the same file a second
+#' time and could never succeed where the first attempt failed. When en_US
+#' cannot load, this stops with a plain-language reason and the Spellcheck
+#' tab says spellcheck is unavailable.
+#'
 #' @param discipline_paths Character vector of discipline file paths to include.
-.build_hunspell <- function(discipline_paths = character(0)) {
+#' @param loader function(add_words) returning a hunspell dictionary.
+.build_hunspell <- function(discipline_paths = character(0),
+                            loader = .hunspell_loader) {
   paths <- .dict_paths()
   extra_words <- unique(c(
     .read_dict_terms(paths$seed),
@@ -239,24 +253,12 @@ list_discipline_dicts <- function() {
     unlist(lapply(discipline_paths, .read_dict_terms), use.names = FALSE)
   ))
   tryCatch(
-    hunspell::dictionary(lang = "en_US", add_words = extra_words),
-    error = function(e_en) {
-      tryCatch(
-        hunspell::dictionary(add_words = extra_words),
-        error = function(e_default) {
-          stop(
-            sprintf(
-              paste0(
-                "Hunspell dictionary unavailable (en_US and default). ",
-                "en_US error: %s; default error: %s"
-              ),
-              conditionMessage(e_en),
-              conditionMessage(e_default)
-            ),
-            call. = FALSE
-          )
-        }
-      )
+    loader(extra_words),
+    error = function(e) {
+      stop(sprintf(paste0(
+        "the English (en_US) dictionary could not be loaded (%s). Reinstall ",
+        "the hunspell package, which ships it, then restart the app."),
+        conditionMessage(e)), call. = FALSE)
     }
   )
 }
@@ -282,12 +284,14 @@ mod_spellcheck_view_ui <- function(id) {
       shiny::tags$small(shiny::tags$em(
         "Click any blue suggestion to replace the flagged word in that value. Type into the 'Other' box for your own correction. '+ Dict' adds the flagged token to the chosen dictionary tier."
       )),
-      # Name the match type where the rule is created. Keep in step with the
-      # Browse values tab's wording.
+      # Name the match type where the rule is created. It differs from Browse
+      # values on purpose: a Spellcheck rule is exact (see .apply_pick()).
       help_line(shiny::tags$em(
-        "Rules created here match with ", shiny::tags$code("trimmed_ci"),
-        ": case and surrounding spaces are ignored. Change that per rule on ",
-        "the Recodes tab.")),
+        "Rules created here match with ", shiny::tags$code("exact"),
+        ": only the value exactly as it is written, so a differently cased ",
+        "copy of it elsewhere in the column keeps its own casing. A ",
+        "Spellcheck rule cannot be switched to ", shiny::tags$code("regex"),
+        ".")),
       shiny::fluidRow(
         shiny::column(6,
           shiny::selectizeInput(
@@ -427,6 +431,10 @@ mod_spellcheck_view_server <- function(id, shared_state,
 
     dict_version <- shiny::reactiveVal(0L)
     spellcheck_error <- shiny::reactiveVal(NULL)
+    # Set once the en_US dictionary has failed to load. Nothing a user does on
+    # this tab (a discipline, a dictionary word) can make it load, so no
+    # second attempt is made in this session.
+    dict_unavailable <- shiny::reactiveVal(FALSE)
 
     # Populate / refresh the discipline selector. Bumping dict_version after
     # an import re-scans the folder so the new file appears immediately.
@@ -473,6 +481,7 @@ mod_spellcheck_view_server <- function(id, shared_state,
 
     hun_r <- shiny::reactive({
       dict_version()
+      if (shiny::isolate(dict_unavailable())) return(NULL)
       tryCatch(
         {
           hun <- .build_hunspell(
@@ -482,11 +491,10 @@ mod_spellcheck_view_server <- function(id, shared_state,
           hun
         },
         error = function(e) {
-          msg <- paste("Spellcheck unavailable:", conditionMessage(e))
-          if (!identical(spellcheck_error(), msg)) {
-            shiny::showNotification(msg, type = "warning", duration = 10)
-          }
+          msg <- paste0("Spellcheck is unavailable: ", conditionMessage(e))
+          shiny::showNotification(msg, type = "warning", duration = 10)
           spellcheck_error(msg)
+          dict_unavailable(TRUE)
           NULL
         }
       )
@@ -585,9 +593,14 @@ mod_spellcheck_view_server <- function(id, shared_state,
       v <- selected_var_r()
       if (is.null(v)) return()
       # The flag is one token inside the value, and so is the correction: the
-      # rule still claims the whole cell (trimmed_ci on the whole value), but
-      # its new value is the old one with only that token replaced. Using the
-      # bare correction as the new value would drop every other word.
+      # rule still claims the whole cell, but its new value is the old one
+      # with only that token replaced. Using the bare correction as the new
+      # value would drop every other word.
+      #
+      # match_type is `exact`, on the value exactly as it appears: the new
+      # value carries THIS value's casing and spacing, so a trimmed_ci rule
+      # recased every differently cased copy of it to match (upstream
+      # item 17; the Recodes editor refuses switching it to regex).
       old_val <- df$value[i]
       tok     <- df$flagged_token[i]
       n_occ   <- spell_token_count(old_val, tok)
@@ -605,11 +618,11 @@ mod_spellcheck_view_server <- function(id, shared_state,
       }
       now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
       new_rule <- tibble::tibble(
-        rule_id           = recode_rule_id(v, "trimmed_ci", old_val),
+        rule_id           = recode_rule_id(v, "exact", old_val),
         variable          = v,
         apply_to_siblings = FALSE,
         sibling_pattern   = NA_character_,
-        match_type        = "trimmed_ci",
+        match_type        = "exact",
         old_value         = old_val,
         new_value         = new_val,
         action            = "recode",

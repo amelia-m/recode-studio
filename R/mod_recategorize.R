@@ -15,6 +15,98 @@
 # testable without Shiny.
 # =============================================================================
 
+# validate_recat() classes that make a rule match nothing: a rule carrying
+# any of these is refused by Add instead of being stored.
+.RECAT_REFUSE_CLASSES <- c("invalid_match_type", "invalid_regex",
+                           "no_include_terms", "invalid_sibling_pattern")
+
+# Titles for the validate_recat() classes. A class missing here still renders,
+# under issue_class_title()'s fallback.
+.RECAT_ISSUE_TITLES <- c(
+  invalid_match_type      = "Unrecognised match type",
+  invalid_regex           = "Regex term is not a valid regular expression",
+  no_include_terms        = "No include terms",
+  invalid_sibling_pattern = "Sibling pattern is not a valid regular expression",
+  duplicate_ids           = "Same rule id twice",
+  missing_columns         = "Column not in the loaded data",
+  no_columns              = "No column to read")
+
+#' Why Add must refuse a recat rule, or NULL when it may be added.
+#'
+#' Pure. Runs validate_recat() on the one rule and reports the classes that
+#' make a rule match nothing (`.RECAT_REFUSE_CLASSES`), in plain language.
+#'
+#' @param rule one-row recat rule tibble.
+#' @return NULL, or a single notification string naming every problem.
+recat_add_refusal <- function(rule) {
+  if (is.null(rule) || !is.data.frame(rule) || nrow(rule) == 0) return(NULL)
+  iss <- validate_recat(rule)
+  bits <- character(0)
+  if (nrow(iss$invalid_match_type) > 0) {
+    bits <- c(bits, sprintf("the match type '%s' is not one of %s",
+                            iss$invalid_match_type$value[1],
+                            paste(RECAT_MATCH_TYPES, collapse = " / ")))
+  }
+  if (nrow(iss$invalid_regex) > 0) {
+    bits <- c(bits, sprintf("%s not a valid regular expression: %s",
+                            if (nrow(iss$invalid_regex) == 1) "this term is"
+                            else "these terms are",
+                            paste0("'", iss$invalid_regex$value, "'",
+                                   collapse = ", ")))
+  }
+  if (nrow(iss$no_include_terms) > 0) {
+    bits <- c(bits, "it has no include terms")
+  }
+  if (nrow(iss$invalid_sibling_pattern) > 0) {
+    bits <- c(bits, sprintf("the sibling pattern '%s' is not a valid regular expression",
+                            iss$invalid_sibling_pattern$value[1]))
+  }
+  if (length(bits) == 0) return(NULL)
+  paste0("Rule not added: ", paste(bits, collapse = "; "),
+         ". As written it would match nothing.")
+}
+
+#' Plain-language list of validate_recat() issues for the session's rules.
+#'
+#' Pure (tags only). NULL when there are no rules; a quiet all-clear line when
+#' there are no issues; otherwise a warning box, one entry per class, with the
+#' count. Every value is passed as text, so it is escaped.
+#'
+#' @param issues named list from validate_recat(), or NULL.
+recat_issues_ui <- function(issues) {
+  if (is.null(issues)) return(NULL)
+  shown <- issues[vapply(issues, function(x) is.data.frame(x) && nrow(x) > 0,
+                         logical(1))]
+  if (length(shown) == 0) {
+    return(shiny::div(class = "small text-muted mb-2 rs-recat-issues-ok",
+                      "No problems found in the recategorization rules."))
+  }
+  col_or <- function(x, nm) if (nm %in% names(x)) as.character(x[[nm]])
+                            else rep(NA_character_, nrow(x))
+  shiny::div(
+    class = "alert alert-warning rs-recat-issues", role = "alert",
+    shiny::strong("Check these recategorization rules:"),
+    shiny::tags$ul(class = "mb-0", lapply(names(shown), function(nm) {
+      x <- shown[[nm]]
+      out_col <- col_or(x, "out_col"); category <- col_or(x, "category")
+      value   <- col_or(x, "value");   detail   <- col_or(x, "detail")
+      shiny::tags$li(
+        shiny::strong(sprintf("%s (%d)",
+                              issue_class_title(nm, .RECAT_ISSUE_TITLES),
+                              nrow(x))), ": ",
+        lapply(seq_len(nrow(x)), function(i) shiny::tagList(
+          if (i > 1) "; ",
+          if (!is.na(out_col[i]) || !is.na(category[i])) shiny::tagList(
+            shiny::tags$code(sprintf("%s = %s",
+                                     ifelse(is.na(out_col[i]), "?", out_col[i]),
+                                     ifelse(is.na(category[i]), "?", category[i]))),
+            " "),
+          if (!is.na(value[i])) shiny::tagList(shiny::tags$code(value[i]), " "),
+          if (!is.na(detail[i])) detail[i])))
+    }))
+  )
+}
+
 mod_recategorize_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::card(
@@ -204,6 +296,7 @@ mod_recategorize_ui <- function(id) {
           shiny::actionButton(ns("clear_all"), "Clear all",
             class = "btn btn-sm btn-outline-danger"))
       ),
+      shiny::uiOutput(ns("rules_issues")),
       shiny::uiOutput(ns("rules_tbl_ui")),
 
       shiny::hr(),
@@ -294,8 +387,16 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
         shiny::showNotification("Select a variable first.", type = "warning")
         return()
       }
-      pat <- suggest_sibling_pattern(v[1], names(d))
-      if (is.na(pat)) {
+      # Built by suggest_sibling_pattern(), never typed, but checked the same
+      # way as a typed pattern before it is used (clean, then compile).
+      pat <- clean_sibling_pattern(suggest_sibling_pattern(v[1], names(d)))
+      if (length(pat) == 1 && !is.na(pat) && !regex_compiles(pat)) {
+        shiny::showNotification(
+          sprintf("The sibling pattern '%s' is not a valid regular expression.",
+                  pat), type = "error")
+        return()
+      }
+      if (length(pat) != 1 || is.na(pat)) {
         shiny::showNotification(
           "No sibling family found for that variable.", type = "warning")
         return()
@@ -615,6 +716,11 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
           "Add at least one INCLUDE term.", type = "error")
         return()
       }
+      refusal <- recat_add_refusal(r)
+      if (!is.null(refusal)) {
+        shiny::showNotification(refusal, type = "error", duration = 10)
+        return()
+      }
       recat_proxy$add(r)
       shiny::showNotification("Rule added.", type = "message", duration = 2)
     })
@@ -636,6 +742,14 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       }
       DT::DTOutput(ns("rules_tbl"))
     })
+
+    # validate_recat() over the session's rules, against the loaded data.
+    recat_issues_r <- shiny::reactive({
+      r <- recat_proxy$get()
+      if (is.null(r) || nrow(r) == 0) return(NULL)
+      validate_recat(r, data = shared_state$data)
+    })
+    output$rules_issues <- shiny::renderUI(recat_issues_ui(recat_issues_r()))
 
     output$rules_tbl <- DT::renderDT({
       r <- recat_proxy$get()
