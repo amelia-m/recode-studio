@@ -203,12 +203,11 @@ This repo only:
 
 ## 6. Open questions and follow-ups
 
-1. **cspell could not be run.** It is not installed on the development machine
-   and no agent was allowed to install it, so the repo's "cspell is clean" rule
-   is unverified for everything added in September. New test fixtures
-   deliberately use misspellings that may need entries in
-   `.cspell/example-typos.txt`. Needs a decision on installing cspell (via npx
-   or globally) to check.
+1. ~~**cspell could not be run.**~~ Resolved 2026-09-21: run once with the
+   owner's approval via `npx cspell lint`. It found 203 flags (44 distinct
+   words), all either deliberate test-fixture misspellings (added to
+   `.cspell/example-typos.txt`) or real technical terms and test identifiers
+   (added to `cspell.json`). Now 0 issues in 58 files.
 2. ~~**Should the shared defects in section 4 be fixed in this repo?**~~
    Answered yes, and done 2026-09-16: section 4 items 1 through 6 are fixed
    here. Items 1 through 5 still exist upstream.
@@ -368,7 +367,5 @@ Questions still waiting for the owner:
   cocktails (alcohol) dataset acceptable for a public demo; should the
   free-text classifier stop flagging date, licence-number and image-URL
   columns as free text?
-- May cspell be run once with `npx cspell lint` (downloads cspell into the
-  npx cache; changes nothing in the repo)?
 - When should `shared-defect-fixes`, `text-tools` and `upstream-followups`
   be merged into `main`?
