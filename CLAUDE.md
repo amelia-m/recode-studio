@@ -739,6 +739,20 @@ writes is the stopword tier files.
 - **Set `RENV_CONFIG_SYNCHRONIZED_CHECK=FALSE` for local `Rscript` runs.**
   renv's startup synchronized check can take minutes on every `Rscript` from
   the repo root; the variable skips it and changes nothing else.
+- **Positron's "Install <pkg>" button in the error pane bypasses renv.** It
+  runs `install.packages()` into `.libPaths()[1]`, which under an active renv
+  project IS the project library, so the package appears, the app starts, and
+  the reason restore left it unusable can no longer be seen. Seen 2026-09-04
+  on a fresh clone: `renv::restore()` reported shiny installed, `runApp()`
+  said "no package called 'shiny'", the button was clicked, and afterwards
+  every package in the library had a DESCRIPTION and `renv::repair()` found
+  nothing. Assumed cause: a broken link from the renv cache for that one
+  package; not checked, because the button overwrote the evidence. The check
+  that would settle it next time, BEFORE clicking anything: list the project
+  library and look for package directories with no DESCRIPTION, then
+  `renv::repair()`. The README says this under Quick start. Also harmless:
+  `renv::status()` listing `renv` itself as used but not installed (it loads
+  from its own sandbox, not the project library).
 - **Known-harmless console noise**, don't chase it: httpuv
   `wsconn_address ... not found` on session close; a jsonlite `keep_vec_names`
   notice triggered by DT; bslib's bootstrap JS copy failing with
@@ -870,6 +884,12 @@ CSV, R or text.
 - Optional: expand the free-text heuristic to let the user override a column's
   candidate flag manually.
 - Optional: README screenshot / demo GIF (capture from a running app).
+- **For Amelia:** the coworker whose first-run restore failed on 2026-09-04
+  (data.table / bit64 binaries gone from CRAN for R 4.6) has a library that
+  matches the bumped lockfile only once she pulls `main` at or after commit
+  `6686cd0`. Until then her `renv::status()` reports those packages out of
+  sync, and she must not run `renv::snapshot()`. Ask her to `git pull` and
+  run `renv::status()` once; "No issues found" closes this item.
 - Defects present in both this repo and upstream, loose ends from the
   September sync, and open decisions are tracked in
   [docs/upstream-port-candidates.md](docs/upstream-port-candidates.md)
