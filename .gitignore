@@ -25,3 +25,6 @@ tmp_*
 # Exported outputs the user generates locally
 recodes_master.csv
 recode_*.R
+
+# Agent scratch space (drafts, review findings, contracts)
+_scratch/
