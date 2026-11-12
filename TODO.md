@@ -273,6 +273,55 @@ and whether Excel rewrites `updated_at` on a round trip.
   Four read sites. It was not given to the October fix agents, because it
   changes behaviour on an unconfirmed hypothesis; it belongs with whoever
   takes question 8.
+### From the spellcheck and clusters fix agent, 2026-11-12
+
+- **`PAIRWISE_CLUSTER_CHAR_CAP = 40000` is provisional**, a judgement read off
+  measurements rather than a measured constant, and the code comment says so.
+  The owner decides whether 40,000 total characters is the right budget,
+  whether it should also apply to `jw`, `cosine` and `jaccard` at some much
+  larger value, and whether the taxonomy matcher should inherit the
+  1,000-value cap as well as the character budget. The measurements that set
+  it: the documented supported workload (1,000 values of 6 to 18 characters)
+  is 6,000 to 18,000 characters; the pathological range starts at 64,000
+  (25 s) and is severe at 128,000 (217 s) for `osa`. The cap covers `osa`,
+  `lv` and `lcs` only, because at the same shape `jw` was 0.44 s, `cosine`
+  0.09 s, `jaccard` 0.06 s and `soundex` 0.02 s: a flat budget would throttle
+  those by a factor of 30 to 400 for no measured reason.
+- **The taxonomy matcher's value COUNT is left uncapped**, deliberately: 1,000
+  values against the built-in 51-term list measured 0.17 s, so borrowing the
+  1,000-value cap would stop matching most of a large column for no gain. Its
+  character budget IS now applied to both sides, which took the 20 x 20 at
+  6,400 characters case from 229.66 s to 6.98 s. Owner's call if that split is
+  wrong.
+- **Every cluster timing in that agent's report predates the removal of the
+  self-comparison.** After integration the budget should admit about half the
+  work it admits today, so it stays conservative rather than becoming tight.
+  The check: re-run `_scratch/fixes/c/measure_after_cap.R` and
+  `measure_by_algorithm.R` on the integrated branch.
+- **`_scratch/fixes/c/shadow-lib` holds 104 directory junctions** into that
+  worktree's renv library, created to reproduce a missing `wordcloud2` without
+  uninstalling anything. Nothing tracked, and both Git Bash `rm -rf` and
+  PowerShell 7 `Remove-Item -Recurse` unlink rather than follow, but a
+  recursive delete with older tooling could in principle follow a junction
+  into the library, and that library's package files are themselves links into
+  the shared renv cache. Remove the links only, not their targets:
+  `foreach ($d in Get-ChildItem _scratch/fixes/c/shadow-lib -Directory) {
+  [System.IO.Directory]::Delete($d.FullName, $false) }`. Not done, because it
+  is a delete. Rebuild it when needed with
+  `Rscript _scratch/fixes/c/make_shadow_lib.R wordcloud2`.
+- A UTF-8 BOM in a dictionary file is not handled: the first term would keep
+  the BOM and never match a token. Pre-existing, and whether it causes a
+  visible problem was not checked. The check: write a BOM-prefixed word list
+  and print `.read_dict_terms()`'s first element.
+- An enormous dictionary upload is now read twice, once to validate and once
+  to copy, both fully into memory, bounded only by Shiny's own upload limit.
+  Not measured. A size cap would be a behaviour decision.
+- **A latin-1 encoded word list is now refused rather than silently mangled.**
+  A deliberate narrowing: such a user must re-save as UTF-8. The owner may
+  prefer a transcode instead.
+- Two commit messages on that branch carry a typo each (`893ede6` "is still
+  the owner is to decide", `a09f4b3` "confirming it is the owner is call").
+  Flagged rather than amended, since history is not rewritten without asking.
 - The documentation pass of 2026-11-12 deliberately left four areas alone
   because the three fix branches will change them: the whole testing table
   and its total, the `source_dataset` / `source_quarter` paragraph (a fix
