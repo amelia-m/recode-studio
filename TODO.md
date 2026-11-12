@@ -80,7 +80,34 @@ cross-repo items in [docs/upstream-port-candidates.md](docs/upstream-port-candid
     for a country-name taxonomy demo; is a cocktails (alcohol) dataset
     acceptable in a public demo; and should the free-text classifier stop
     flagging date, licence-number and image-URL columns as free text?
-13. **The development-story deck.** The draft task contract is at
+13. **The `norm_spec` stamp is ambiguous for some column names.** The stamp
+    joins targets with `|` and separates a column from its ops with `=`
+    (`drink1=uppercase|drink2=uppercase`), so a column whose own name contains
+    `=` or `|` produces a stamp that cannot be parsed back. Changing the format
+    changes what every existing rule file compares against, which could turn
+    quiet notes into drift warnings on files already in use. Change the format,
+    escape the delimiters, or accept it and document the limit?
+14. **Should codegen merge groups that can reach a shared column?** The overlap
+    WARNING tells the reader that two sibling patterns both reach a column and
+    that the blocks run in sequence. Merging those groups into one
+    `case_when()` would remove the hazard instead of reporting it, but
+    `CLAUDE.md` documents one block per `effective_pattern`, and merging
+    changes which rule claims a cell. Keep reporting, or change the contract?
+15. **The Recategorize preview only notices the form changing.** It records the
+    parsed form when computed and greys out while the form differs, but it does
+    not notice that the recode rules or the loaded dataset changed underneath
+    it, so a stale preview can read as current. `CLAUDE.md` documents the
+    snapshot behaviour deliberately, so widening it is a product call: should
+    the preview also invalidate on a rule-set or dataset change?
+16. **One sentence classifying this repository for unattended work.** The
+    global rules let agents build and change code without check-ins in a
+    personal repository, and allow the same in a work-adjacent project only
+    where the project profile records Amelia classifying it low risk for
+    unattended work, quoted with the date. This repo is public, domain-neutral
+    and holds no work data, but it was spun out of a work pipeline, so an agent
+    cannot settle which category it is. One sentence from Amelia would go into
+    `.agents/project-profile.md` verbatim.
+17. **The development-story deck.** The draft task contract is at
     `_scratch/contracts/2026-11-10-dev-story-deck-draft.md` and has four open
     decisions: whether agents may read this project's 8 session transcripts
     (several of those sessions read the private upstream work repository, so
