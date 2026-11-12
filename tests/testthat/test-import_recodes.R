@@ -1,16 +1,23 @@
 # Run with: testthat::test_dir("tests/testthat")
 #
 # Import guard: .check_incoming_recodes() on hand-built frames, so these tests
-# do not depend on read_recodes(). Upstream rule files name the provenance
-# column `source_quarter`, which is renamed. `norm_spec` is part of this
-# repo's schema: kept when present, and its ABSENCE is tolerated because files
-# written before it existed lack it. Anything else off-schema is refused.
+# do not depend on read_recodes(). An earlier tool wrote the provenance column
+# under a different name, which is renamed on import. `norm_spec` is part of
+# this repo's schema: kept when present, and its ABSENCE is tolerated because
+# files written before it existed lack it. Anything else off-schema is
+# refused.
 
 source(file.path("..", "..", "R", "ui_helpers.R"))
 source(file.path("..", "..", "R", "string_helpers.R"))
 source(file.path("..", "..", "R", "mod_import_recodes.R"))
 
 source(file.path("..", "..", "R", "rule_proxies.R"))
+
+# The alias pair under test, read from the module's own table rather than
+# spelled out again here: the literal is the contract with those files and
+# lives in one place (R/mod_import_recodes.R).
+.ALIAS_OLD <- names(.PROVENANCE_ALIASES)[[1]]
+.ALIAS_NEW <- unname(.PROVENANCE_ALIASES)[[1]]
 
 # A 14-column (current schema) rule.
 .one_rule <- function() {
@@ -59,20 +66,22 @@ test_that("an older file without norm_spec is accepted, unstamped", {
   expect_match(.import_adjust_msg(chk), "norm_spec")
 })
 
-test_that("source_quarter is renamed, with or without norm_spec", {
+test_that("a provenance alias is renamed, with or without norm_spec", {
   inc <- .old_rule()
-  names(inc)[names(inc) == "source_dataset"] <- "source_quarter"
+  names(inc)[names(inc) == .ALIAS_NEW] <- .ALIAS_OLD
   inc <- inc[, rev(names(inc))]  # column order must not matter
   chk <- .check_incoming_recodes(inc)
   expect_true(chk$ok)
   expect_true(chk$renamed)
   expect_named(chk$df, .schema)
   expect_equal(chk$df$source_dataset, "example")
+  # The note names both the name read and the name it was read as.
   msg <- .import_adjust_msg(chk)
-  expect_match(msg, "source_quarter")
+  expect_match(msg, .ALIAS_OLD, fixed = TRUE)
+  expect_match(msg, .ALIAS_NEW, fixed = TRUE)
 
   inc2 <- .one_rule()
-  names(inc2)[names(inc2) == "source_dataset"] <- "source_quarter"
+  names(inc2)[names(inc2) == .ALIAS_NEW] <- .ALIAS_OLD
   chk2 <- .check_incoming_recodes(inc2)
   expect_true(chk2$ok)
   expect_equal(chk2$df$norm_spec, "city=titlecase")
@@ -98,13 +107,13 @@ test_that("a missing required column is refused", {
   expect_match(.schema_error_msg(chk), "missing required column\\(s\\): action")
 })
 
-test_that("both source_dataset and source_quarter are refused", {
+test_that("a file carrying both the alias and its target is refused", {
   inc <- .one_rule()
-  inc$source_quarter <- "other"
+  inc[[.ALIAS_OLD]] <- "other"
   chk <- .check_incoming_recodes(inc)
   expect_false(chk$ok)
   expect_false(chk$renamed)
-  expect_equal(chk$extra, "source_quarter")
+  expect_equal(chk$extra, .ALIAS_OLD)
 })
 
 test_that("a NULL read is refused without error", {
@@ -147,7 +156,7 @@ test_that("a schema-exact normalizations frame is accepted", {
   expect_null(.import_adjust_msg(chk))
 })
 
-test_that("an off-schema normalizations frame is refused, source_quarter renamed", {
+test_that("an off-schema normalizations frame is refused, an alias renamed", {
   bad <- .one_norm()
   bad$ops <- NULL
   chk <- .check_incoming_normalizations(bad)
@@ -157,10 +166,11 @@ test_that("an off-schema normalizations frame is refused, source_quarter renamed
                "normalizations schema")
 
   q <- .one_norm()
-  names(q)[names(q) == "source_dataset"] <- "source_quarter"
+  names(q)[names(q) == .ALIAS_NEW] <- .ALIAS_OLD
   chk2 <- .check_incoming_normalizations(q)
   expect_true(chk2$ok)
   expect_true(chk2$renamed)
+  expect_equal(chk2$df$source_dataset, q[[.ALIAS_OLD]])
 })
 
 test_that("merge_incoming_rules resolves collisions in place", {

@@ -24,6 +24,12 @@
 # Empty today: `norm_spec` used to be here, and is now part of the schema.
 .RECODES_FOREIGN_DROP <- character(0)
 
+# Provenance columns that an earlier tool wrote under a different name, mapped
+# to this repo's name for the same field. A file carrying the old name is
+# renamed on import and the user is told; the literal is the contract with
+# those files, so it is defined here once and never spelled out again.
+.PROVENANCE_ALIASES <- c(source_quarter = "source_dataset")
+
 # Schema columns an incoming recodes file may lack. Their absence is not a
 # "missing required column": `norm_spec` was added after files already
 # existed, and an older file simply reads with an NA (unstamped) stamp.
@@ -32,13 +38,13 @@
 #' Check an incoming recodes frame against this repo's schema.
 #'
 #' Tolerates known divergences:
-#' - the provenance field is named `source_quarter` where this repo uses
-#'   `source_dataset`; that lone difference is renamed.
+#' - a provenance column written under an earlier tool's name
+#'   (`.PROVENANCE_ALIASES`) is renamed to this repo's name for it.
 #' - an optional column (`.RECODES_OPTIONAL_COLS`, i.e. `norm_spec`) may be
 #'   absent; it is added as NA. When present it is kept.
 #' - known-foreign columns (`.RECODES_FOREIGN_DROP`) are dropped.
-#' Anything else off-schema (an unknown extra, a missing required column, or
-#' both `source_dataset` and `source_quarter`) is refused.
+#' Anything else off-schema is refused: an unknown extra, a missing required
+#' column, or a file carrying both an alias and the name it maps to.
 #'
 #' @param inc tibble read by read_recodes(path, conform = FALSE).
 #' @return list(ok = lgl, df = tibble or NULL, renamed = lgl,
@@ -51,8 +57,8 @@
 
 #' Check an incoming normalizations frame against the normalizations schema.
 #'
-#' Same rules as `.check_incoming_recodes()`: `source_quarter` is renamed to
-#' `source_dataset`; anything else off-schema is refused.
+#' Same rules as `.check_incoming_recodes()`: a provenance alias is renamed;
+#' anything else off-schema is refused.
 #'
 #' @param inc tibble read by read_normalizations(path, conform = FALSE).
 #' @return the same list as `.check_incoming_recodes()`.
@@ -70,11 +76,16 @@
 
   got <- names(inc)
 
-  # Sibling-repo naming: source_quarter -> source_dataset.
-  if ("source_quarter" %in% got && !("source_dataset" %in% got)) {
-    names(inc)[names(inc) == "source_quarter"] <- "source_dataset"
-    got <- names(inc)
-    out$renamed <- TRUE
+  # An earlier tool's name for a provenance column (.PROVENANCE_ALIASES).
+  # Renamed only when the file does NOT already carry this repo's name: a file
+  # with both is off-schema and refused below.
+  for (old in names(.PROVENANCE_ALIASES)) {
+    new <- .PROVENANCE_ALIASES[[old]]
+    if (old %in% got && !(new %in% got)) {
+      names(inc)[names(inc) == old] <- new
+      got <- names(inc)
+      out$renamed <- TRUE
+    }
   }
 
   out$missing <- setdiff(expected, c(got, optional))
@@ -98,7 +109,10 @@
 .import_adjust_msg <- function(chk) {
   bits <- character(0)
   if (isTRUE(chk$renamed)) {
-    bits <- c(bits, "column 'source_quarter' was read as 'source_dataset'")
+    bits <- c(bits, paste(sprintf("column '%s' was read as '%s'",
+                                  names(.PROVENANCE_ALIASES),
+                                  unname(.PROVENANCE_ALIASES)),
+                          collapse = "; "))
   }
   if (length(chk$dropped) > 0) {
     bits <- c(bits, sprintf("column(s) %s were dropped",
