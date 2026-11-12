@@ -30,15 +30,103 @@
 #' - per-word affix flags after a slash (`espresso/SM` -> `espresso`)
 #' - the leading word-count line (a purely numeric line)
 #' - multi-word lines (the spellchecker checks single tokens only)
+#'
+#' TOTAL: never throws, whatever the file holds. A word list the user imported
+#' is only validated at import (`.check_dict_upload()`), and a file can also
+#' arrive in the folder by hand, so this has to survive a directory, a missing
+#' path and bytes that are not text. It used to throw "invalid multibyte
+#' string" on a line that is not valid UTF-8, which killed the whole
+#' Spellcheck tab for the session (security F7).
 .read_dict_terms <- function(path) {
-  if (!file.exists(path)) return(character(0))
-  x <- readLines(path, warn = FALSE, encoding = "UTF-8")
+  if (length(path) != 1L || is.na(path)) return(character(0))
+  if (!file.exists(path) || isTRUE(dir.exists(path))) return(character(0))
+  x <- tryCatch(suppressWarnings(readLines(path, warn = FALSE,
+                                           encoding = "UTF-8")),
+                error = function(e) NULL)
+  if (is.null(x) || length(x) == 0L) return(character(0))
+  # Lines that are not valid UTF-8 would make trimws(), tolower() and sub()
+  # throw. Drop just those: the rest of the file still reads.
+  x <- x[!is.na(x) & validUTF8(x)]
+  if (length(x) == 0L) return(character(0))
   x <- x[!startsWith(trimws(x), "#")]
   x <- tolower(trimws(x))
   x <- sub("/.*$", "", x)
   x <- x[!grepl("^[0-9]+$", x)]
   x <- x[!grepl("\\s", x)]
   unique(x[nzchar(x)])
+}
+
+#' Is this upload a plain-text word list the dictionary reader can use?
+#'
+#' A file renamed `.txt` is not a word list. Copying one in used to succeed
+#' and then break the Spellcheck tab for the whole session (security F7), so
+#' the bytes are checked BEFORE anything is written and the user gets a reason
+#' in plain language.
+#'
+#' @param src  path of the uploaded temp file.
+#' @param name the name the user uploaded it under, for the message.
+#' @return list(ok, message): `message` is the reason when `ok` is FALSE,
+#'   NA otherwise.
+.check_dict_upload <- function(src, name = basename(src)) {
+  fail <- function(msg) list(ok = FALSE, message = msg)
+  size <- suppressWarnings(file.size(src))
+  if (length(size) != 1L || is.na(size)) {
+    return(fail(sprintf("'%s' could not be read.", name)))
+  }
+  if (size == 0) {
+    return(fail(sprintf("'%s' is empty, so it holds no words.", name)))
+  }
+  bytes <- tryCatch(readBin(src, what = "raw", n = size),
+                    error = function(e) NULL)
+  if (is.null(bytes)) {
+    return(fail(sprintf("'%s' could not be read.", name)))
+  }
+  if (any(bytes == as.raw(0))) {
+    return(fail(sprintf(
+      paste0("'%s' is not a text file (it contains NUL bytes). A discipline ",
+             "dictionary is a plain .txt file with one word per line."),
+      name)))
+  }
+  text <- tryCatch(rawToChar(bytes), error = function(e) NULL)
+  if (is.null(text) || !validUTF8(text)) {
+    return(fail(sprintf(
+      paste0("'%s' is not valid UTF-8 text. Save it as UTF-8, one word per ",
+             "line, and import it again."),
+      name)))
+  }
+  list(ok = TRUE, message = NA_character_)
+}
+
+#' A free path in `dir` for a dictionary called `base`: `base.txt`, else
+#' `base_2.txt`, `base_3.txt` and so on.
+#'
+#' Never returns a path that exists. Uploading a file named `medical.txt` used
+#' to overwrite the committed dictionary of that name and report success
+#' (security F2); four bundled dictionaries were exposed.
+#'
+#' @return the path, or NULL when `max_tries` names are all taken.
+.dict_free_path <- function(dir, base, max_tries = 500L) {
+  dest <- file.path(dir, paste0(base, ".txt"))
+  k <- 1L
+  while (file.exists(dest)) {
+    k <- k + 1L
+    if (k > max_tries) return(NULL)
+    dest <- file.path(dir, sprintf("%s_%d.txt", base, k))
+  }
+  dest
+}
+
+#' The file name part of an upload, reduced to characters that are safe in a
+#' dictionary file name. Drops any directory part (a name can carry a path
+#' separator), and falls back to "imported" when nothing usable is left (a
+#' name that is empty, or has no letters or digits at all).
+.dict_base_name <- function(name) {
+  base <- tools::file_path_sans_ext(basename(as.character(name)))
+  base <- gsub("[^A-Za-z0-9_-]+", "_", base)
+  if (length(base) != 1L || is.na(base) || !grepl("[A-Za-z0-9]", base)) {
+    base <- "imported"
+  }
+  base
 }
 
 #' Write raw bytes to a file. Its own function so tests can stand in a writer
@@ -421,10 +509,19 @@ mod_spellcheck_view_server <- function(id, shared_state,
 
     dict_version <- shiny::reactiveVal(0L)
     spellcheck_error <- shiny::reactiveVal(NULL)
-    # Set once the en_US dictionary has failed to load. Nothing a user does on
-    # this tab (a discipline, a dictionary word) can make it load, so no
-    # second attempt is made in this session.
-    dict_unavailable <- shiny::reactiveVal(FALSE)
+    # Which dictionary selection the load last failed for (NULL: it never
+    # has). Nothing a user does without changing the selection can make that
+    # same load succeed, so it is not retried; CHANGING the selection does
+    # retry, because the failure can come from a selected discipline file
+    # rather than from en_US, and deselecting it has to bring the tab back.
+    # A flag that latched for the session left Spellcheck dead until restart
+    # (security F7).
+    dict_failed_for <- shiny::reactiveVal(NULL)
+
+    # The selection as a single comparable string.
+    .selection_key <- function(sel) {
+      paste(sort(as.character(sel %||% character(0))), collapse = "\n")
+    }
 
     # Populate / refresh the discipline selector. Bumping dict_version after
     # an import re-scans the folder so the new file appears immediately.
@@ -439,23 +536,40 @@ mod_spellcheck_view_server <- function(id, shared_state,
     })
 
     # Import a discipline dictionary: copy the uploaded .txt into
-    # dictionary/disciplines/, then refresh + auto-select it. Success is
-    # reported only once the copy has been read back and matches the upload
-    # (see .copy_file_verified()); otherwise nothing is selected.
+    # dictionary/disciplines/, then refresh + auto-select it.
+    #
+    # Two things have to hold before anything is written. The bytes must be a
+    # plain-text word list (.check_dict_upload(): a binary file renamed .txt
+    # used to be copied in and then break the tab for the session), and the
+    # destination name must be free (.dict_free_path(): an upload named
+    # medical.txt used to overwrite the committed dictionary of that name).
+    # Success is reported only once the copy has been read back and matches
+    # the upload (see .copy_file_verified()); otherwise nothing is selected.
     shiny::observeEvent(input$import_discipline, {
       f <- input$import_discipline
       if (is.null(f)) return()
-      dir <- .dict_paths()$disciplines
-      dir.create(dir, recursive = TRUE, showWarnings = FALSE)
-      base <- tools::file_path_sans_ext(basename(f$name))
-      base <- gsub("[^A-Za-z0-9_-]+", "_", base)
-      dest <- file.path(dir, paste0(base, ".txt"))
-      copied <- .copy_file_verified(f$datapath, dest)
-      if (!isTRUE(copied$ok)) {
+      refuse <- function(msg) {
         shiny::showNotification(
           sprintf("Import of '%s' failed: %s The dictionary was not added.",
-                  f$name, copied$message),
+                  f$name, msg),
           type = "error", duration = NULL)
+      }
+      checked <- .check_dict_upload(f$datapath, f$name)
+      if (!isTRUE(checked$ok)) {
+        refuse(checked$message)
+        return()
+      }
+      dir <- .dict_paths()$disciplines
+      dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+      base <- .dict_base_name(f$name)
+      dest <- .dict_free_path(dir, base)
+      if (is.null(dest)) {
+        refuse(sprintf("too many dictionaries are already named '%s'.", base))
+        return()
+      }
+      copied <- .copy_file_verified(f$datapath, dest)
+      if (!isTRUE(copied$ok)) {
+        refuse(copied$message)
         return()
       }
       dict_version(dict_version() + 1L)
@@ -465,26 +579,31 @@ mod_spellcheck_view_server <- function(id, shared_state,
         selected = unique(c(input$disciplines, dest))
       )
       n_terms <- length(.read_dict_terms(dest))
+      # Name the file that was written, not the name uploaded: they differ
+      # whenever the uploaded name was already taken.
       shiny::showNotification(
-        sprintf("Imported '%s' (%d terms).", base, n_terms), type = "message")
+        sprintf("Imported '%s' as %s (%d terms).", f$name, basename(dest),
+                n_terms),
+        type = "message")
     })
 
     hun_r <- shiny::reactive({
       dict_version()
-      if (shiny::isolate(dict_unavailable())) return(NULL)
+      selection <- input$disciplines %||% character(0)
+      key <- .selection_key(selection)
+      if (identical(shiny::isolate(dict_failed_for()), key)) return(NULL)
       tryCatch(
         {
-          hun <- .build_hunspell(
-            discipline_paths = input$disciplines %||% character(0)
-          )
+          hun <- .build_hunspell(discipline_paths = selection)
           spellcheck_error(NULL)
+          dict_failed_for(NULL)
           hun
         },
         error = function(e) {
           msg <- paste0("Spellcheck is unavailable: ", conditionMessage(e))
           shiny::showNotification(msg, type = "warning", duration = 10)
           spellcheck_error(msg)
-          dict_unavailable(TRUE)
+          dict_failed_for(key)
           NULL
         }
       )
