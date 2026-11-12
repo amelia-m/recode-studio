@@ -9,6 +9,12 @@ with their costs, what comparable packages do, a recommendation and what it
 assumes) is at `_scratch/decisions/memo.md`, with its seven read-only probe
 scripts beside it. It deliberately does NOT cover question 9.
 
+The deck's four decisions (question 18) are elaborated the same way in
+`_scratch/decisions/deck-decisions.md`, written 2026-11-12 at Amelia's request.
+It adds a fourth option to decision 1 that the draft contract does not list:
+read only the transcripts from sessions that never opened the upstream
+repository, decided by a mechanical search before any agent reads any of them.
+
 ## Waiting on Amelia
 
 1. ~~**Merge and push, once the defects are fixed.**~~ DONE 2026-11-12.
