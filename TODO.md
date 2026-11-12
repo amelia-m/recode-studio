@@ -273,6 +273,83 @@ and whether Excel rewrites `updated_at` on a round trip.
   Four read sites. It was not given to the October fix agents, because it
   changes behaviour on an unconfirmed hypothesis; it belongs with whoever
   takes question 8.
+### From the rule-flow UI fix agent, 2026-11-12
+
+- **`merge_recat_rules()` still matches the stored `recat_id`**, the same
+  stale-id class of bug that was fixed for recodes. Not in that agent's brief,
+  so untouched. Exposure assumed lower because recat ids are derived the same
+  way, but NOT checked whether a stale recat id is reachable through the UI.
+  The check: whether any path writes a `recat_id` that does not equal
+  `recat_rule_id()` of its own fields, plus a proxy-level `add()` test.
+- **The DT row-index assumption behind the new delete payload is reasoned, not
+  observed in a browser.** Button markup travels with its data row, so sorting
+  and paging should not misalign the index, and `input$tbl_cell_edit` already
+  treats `info$row` as the data index. The check: load the example dataset,
+  make three rules, sort the Recodes table by `old_value`, page forward, click
+  Delete and confirm the clicked rule is the one removed.
+- The hover-title cap is asserted on the emitted renderer, not executed: this
+  project has no JavaScript engine among its dependencies. The check: open a
+  table with a 6,400-character cell and read the rendered `title` attribute's
+  length in a browser.
+- `.parse_stamp()` compares in UTC. Both sides go through the same parse so
+  ordering is unaffected, but a stamp carrying a real offset other than `Z`
+  was not tested.
+- **`docs/review-2026-10-adversarial.md` item 13 states the defect
+  backwards.** Measured: a space-separated stamp LOSES to a `T`-separated one,
+  and an unparseable stamp WINS. The document says the opposite. Correct it
+  with the measurement in that agent's report.
+- Nobody ran the app through the UI for any of this work. Every claim rests on
+  the suite, the pure helpers and the before/after probes.
+- `.warn_recodes_missing_column()` lives in `mod_preview_export.R` only
+  because `rule_warnings.R` was not on that agent's file list. It probably
+  belongs with the other warning kinds.
+- Worth recording in `.agents/project-profile.md`: a fresh worktree has no
+  renv library (the library path is derived from the project directory and the
+  library is gitignored), so `renv::restore()` is the first step there. It is
+  link-only from the global cache, about 5 seconds, nothing fetched.
+
+### From the engine and codegen fix agent, 2026-11-12
+
+- **A bidi character in a COLUMN NAME still breaks the generated script.** The
+  bidi escaping added on 2026-11-12 covers string literals only. A column name
+  is emitted as a backticked token and R refuses escapes there: `` `a<U+202E>1` ``
+  gives "\uxxxx sequences not supported inside backticks". Fixing it means
+  emitting `df[["name"]]` instead of a backticked token, which changes the
+  shape of every generated block and would move the bundle's byte-identical
+  test. Sites: `.r_col_token()` in `string_helpers.R`, and the backticked
+  `` `%s` `` in `.recat_terms_code()` and `generate_recat_R()`. Needs a
+  decision.
+- **A bidi character in an emitted COMMENT is left raw**, deliberately. Such a
+  comment parses fine, so nothing breaks, but a bidi override in a comment can
+  visually reorder the code a human reviewer reads. Sites: the `# SKIPPED`
+  comments and the note comments on arms.
+- **Pre-existing, found while testing, not fixed: `cluster_strings()` crashes
+  on `cosine` (and `jaccard` for some inputs) when a value is shorter than
+  `q`.** stringdist returns NaN/NA and igraph refuses the adjacency matrix:
+  "Cannot create a graph object because the adjacency matrix contains NAs". A
+  single-character value with the default `q = 2` is enough. Confirmed
+  identical on the old code, so it is not a regression from the
+  self-comparison change. Callers drop blanks but not short values. Fix
+  direction: treat NA similarity as "not similar" before building the graph.
+- **Duplicate column names do NOT agree between the app and the script**, and
+  the test now pins both sides rather than an agreement that does not hold:
+  the app recodes the FIRST column of that name and says nothing, the script
+  errors with "Can't transform a data frame with duplicate names".
+  `read_dataset()` repairs duplicate names, so this is API-level only.
+- The `validUTF8()` guard in `cluster_strings()` was deliberately not added,
+  so the stringdist hang on invalid UTF-8 is untouched.
+- Not checked by that agent: the suite with `cld2` and `wordcloud2` present
+  (its worktree had neither, so it ran with 12 skips and 2150 baseline
+  assertions), `npx cspell`, and whether the measured TRE column-name length
+  threshold or the backtick escape refusal behave the same off Windows.
+- **A rule was broken and self-reported:** that agent ran
+  `git commit --amend --no-edit` to fold a trailing-whitespace fix into the
+  commit it had just made, which both the global rules and the constitution
+  put behind a confirmation. Nothing was lost (unpushed, seconds old, the only
+  difference a removed blank line), but the brief given to fix agents should
+  say explicitly that amending is never allowed, not only that history is not
+  rewritten.
+
 ### From the spellcheck and clusters fix agent, 2026-11-12
 
 - **`PAIRWISE_CLUSTER_CHAR_CAP = 40000` is provisional**, a judgement read off
