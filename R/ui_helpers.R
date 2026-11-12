@@ -145,12 +145,6 @@ card_header_help <- function(title, ...) {
   bslib::card_header(shiny::span(title, help_btn(..., title = title)))
 }
 
-#' Muted placeholder shown instead of a table that has nothing to show.
-#'
-#' Use this in a uiOutput next to the DTOutput, and have renderDT return NULL
-#' in the same state. Do NOT render `DT::datatable(tibble(message = ...))`:
-#' DT draws a header row with the literal column name "message" and a sort
-#' arrow, which reads as an unfinished placeholder.
 #' Readable title for a validation or warning class name.
 #'
 #' Renderers look class names up in a fixed vector of titles. A plain
@@ -171,9 +165,129 @@ issue_class_title <- function(nm, titles = character(0)) {
   paste0(toupper(substr(words, 1, 1)), substring(words, 2))
 }
 
+#' Muted placeholder shown instead of a table that has nothing to show.
+#'
+#' Use this in a uiOutput next to the DTOutput, and have renderDT return NULL
+#' in the same state. Do NOT render `DT::datatable(tibble(message = ...))`:
+#' DT draws a header row with the literal column name "message" and a sort
+#' arrow, which reads as an unfinished placeholder.
 empty_state <- function(text) {
   shiny::div(class = "text-muted fst-italic py-2", text)
 }
+
+#' JSON-encode a value for use inside inline JavaScript.
+#'
+#' A JSON string or number is also a valid JavaScript literal, and jsonlite
+#' escapes quotes, backslashes and control characters. Never build an inline
+#' handler by interpolating data into `'%s'`: escaping only the single quote
+#' leaves `"`, `<` and `\` free to break out (see the Gotchas in CLAUDE.md).
+.js_value <- function(x) {
+  as.character(jsonlite::toJSON(x, auto_unbox = TRUE))
+}
+
+#' Escape a whole attribute value.
+#'
+#' The browser decodes the entities before the JavaScript is parsed, so the
+#' script sees exactly what was built here, and a `"` in the data can no longer
+#' end the attribute. Use it on the finished handler string, not on the pieces.
+.attr_value <- function(x) {
+  as.character(htmltools::htmlEscape(x, attribute = TRUE))
+}
+
+
+# --- Per-row rule delete buttons ----------------------------------------------
+# The Recodes, Normalize and Recategorize tables each carry a Delete / Remove
+# button per rule row. Both halves of that round trip used to be unsafe:
+#
+#   * The button pasted the stored id straight into a quoted JavaScript string
+#     in the one table column DT does not escape. Rule ids come from imported
+#     CSVs and are never rewritten, so a crafted id ran as script.
+#   * The handler then deleted by matching that id string, so a duplicated or
+#     blank id removed every row sharing it, and an NA id matched nothing
+#     under `!=` and left an all-NA row behind, which rode into the export.
+#
+# The payload now names the row POSITION and carries the stored id only as a
+# cross-check, and everything that reaches the markup goes through
+# `.js_value()` and then `.attr_value()`.
+
+#' The JavaScript one Delete button runs.
+#'
+#' Sends `{"row": <1-based row>, "id": <stored id, or null when missing>}` as a
+#' JSON string, which `.rule_delete_target()` parses server-side.
+#'
+#' @param input_id namespaced input id to set.
+#' @param row_idx  1-based row of the rule in the CURRENT rule set.
+#' @param id       the row's stored id, used only to detect a stale click.
+.rule_delete_js <- function(input_id, row_idx, id) {
+  payload <- .js_value(list(row = as.integer(row_idx), id = as.character(id)))
+  sprintf("Shiny.setInputValue(%s, JSON.stringify(%s), {priority: 'event'});",
+          .js_value(input_id), payload)
+}
+
+#' One row's Delete / Remove button, as an HTML string.
+#'
+#' Goes in the LAST column of its table, the only one with escaping turned off.
+#' The handler string is built from JSON-encoded values and then
+#' attribute-escaped whole, so no part of a rule id can end the attribute or
+#' close the script.
+#'
+#' @param label button text ("Delete", or "Remove" on the Normalize tab).
+#' @return one HTML string.
+.rule_delete_button <- function(input_id, row_idx, id, label = "Delete") {
+  sprintf('<button class="btn btn-xs btn-outline-danger" onclick="%s">%s</button>',
+          .attr_value(.rule_delete_js(input_id, row_idx, id)),
+          htmltools::htmlEscape(label))
+}
+
+#' Resolve a Delete payload to exactly ONE row of the current rule set.
+#'
+#' The payload is whatever the browser sent, so it is validated before use: a
+#' client can set any input value it likes. The row must be a single whole
+#' number inside the rule set, and the id it carries must still match the id
+#' stored at that row, which rejects a click on a button drawn before another
+#' tab added or removed a rule.
+#'
+#' Pure (no Shiny), so the three handlers share one implementation and it can
+#' be tested without a session.
+#'
+#' @param payload the raw input value from `.rule_delete_js()`.
+#' @param ids     stored ids of the current rule set, in row order.
+#' @return list(ok = lgl, row = integer or NA, message = chr or NULL). `row` is
+#'   usable only when `ok` is TRUE.
+.rule_delete_target <- function(payload, ids) {
+  bad <- function(msg) list(ok = FALSE, row = NA_integer_, message = msg)
+  unknown <- paste0("That Delete button did not name a rule in this session. ",
+                    "Nothing was deleted.")
+  ids <- as.character(ids)
+  n <- length(ids)
+  if (n == 0) return(bad(unknown))
+  if (is.null(payload) || length(payload) != 1L) return(bad(unknown))
+  payload <- as.character(payload)
+  if (is.na(payload)) return(bad(unknown))
+
+  parsed <- tryCatch(jsonlite::fromJSON(payload), error = function(e) NULL)
+  if (!is.list(parsed)) return(bad(unknown))
+
+  raw_row <- parsed$row
+  if (is.null(raw_row) || length(raw_row) != 1L) return(bad(unknown))
+  row <- suppressWarnings(as.numeric(raw_row))
+  if (is.na(row) || row != floor(row) || row < 1 || row > n) {
+    return(bad(unknown))
+  }
+  row <- as.integer(row)
+
+  # A missing id round-trips as JSON null, which fromJSON() drops entirely.
+  want <- parsed$id
+  want <- if (is.null(want) || length(want) != 1L) NA_character_
+          else as.character(want)
+  if (!identical(want, ids[row])) {
+    return(bad(paste0(
+      "The rule list changed since that button was drawn, so nothing was ",
+      "deleted. Check the table and try again.")))
+  }
+  list(ok = TRUE, row = row, message = NULL)
+}
+
 
 #' DT column definitions that keep long cells to one readable line.
 #'
@@ -200,25 +314,6 @@ empty_state <- function(text) {
 #' entity such as `&am` off the end of the visible text. Never target a column
 #' that is unescaped generated markup.
 #'
-#' JSON-encode a value for use inside inline JavaScript.
-#'
-#' A JSON string or number is also a valid JavaScript literal, and jsonlite
-#' escapes quotes, backslashes and control characters. Never build an inline
-#' handler by interpolating data into `'%s'`: escaping only the single quote
-#' leaves `"`, `<` and `\` free to break out (see the Gotchas in CLAUDE.md).
-.js_value <- function(x) {
-  as.character(jsonlite::toJSON(x, auto_unbox = TRUE))
-}
-
-#' Escape a whole attribute value.
-#'
-#' The browser decodes the entities before the JavaScript is parsed, so the
-#' script sees exactly what was built here, and a `"` in the data can no longer
-#' end the attribute. Use it on the finished handler string, not on the pieces.
-.attr_value <- function(x) {
-  as.character(htmltools::htmlEscape(x, attribute = TRUE))
-}
-
 #' @param chars   Characters shown before cutting. Default 60.
 #' @param targets DataTables column targets: `"_all"` (default) or a vector of
 #'   0-based column indices.

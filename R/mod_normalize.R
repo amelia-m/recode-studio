@@ -426,10 +426,12 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
         cols <- tryCatch(.recode_cols(d, r[i, ]), error = function(e) character(0))
         if (length(cols) == 0) "(no column)" else paste(cols, collapse = ", ")
       }, character(1))
-      # norm_id is a 12-char hex hash, so it is safe inside the markup.
+      # A norm_id this app minted is a 12-char hex hash, but one read from an
+      # imported normalizations CSV is whatever the file said, so the button
+      # names the row position and escapes the whole handler
+      # (.rule_delete_button() in R/ui_helpers.R).
       r$remove <- vapply(seq_len(nrow(r)), function(i) {
-        sprintf('<button class="btn btn-xs btn-outline-danger" onclick="Shiny.setInputValue(\'%s\', \'%s\', {priority: \'event\'})">Remove</button>',
-                ns("delete_row"), r$norm_id[i])
+        .rule_delete_button(ns("delete_row"), i, r$norm_id[i], label = "Remove")
       }, character(1))
       r[, .NORMALIZE_TABLE_COLS]
     })
@@ -451,8 +453,17 @@ mod_normalize_server <- function(id, shared_state, selected_var_r,
         options = list(pageLength = 15))
     })
 
+    # One button, one row. `remove_ids()` above still removes every rule for a
+    # column, which is what the "remove for this column" control means; a row's
+    # Remove button must not reach a second rule that shares its id.
     shiny::observeEvent(input$delete_row, ignoreInit = TRUE, {
-      remove_ids(input$delete_row)
+      cur <- norms_proxy$get()
+      hit <- .rule_delete_target(input$delete_row, cur$norm_id)
+      if (!hit$ok) {
+        shiny::showNotification(hit$message, type = "warning", duration = 6)
+        return()
+      }
+      norms_proxy$set(cur[-hit$row, , drop = FALSE])
       shiny::showNotification("Normalization removed.", type = "message",
                               duration = 2)
     })

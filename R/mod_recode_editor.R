@@ -17,6 +17,28 @@
 # (variable, match_type, old_value); `variable` is locked in the editor.
 .RECODE_KEY_COLS <- c("variable", "match_type", "old_value")
 
+# What the apply_to_siblings cell accepts, after trimming, ignoring case. The
+# cell is free text in the editor, and `value %in% c("TRUE", "true", "T", "1")`
+# read every other entry as FALSE, so "yes" or "True " silently switched
+# sibling propagation OFF while the card said invalid entries are rejected.
+.RULE_FLAG_TRUE  <- c("true", "t", "1", "yes", "y")
+.RULE_FLAG_FALSE <- c("false", "f", "0", "no", "n")
+.RULE_FLAG_SHOWN_TRUE  <- "TRUE, true, T, 1, yes, y"
+.RULE_FLAG_SHOWN_FALSE <- "FALSE, false, F, 0, no, n"
+
+#' Read a yes/no cell entry. Pure.
+#'
+#' @param value the cell value as typed.
+#' @return TRUE, FALSE, or NA when the entry is neither (the caller refuses it;
+#'   NA is never written to the rule, which must stay a real logical).
+.as_rule_flag <- function(value) {
+  v <- tolower(trimws(as.character(value)))
+  if (length(v) != 1L || is.na(v)) return(NA)
+  if (v %in% .RULE_FLAG_TRUE)  return(TRUE)
+  if (v %in% .RULE_FLAG_FALSE) return(FALSE)
+  NA
+}
+
 #' Apply one cell edit from the Recodes table to a rule set. Pure (no Shiny).
 #'
 #' Why this exists: `rule_id` is a hash of the rule key. An edit to
@@ -85,9 +107,20 @@ apply_recode_edit <- function(rules, row, col, value,
     }
   }
 
+  if (col == "apply_to_siblings") {
+    flag <- .as_rule_flag(value)
+    if (is.na(flag)) {
+      return(out("refused", message = sprintf(paste0(
+        "Not changed: '%s' is not a yes or no. apply_to_siblings accepts %s ",
+        "for yes and %s for no (case does not matter). Sibling propagation ",
+        "is unchanged."),
+        value, .RULE_FLAG_SHOWN_TRUE, .RULE_FLAG_SHOWN_FALSE)))
+    }
+  }
+
   r <- rules
   if (col == "apply_to_siblings") {
-    r[[col]][row] <- value %in% c("TRUE", "true", "T", "1")
+    r[[col]][row] <- flag
   } else {
     r[[col]][row] <- value
   }
@@ -275,7 +308,7 @@ mod_recode_editor_ui <- function(id) {
           shiny::tags$small(shiny::tags$em(
             "Edit any cell directly. Use the delete buttons to remove rules. 'Validate' surfaces conflicts. ",
             shiny::tags$br(),
-            "match_type ∈ {exact, exact_ci, trimmed_ci, regex}; action ∈ {recode, delete}. Invalid entries are rejected."
+            "match_type ∈ {exact, exact_ci, trimmed_ci, regex}; action ∈ {recode, delete}; apply_to_siblings ∈ {TRUE, FALSE} (yes / no / 1 / 0 also read). Invalid entries are rejected."
           ))
         ),
         shiny::column(4, align = "right",
@@ -305,9 +338,12 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
         return(r[, .RECODE_EDITOR_COLS])
       }
       ns <- session$ns
+      # Names the row position, with the stored id only as a staleness check,
+      # and escapes the whole handler (.rule_delete_button() in
+      # R/ui_helpers.R). A rule id can be duplicated, blank or missing, and
+      # comes from an imported CSV.
       r$delete <- vapply(seq_len(nrow(r)), function(i) {
-        sprintf('<button class="btn btn-xs btn-outline-danger" onclick="Shiny.setInputValue(\'%s\', \'%s\', {priority: \'event\'})">Delete</button>',
-                ns("delete_row"), r$rule_id[i])
+        .rule_delete_button(ns("delete_row"), i, r$rule_id[i])
       }, character(1))
       r[, .RECODE_EDITOR_COLS]
     })
@@ -367,10 +403,17 @@ mod_recode_editor_server <- function(id, shared_state, rules_proxy) {
       }
     })
 
+    # Deletes the ONE row the button names. Matching on the id string removed
+    # every rule sharing a duplicated or blank id, and an NA id matched nothing
+    # under `!=`, which left an all-NA row in the set and in the export.
     shiny::observeEvent(input$delete_row, ignoreInit = TRUE, {
-      id_to_drop <- input$delete_row
       r <- rules_proxy$get()
-      rules_proxy$set(r[r$rule_id != id_to_drop, ])
+      hit <- .rule_delete_target(input$delete_row, r$rule_id)
+      if (!hit$ok) {
+        shiny::showNotification(hit$message, type = "warning", duration = 6)
+        return()
+      }
+      rules_proxy$set(r[-hit$row, , drop = FALSE])
       shiny::showNotification("Rule deleted.", type = "message", duration = 2)
     })
 

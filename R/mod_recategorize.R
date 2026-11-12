@@ -755,12 +755,11 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       r <- recat_proxy$get()
       shiny::req(nrow(r) > 0)
       show <- r
+      # Row position, not the id: a recat_id read from an imported CSV can be
+      # duplicated, blank or missing. .rule_delete_button() is in
+      # R/ui_helpers.R and escapes the whole handler.
       show$delete <- vapply(seq_len(nrow(show)), function(i) {
-        sprintf(
-          paste0('<button class="btn btn-xs btn-outline-danger" ',
-                 'onclick="Shiny.setInputValue(\'%s\', \'%s\', ',
-                 '{priority: \'event\'})">Delete</button>'),
-          ns("delete_row"), show$recat_id[i])
+        .rule_delete_button(ns("delete_row"), i, show$recat_id[i])
       }, character(1))
       show <- show[, c("out_col", "category", "vars", "include_terms",
                        "exclude_terms", "match_type", "priority", "notes",
@@ -772,9 +771,16 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
                     options = list(pageLength = 15, autoWidth = FALSE))
     })
 
+    # Deletes the ONE row the button names; see the Recodes tab for why the id
+    # alone is not enough.
     shiny::observeEvent(input$delete_row, ignoreInit = TRUE, {
       r <- recat_proxy$get()
-      recat_proxy$set(r[r$recat_id != input$delete_row, ])
+      hit <- .rule_delete_target(input$delete_row, r$recat_id)
+      if (!hit$ok) {
+        shiny::showNotification(hit$message, type = "warning", duration = 6)
+        return()
+      }
+      recat_proxy$set(r[-hit$row, , drop = FALSE])
       shiny::showNotification("Rule deleted.", type = "message", duration = 2)
     })
 

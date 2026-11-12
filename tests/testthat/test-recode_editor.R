@@ -130,6 +130,61 @@ test_that("apply_recode_edit rejects bad enums and ignores locked columns", {
   expect_identical(res$rules$rule_id, r$rule_id)
 })
 
+test_that("apply_to_siblings reads every spelling of yes and no (Shiny F7)", {
+  r <- .rules()
+  r$apply_to_siblings <- c(FALSE, TRUE, FALSE)
+
+  for (v in c("TRUE", "true", "True", " T ", "1", "yes", "YES", "y")) {
+    res <- apply_recode_edit(r, 1, "apply_to_siblings", v)
+    expect_identical(res$status, "ok")
+    expect_true(res$rules$apply_to_siblings[1])
+  }
+  for (v in c("FALSE", "false", "False", " F ", "0", "no", "NO", "n")) {
+    res <- apply_recode_edit(r, 2, "apply_to_siblings", v)
+    expect_identical(res$status, "ok")
+    expect_false(res$rules$apply_to_siblings[2])
+  }
+  # Only the edited row moves.
+  res <- apply_recode_edit(r, 1, "apply_to_siblings", "yes")
+  expect_identical(res$rules$apply_to_siblings, c(TRUE, TRUE, FALSE))
+})
+
+test_that("an apply_to_siblings entry that is neither is refused (Shiny F7)", {
+  r <- .rules()
+  r$apply_to_siblings <- c(TRUE, TRUE, TRUE)
+
+  # The card promises invalid entries are rejected. These used to read as
+  # FALSE and switch sibling propagation off without a word.
+  for (v in c("maybe", "ja", "truthy", "2", "-1", "", "   ", "T R U E",
+              "tru", "ye s")) {
+    res <- apply_recode_edit(r, 1, "apply_to_siblings", v)
+    expect_identical(res$status, "refused")
+    expect_identical(res$rules, r)
+    expect_match(res$message, "is not a yes or no", fixed = TRUE)
+    # The message names what IS accepted, both ways.
+    expect_match(res$message, "yes", fixed = TRUE)
+    expect_match(res$message, "no", fixed = TRUE)
+  }
+  # The rule still carries a real logical, never NA.
+  expect_false(any(is.na(r$apply_to_siblings)))
+})
+
+test_that("a refused apply_to_siblings edit notifies and keeps the rules", {
+  before <- .rules()
+  before$apply_to_siblings <- c(TRUE, FALSE, FALSE)
+  .with_editor(before, function(session, rv, proxy, notes) {
+    .edit(session, 1, "apply_to_siblings", "ja")
+    expect_identical(shiny::isolate(rv$rules), before)
+    expect_identical(notes$types, "error")
+    expect_match(notes$msgs, "is not a yes or no", fixed = TRUE)
+
+    # An accepted spelling goes through.
+    .edit(session, 2, "apply_to_siblings", "yes")
+    expect_identical(shiny::isolate(rv$rules)$apply_to_siblings,
+                     c(TRUE, TRUE, FALSE))
+  })
+})
+
 
 # --- The module ------------------------------------------------------------------
 
