@@ -76,10 +76,10 @@ recat_add_refusal <- function(rule) {
   # validator's `detail`, or failing that the class title. Adding the class to
   # .RECAT_REFUSE_CLASSES, and a title to .RECAT_ISSUE_TITLES, is then the
   # whole change needed for Add to refuse it.
-  .MATCH_NOTHING <- c("invalid_match_type", "invalid_regex",
-                      "no_include_terms", "invalid_sibling_pattern")
+  match_nothing <- c("invalid_match_type", "invalid_regex",
+                     "no_include_terms", "invalid_sibling_pattern")
   other <- character(0)
-  for (nm in setdiff(.RECAT_REFUSE_CLASSES, .MATCH_NOTHING)) {
+  for (nm in setdiff(.RECAT_REFUSE_CLASSES, match_nothing)) {
     x <- iss[[nm]]
     if (!is.data.frame(x) || nrow(x) == 0) next
     detail <- if ("detail" %in% names(x)) as.character(x$detail[1])
