@@ -6,15 +6,16 @@ cross-repo items in [docs/upstream-port-candidates.md](docs/upstream-port-candid
 
 ## Waiting on Amelia
 
-1. **Merge and push.** Three branches of October work are committed and
-   unpushed or unmerged: `shared-defect-fixes`, `text-tools` and
-   `upstream-followups` (tip `2e94179` on the remote), plus two local commits
-   on `neutral-wording` (`bb93674`). `main` is at `ee408d1`. Fast-forwarding
-   `main` to the tip of the chain would bring all of them. Should that happen,
-   and should it be pushed? Merging and pushing both need her yes.
-2. **Fix before merge, or merge and fix after?** Four adversarial reviewers
-   found 18 open defects in the unmerged range, including one data-loss defect
-   and an injection. Recommendation on file: fix first.
+1. **Merge and push, once the defects are fixed.** Amelia, 2026-11-12: "fix
+   first, don't merge until the defects are done." Three branches of October
+   work are committed and unpushed or unmerged: `shared-defect-fixes`,
+   `text-tools` and `upstream-followups` (tip `2e94179` on the remote), plus
+   local commits on `neutral-wording`. `main` is at `ee408d1`. Fast-forwarding
+   `main` to the tip of the chain would bring all of them, and the fix branch
+   `fix-review-defects` sits on top. Merging and pushing both still need her
+   yes at that point, and which of the no-decision defects count as "done"
+   enough to merge is hers to call: the seven decision items below will still
+   be open.
 3. **`cld2` and `wordcloud2`: `Imports` or `Suggests`?** The code and tests
    treat both as optional (`lang_detection_available()`, and
    `skip_if_not_installed()` in the tests), but `cld2` is declared under
