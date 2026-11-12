@@ -536,7 +536,10 @@ test_that("adding a rule updates the proxy; re-adding replaces it", {
       expect_identical(tail(names(tbl), 1), "remove")
       expect_equal(tbl$changes, "collapse spaces + Title Case")
 
-      session$setInputs(delete_row = out$norm_id)
+      # Remove carries the row position as well as the id, so that duplicated,
+      # blank or NA ids from an imported file cannot take out the wrong rule.
+      session$setInputs(delete_row = as.character(jsonlite::toJSON(
+        list(row = 1L, id = out$norm_id), auto_unbox = TRUE)))
       expect_equal(nrow(shiny::isolate(proxy$get())), 0L)
     })
 })

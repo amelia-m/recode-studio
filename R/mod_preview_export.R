@@ -476,16 +476,15 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
     # and not the other. The same rules must not produce two different
     # scripts. R/export_bundle.R already passes the loaded column names.
     #
-    # TRANSITIONAL: the argument arrives with the engine fix for review item 5.
-    # Once it is in, collapse this to a plain call passing `data_cols`.
+    # `data_cols` is what makes the previewed script carry the same overlap
+    # warning and the same `# SKIPPED` comments as the bundle's copy. With NULL
+    # (no data loaded) the generator behaves as it did before the argument
+    # existed.
     script_r <- function() {
       d <- shared_state$data
-      args <- list(rules_proxy$get(), dataset_id = dataset_id(),
-                   normalizations = norms_r())
-      if ("data_cols" %in% names(formals(generate_recode_R))) {
-        args$data_cols <- if (!is.null(d)) names(d) else NULL
-      }
-      do.call(generate_recode_R, args)
+      generate_recode_R(rules_proxy$get(), dataset_id = dataset_id(),
+                        normalizations = norms_r(),
+                        data_cols = if (!is.null(d)) names(d) else NULL)
     }
 
     output$r_preview <- shiny::renderText(script_r())

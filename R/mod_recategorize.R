@@ -21,12 +21,16 @@
 # has no bespoke wording for from .RECAT_ISSUE_TITLES, so adding one here (and
 # a title below) is the whole change.
 #
-# PENDING review item 7 (Shiny F3): the out_col collision class that
-# validate_recat() is gaining belongs in this vector and in the titles below.
-# Its name was not settled when this was written, so it is not guessed here;
-# until it is added, an out_col naming an existing column is still accepted.
+# `out_col_exists` is here for a different reason from the other four: such a
+# rule would match, but it would write into a column the data already has,
+# which is the one thing recategorization promises never to do. `apply_recat()`
+# skips it and the generated script skips it too, so refusing it at Add keeps
+# the user from storing a rule that can only ever do nothing.
+# `nested_quantifier` is deliberately NOT here: it reports a term that could be
+# slow, not one that cannot work.
 .RECAT_REFUSE_CLASSES <- c("invalid_match_type", "invalid_regex",
-                           "no_include_terms", "invalid_sibling_pattern")
+                           "no_include_terms", "invalid_sibling_pattern",
+                           "out_col_exists")
 
 # Titles for the validate_recat() classes. A class missing here still renders,
 # under issue_class_title()'s fallback.
@@ -36,8 +40,10 @@
   no_include_terms        = "No include terms",
   invalid_sibling_pattern = "Sibling pattern is not a valid regular expression",
   duplicate_ids           = "Same rule id twice",
+  nested_quantifier       = "Regex term may be very slow",
   missing_columns         = "Column not in the loaded data",
-  no_columns              = "No column to read")
+  no_columns              = "No column to read",
+  out_col_exists          = "New column name is already a column")
 
 #' Why Add must refuse a recat rule, or NULL when it may be added.
 #'
