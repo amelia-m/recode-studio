@@ -17,7 +17,9 @@
 # Rules sharing an `out_col` are applied in ascending `priority` (NA last, then
 # row order); the first matching rule wins, cells already assigned are never
 # overwritten, and unmatched rows stay NA. A rule with zero include terms
-# matches nothing (guards against blanket rules).
+# matches nothing (guards against blanket rules), and so does a rule with an
+# unrecognised match type or a sibling pattern that does not compile (skipped
+# in the app and the script alike; validate_recat() reports them).
 #
 # Public functions:
 #   empty_recat_tibble()                  schema scaffold for a recat rule set
@@ -26,6 +28,7 @@
 #   recat_rule_hits(df, rule)             logical row vector: which rows match
 #   recat_rule_hits_by_col(df, rule)      per-column breakdown of a rule
 #   apply_recat(df, rules)                return list(df, summary)
+#   validate_recat(rules, data = NULL)    named list of issue tibbles
 #   recat_rule_condition_R(rule, cols)    emit the case_when LHS condition string
 #   generate_recat_R(rules, dataset_id)   emit copyable R script content
 #   read_recat(path) / write_recat(...)   CSV round-trip
@@ -59,6 +62,57 @@ empty_recat_tibble <- function() {
   )
 }
 
+#' Conform a recat rule set to the schema: every column present, in order,
+#' typed, with any extra columns kept after them.
+#'
+#' The recodes and normalizations readers both do this; recat did not, so a
+#' hand-edited or externally written CSV could arrive with `priority` read as
+#' text (see `.recat_priority()`) or with a schema column missing, and the
+#' failure surfaced much later as a mis-ordered rule set.
+#'
+#' @param df A data frame (any subset or superset of the schema).
+#' @return Tibble with `empty_recat_tibble()`'s columns first, then extras.
+.conform_recat_schema <- function(df) {
+  schema_cols <- names(empty_recat_tibble())
+  df <- tibble::as_tibble(df)
+  n  <- nrow(df)
+  for (nm in schema_cols) {
+    if (!(nm %in% names(df))) {
+      df[[nm]] <- if (nm == "priority") rep(NA_integer_, n)
+                  else rep(NA_character_, n)
+    } else if (nm == "priority") {
+      p <- .recat_priority(df[[nm]])
+      # Keep the schema's integer type when every value is a whole number,
+      # which is what a priority is in practice. A fractional one stays
+      # double rather than being truncated.
+      whole <- all(is.na(p) | (is.finite(p) & p == trunc(p) &
+                               abs(p) <= .Machine$integer.max))
+      df[[nm]] <- if (whole) as.integer(p) else p
+    } else {
+      df[[nm]] <- as.character(df[[nm]])
+    }
+  }
+  df$sibling_pattern <- .recat_clean_pattern(df$sibling_pattern)
+  extras <- setdiff(names(df), schema_cols)
+  df[, c(schema_cols, extras), drop = FALSE]
+}
+
+#' `priority` as a number, whatever it arrived as.
+#'
+#' `apply_recat()` orders rules by priority, and `order()` on a CHARACTER
+#' column sorts lexicographically: "10" then comes before "9", so a rule the
+#' author put last ran first and claimed the rows. A CSV written by hand or by
+#' another tool is the usual way a character priority arrives.
+#'
+#' @param x Anything coercible. Unparseable values become NA, which
+#'   `apply_recat()` already orders last.
+#' @return Numeric vector, same length.
+.recat_priority <- function(x) {
+  if (is.null(x) || length(x) == 0) return(numeric(0))
+  if (is.numeric(x)) return(as.numeric(x))
+  suppressWarnings(as.numeric(trimws(as.character(x))))
+}
+
 #' Split a delimited term/var string into a trimmed, non-empty character vector.
 #' NA or "" -> character(0).
 recat_split <- function(x, sep = RECAT_LIST_SEP) {
@@ -85,29 +139,120 @@ recat_rule_id <- function(out_col, category, vars, include_terms,
 # --- Matching ----------------------------------------------------------------
 
 # This file is Shiny-free and must also be sourceable on its own (the tests do
-# exactly that), so it cannot lean on `%||%` from ui_helpers.R.
+# exactly that), so it cannot lean on `%||%` from ui_helpers.R, nor on
+# regex_compiles() / clean_sibling_pattern() from string_helpers.R: the small
+# private copies below must stay in step with those (a test pins it).
+
+#' A recat rule's match type, read forgivingly.
+#'
+#' Case and surrounding spaces are ignored (" Regex " -> "regex", "LITERAL"
+#' -> "literal"); NULL, NA and blank mean "literal", the default. Anything
+#' else is UNRECOGNISED and returns NA: such a rule matches nothing, in the
+#' app and in the generated script, and validate_recat() reports it. (It used
+#' to act as literal without a word.)
 .recat_match_type <- function(rule) {
   mt <- rule$match_type
-  if (is.null(mt) || length(mt) == 0 || is.na(mt) || !nzchar(mt)) "literal"
-  else mt[[1]]
+  if (is.null(mt) || length(mt) == 0 || is.na(mt[[1]])) return("literal")
+  mt <- tolower(trimws(as.character(mt[[1]])))
+  if (!nzchar(mt)) return("literal")
+  if (mt %in% RECAT_MATCH_TYPES) mt else NA_character_
+}
+
+# Blank sibling pattern -> NA (mirror of clean_sibling_pattern()).
+.recat_clean_pattern <- function(x) {
+  if (is.null(x) || length(x) == 0) return(character(0))
+  x <- as.character(x)
+  x[!is.na(x) & !nzchar(trimws(x))] <- NA_character_
+  x
+}
+
+# Does a sibling pattern compile under base grep() (TRE), the engine that
+# resolves it (mirror of regex_compiles()).
+.recat_tre_compiles <- function(p) {
+  vapply(as.character(p), function(x) {
+    if (is.na(x) || !nzchar(x)) return(FALSE)
+    isTRUE(suppressWarnings(tryCatch({ grepl(x, "probe"); TRUE },
+                                     error = function(e) FALSE)))
+  }, logical(1), USE.NAMES = FALSE)
+}
+
+# Does a TERM compile under stringr (ICU) with ignore_case, the engine that
+# matches regex terms in the app and in the script.
+.recat_icu_compiles <- function(t) {
+  vapply(as.character(t), function(x) {
+    if (is.na(x) || !nzchar(x)) return(FALSE)
+    isTRUE(suppressWarnings(tryCatch({
+      stringr::str_detect("probe", stringr::regex(x, ignore_case = TRUE))
+      TRUE
+    }, error = function(e) FALSE)))
+  }, logical(1), USE.NAMES = FALSE)
+}
+
+# Bidi code points R's parser refuses to read raw from source, and a deparse()
+# that escapes them. Private mirrors of .BIDI_CODEPOINTS / .escape_bidi() /
+# .deparse_literal() in string_helpers.R, because this file must stay
+# sourceable on its own; keep them in step (a test pins the two agreeing).
+.RECAT_BIDI_CODEPOINTS <- c(0x202a:0x202e, 0x2066:0x2069)
+
+.recat_escape_bidi <- function(txt) {
+  if (length(txt) == 0) return(txt)
+  for (cp in .RECAT_BIDI_CODEPOINTS) {
+    ch <- intToUtf8(cp)
+    if (any(grepl(ch, txt, fixed = TRUE))) {
+      # fixed = TRUE: the replacement is literal, so this is the ONE
+      # backslash that must reach the script (see .escape_bidi()).
+      txt <- gsub(ch, sprintf("\\u%04x", cp), txt, fixed = TRUE)
+    }
+  }
+  txt
+}
+
+.recat_deparse_literal <- function(x) .recat_escape_bidi(deparse(x))
+
+# The rule's sibling pattern, blank read as NA.
+.recat_pattern <- function(rule) {
+  sp <- .recat_clean_pattern(rule$sibling_pattern)
+  if (length(sp) == 1) sp else NA_character_
+}
+
+# Why a rule is skipped (it matches nothing in the app and gets no arm in the
+# script), or NA when it is usable: an unrecognised match type, or a sibling
+# pattern that does not compile.
+.recat_skip_reason <- function(rule) {
+  if (is.na(.recat_match_type(rule))) {
+    return(sprintf("unrecognised match type \"%s\"",
+                   as.character(rule$match_type[[1]])))
+  }
+  sp <- .recat_pattern(rule)
+  if (!is.na(sp) && !.recat_tre_compiles(sp)) {
+    return(sprintf("sibling pattern \"%s\" is not a valid regular expression",
+                   sp))
+  }
+  NA_character_
+}
+
+# Resolve a rule's target columns against a vector of column names. A skipped
+# rule (.recat_skip_reason()) resolves to no column at all, never an error.
+.recat_cols_from_names <- function(all_cols, rule) {
+  all_cols <- as.character(all_cols)
+  if (!is.na(.recat_skip_reason(rule))) return(character(0))
+  cols <- character(0)
+  sp <- .recat_pattern(rule)
+  if (!is.na(sp)) cols <- grep(sp, all_cols, value = TRUE)
+  cols <- union(cols, recat_split(rule$vars))
+  intersect(cols, all_cols)
 }
 
 # Resolve a rule's target columns against a data frame's names.
-.recat_cols <- function(df, rule) {
-  cols <- character(0)
-  if (!is.null(rule$sibling_pattern) && !is.na(rule$sibling_pattern) &&
-      nzchar(rule$sibling_pattern)) {
-    cols <- grep(rule$sibling_pattern, names(df), value = TRUE)
-  }
-  cols <- union(cols, recat_split(rule$vars))
-  intersect(cols, names(df))
-}
+.recat_cols <- function(df, rule) .recat_cols_from_names(names(df), rule)
 
 # OR across `terms`: TRUE where `values` contains ANY term.
-# Empty terms -> all FALSE. Invalid regex -> all FALSE (no error).
+# Empty terms -> all FALSE. Invalid regex -> all FALSE (no error), and the
+# generated script emits FALSE for that term too (.recat_terms_code()). An
+# unrecognised (NA) match type -> all FALSE.
 .recat_any_term <- function(values, terms, match_type) {
   n <- length(values)
-  if (length(terms) == 0) return(rep(FALSE, n))
+  if (length(terms) == 0 || is.na(match_type)) return(rep(FALSE, n))
   hit <- rep(FALSE, n)
   for (t in terms) {
     this <- if (match_type == "regex") {
@@ -198,21 +343,37 @@ recat_rule_hits <- function(df, rule) {
 #' within an out_col the first matching rule wins (later rules don't overwrite
 #' an already-assigned cell). Unmatched rows keep NA.
 #'
-#' @return list(df = df with new/updated out_col(s),
-#'              summary = tibble(recat_id, out_col, category, rows_matched))
+#' An `out_col` that is ALREADY a column of `df` is reported in
+#' `collisions` and left alone: the rule set is not applied to it. Recat
+#' derives a NEW column and never rewrites a source cell, which is the whole
+#' distinction from recoding, but an existing column's NA cells were being
+#' filled (its non-NA cells read as "already assigned"), so a source column
+#' quietly gained values and the provenance reported no columns added.
+#'
+#' @return list(df = df with new out_col(s),
+#'              summary = tibble(recat_id, out_col, category, rows_matched),
+#'              collisions = character vector of out_col names skipped
+#'                because `df` already has a column of that name)
 apply_recat <- function(df, rules) {
   summary <- tibble::tibble(recat_id = character(0), out_col = character(0),
                             category = character(0), rows_matched = integer(0))
-  if (nrow(rules) == 0) return(list(df = df, summary = summary))
+  if (nrow(rules) == 0) {
+    return(list(df = df, summary = summary, collisions = character(0)))
+  }
 
   # Deterministic order: by out_col, then priority (NA last), then row order.
+  # .recat_priority(): order() on a character column sorts lexicographically,
+  # so "10" came before "9" and a rule ran out of turn.
   ord <- order(rules$out_col,
-               ifelse(is.na(rules$priority), Inf, rules$priority),
+               ifelse(is.na(.recat_priority(rules$priority)), Inf,
+                      .recat_priority(rules$priority)),
                seq_len(nrow(rules)))
   rules <- rules[ord, , drop = FALSE]
 
+  collisions <- intersect(unique(rules$out_col), names(df))
   for (oc in unique(rules$out_col)) {
-    if (!(oc %in% names(df))) df[[oc]] <- NA_character_
+    if (oc %in% collisions) next
+    df[[oc]] <- NA_character_
     already <- !is.na(df[[oc]])
     sub <- rules[rules$out_col == oc, , drop = FALSE]
     for (i in seq_len(nrow(sub))) {
@@ -228,7 +389,168 @@ apply_recat <- function(df, rules) {
         rows_matched = matched))
     }
   }
-  list(df = df, summary = summary)
+  list(df = df, summary = summary, collisions = collisions)
+}
+
+# --- Validation --------------------------------------------------------------
+
+#' Validate a recat rule set.
+#'
+#' Reports, never changes. Every issue tibble has the same columns so a UI can
+#' render them alike: `recat_id`, `out_col`, `category`, `value` (the
+#' offending match type / term / pattern / column / id) and `detail` (plain
+#' language). All may be empty.
+#'
+#'   invalid_match_type      : match_type not literal / regex (case and spaces
+#'                             ignored, blank = literal); the rule matches
+#'                             nothing
+#'   invalid_regex           : a regex rule's include or exclude term that
+#'                             does not compile (stringr / ICU); that term
+#'                             matches nothing
+#'   no_include_terms        : no include terms; the rule matches nothing
+#'   invalid_sibling_pattern : a non-blank sibling_pattern that does not
+#'                             compile (base grep); the rule is skipped
+#'   duplicate_ids           : a recat_id carried by more than one row (one
+#'                             row per offending rule)
+#'   nested_quantifier       : a regex term with a quantified group that is
+#'                             itself quantified, `(...+)+` / `(...*)*` /
+#'                             `(...+)*`. REPORTED ONLY: such a term can take
+#'                             exponential time (a measured 41-character
+#'                             value took 303 seconds with `(\w+\s*)+!`) and
+#'                             nothing can interrupt it. Bounding it needs a
+#'                             dependency decision and is not done here, so
+#'                             this class exists to warn the author before
+#'                             they run it.
+#'   missing_columns         : (needs `data`) a name in `vars` that is not a
+#'                             column of `data`, one row per missing name
+#'   no_columns              : (needs `data`) the rule resolves to no column
+#'                             of `data` at all
+#'   out_col_exists          : (needs `data`) `out_col` is already a column of
+#'                             `data`. Recat derives a NEW column and never
+#'                             rewrites a source cell, so `apply_recat()`
+#'                             skips the rule set for that column and reports
+#'                             it (`$collisions`). Before, the column's empty
+#'                             cells were filled and provenance reported no
+#'                             column added.
+#'
+#' @param rules Recat rule tibble (NULL = none).
+#' @param data  Optional data frame the rules are meant for.
+#' @return Named list of tibbles, in the order above.
+validate_recat <- function(rules, data = NULL) {
+  none <- tibble::tibble(recat_id = character(0), out_col = character(0),
+                         category = character(0), value = character(0),
+                         detail = character(0))
+  out <- list(invalid_match_type = none, invalid_regex = none,
+              no_include_terms = none, invalid_sibling_pattern = none,
+              duplicate_ids = none, nested_quantifier = none,
+              missing_columns = none, no_columns = none,
+              out_col_exists = none)
+  if (is.null(rules) || !is.data.frame(rules) || nrow(rules) == 0) return(out)
+
+  row <- function(i, value, detail) {
+    tibble::tibble(recat_id = as.character(rules$recat_id[i]),
+                   out_col  = as.character(rules$out_col[i]),
+                   category = as.character(rules$category[i]),
+                   value    = as.character(value),
+                   detail   = as.character(detail))
+  }
+  collect <- function(lst) {
+    lst <- lst[!vapply(lst, is.null, logical(1))]
+    if (length(lst) == 0) none else dplyr::bind_rows(lst)
+  }
+
+  n <- nrow(rules)
+  mts <- lapply(seq_len(n), function(i) .recat_match_type(rules[i, ]))
+
+  out$invalid_match_type <- collect(lapply(seq_len(n), function(i) {
+    if (!is.na(mts[[i]])) return(NULL)
+    row(i, rules$match_type[i], sprintf(paste0(
+      "Unrecognised match type. Use one of: %s. The rule matches nothing ",
+      "until it is fixed."), paste(RECAT_MATCH_TYPES, collapse = ", ")))
+  }))
+
+  out$invalid_regex <- collect(unlist(lapply(seq_len(n), function(i) {
+    if (!identical(mts[[i]], "regex")) return(NULL)
+    terms <- c(recat_split(rules$include_terms[i]),
+               recat_split(rules$exclude_terms[i]))
+    bad <- terms[!.recat_icu_compiles(terms)]
+    lapply(unique(bad), function(t) row(i, t, paste0(
+      "This term is not a valid regular expression, so it matches nothing.")))
+  }), recursive = FALSE))
+
+  out$no_include_terms <- collect(lapply(seq_len(n), function(i) {
+    if (length(recat_split(rules$include_terms[i])) > 0) return(NULL)
+    row(i, NA_character_,
+        "No include terms, so the rule matches nothing.")
+  }))
+
+  out$invalid_sibling_pattern <- collect(lapply(seq_len(n), function(i) {
+    sp <- .recat_pattern(rules[i, ])
+    if (is.na(sp) || .recat_tre_compiles(sp)) return(NULL)
+    row(i, sp, paste0("The sibling pattern is not a valid regular ",
+                      "expression, so the rule is skipped."))
+  }))
+
+  ids <- as.character(rules$recat_id)
+  dup <- which(!is.na(ids) & ids %in% ids[duplicated(ids)])
+  out$duplicate_ids <- collect(lapply(dup, function(i) row(i, ids[i],
+    "More than one rule carries this id.")))
+
+  out$nested_quantifier <- collect(unlist(lapply(seq_len(n), function(i) {
+    if (!identical(mts[[i]], "regex")) return(NULL)
+    terms <- c(recat_split(rules$include_terms[i]),
+               recat_split(rules$exclude_terms[i]))
+    bad <- terms[.recat_nested_quantifier(terms)]
+    lapply(unique(bad), function(t) row(i, t, paste0(
+      "This term has a repeated group that is itself repeated, which can ",
+      "take minutes or longer on a single long value and cannot be ",
+      "interrupted. Rewrite it without the nested repetition, for example ",
+      "match the words themselves rather than a repeated group of them.")))
+  }), recursive = FALSE))
+
+  if (!is.null(data) && is.data.frame(data)) {
+    cols <- names(data)
+    out$missing_columns <- collect(unlist(lapply(seq_len(n), function(i) {
+      miss <- setdiff(recat_split(rules$vars[i]), cols)
+      lapply(miss, function(m) row(i, m, "Not a column in the loaded data."))
+    }), recursive = FALSE))
+    out$no_columns <- collect(lapply(seq_len(n), function(i) {
+      if (length(.recat_cols_from_names(cols, rules[i, ])) > 0) return(NULL)
+      if (!is.na(.recat_skip_reason(rules[i, ]))) return(NULL)
+      row(i, NA_character_,
+          "No column in the loaded data matches this rule's variables.")
+    }))
+    out$out_col_exists <- collect(lapply(seq_len(n), function(i) {
+      oc <- as.character(rules$out_col[i])
+      if (is.na(oc) || !(oc %in% cols)) return(NULL)
+      row(i, oc, paste0(
+        "The loaded data already has a column with this name. ",
+        "Recategorization adds a NEW column and never changes an existing ",
+        "one, so this rule is not applied. Give the new column a different ",
+        "name."))
+    }))
+  }
+  out
+}
+
+# TRUE for a regex term holding a quantified group that is itself quantified:
+# `(...+)+`, `(...*)*`, `(...+)*`. Catastrophic backtracking lives here, and
+# the cost is exponential in the length of the VALUE, not the pattern: a
+# reviewer measured `(\w+\s*)+!` taking 303 seconds on a 41-character value
+# and not finishing on a longer one, with nothing able to interrupt it
+# (setTimeLimit() cannot reach stringdist's or ICU's C code).
+#
+# A heuristic, deliberately: it reports and changes nothing, so a false
+# positive costs a sentence of advice and a false negative costs what it
+# already costs today. Bounding the match itself needs a dependency decision.
+.recat_nested_quantifier <- function(terms) {
+  terms <- as.character(terms)
+  if (length(terms) == 0) return(logical(0))
+  # A (...) group whose body contains + or *, followed by + or * (optionally
+  # made lazy/possessive with ? or +).
+  out <- grepl("\\([^()]*[+*][^()]*\\)[?+]?[+*]", terms)
+  out[is.na(terms)] <- FALSE
+  out
 }
 
 # --- Code generation ---------------------------------------------------------
@@ -237,12 +559,15 @@ apply_recat <- function(df, rules) {
 .recat_terms_code <- function(cols, terms, match_type) {
   if (length(terms) == 0) return(NULL)
   detect1 <- function(col, term) {
-    if (match_type == "regex") {
+    if (match_type == "regex" && !.recat_icu_compiles(term)) {
+      # Matches nothing, as in .recat_any_term(); str_detect() would throw.
+      "FALSE"
+    } else if (match_type == "regex") {
       sprintf("str_detect(`%s`, regex(%s, ignore_case = TRUE))",
-              col, deparse(term))
+              col, .recat_deparse_literal(term))
     } else {
       sprintf("str_detect(tolower(`%s`), fixed(%s))",
-              col, deparse(tolower(term)))
+              col, .recat_deparse_literal(tolower(term)))
     }
   }
   clauses <- character(0)
@@ -259,6 +584,7 @@ recat_rule_condition_R <- function(rule, cols) {
   exclude_terms <- recat_split(rule$exclude_terms)
   match_type    <- .recat_match_type(rule)
   if (length(cols) == 0 || length(include_terms) == 0) return("FALSE")
+  if (!is.na(.recat_skip_reason(rule))) return("FALSE")
 
   inc <- .recat_terms_code(cols, include_terms, match_type)
   cond <- sprintf("(\n      %s\n    )", inc)
@@ -302,11 +628,7 @@ generate_recat_R <- function(rules, dataset_id, data_cols = NULL) {
 
   resolve_cols <- function(rule) {
     if (!is.null(data_cols)) {
-      cols <- character(0)
-      if (!is.na(rule$sibling_pattern) && nzchar(rule$sibling_pattern))
-        cols <- grep(rule$sibling_pattern, data_cols, value = TRUE)
-      cols <- union(cols, recat_split(rule$vars))
-      intersect(cols, data_cols)
+      .recat_cols_from_names(data_cols, rule)
     } else {
       recat_split(rule$vars)
     }
@@ -318,23 +640,54 @@ generate_recat_R <- function(rules, dataset_id, data_cols = NULL) {
   rules <- rules[ord, , drop = FALSE]
 
   blocks <- character(0)
+  # An out_col that is already a column of the data: apply_recat() skips the
+  # whole rule set for it, so the script must too or the two would disagree
+  # and the bundle's reproduced CSV would stop matching its cleaned CSV.
+  # Only decidable with `data_cols`.
+  collisions <- if (!is.null(data_cols))
+    intersect(unique(rules$out_col), as.character(data_cols)) else character(0)
+
   for (oc in unique(rules$out_col)) {
     sub <- rules[rules$out_col == oc, , drop = FALSE]
+    if (oc %in% collisions) {
+      blocks <- c(blocks,
+        sprintf("# SKIPPED: %d rule%s for the new column %s. The data already",
+                nrow(sub), if (nrow(sub) == 1) "" else "s",
+                .recat_deparse_literal(oc)),
+        "# has a column of that name. Recategorization adds a NEW column and",
+        "# never changes an existing one, so Recode Studio applied none of",
+        "# them either. Give the new column a different name.",
+        paste0("#   recat_id: ", paste(sub$recat_id, collapse = ", ")),
+        "")
+      next
+    }
     arms <- character(0)
     for (i in seq_len(nrow(sub))) {
       r <- sub[i, ]
+      why <- .recat_skip_reason(r)
+      if (!is.na(why)) {
+        # Matches nothing in the app either (recat_rule_hits()): no arm.
+        arms <- c(arms, sprintf("      # SKIPPED rule %s (category %s): %s",
+                                as.character(r$recat_id),
+                                gsub("[\r\n]", " ", paste(deparse(
+                                  as.character(r$category)), collapse = "")),
+                                gsub("[\r\n]", " ", why)))
+        next
+      }
       cols <- resolve_cols(r)
       cond <- recat_rule_condition_R(r, cols)
       cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
       arms <- c(arms, sprintf("    %s ~ %s,%s",
-                              cond, deparse(as.character(r$category)), cmt))
+                              cond,
+                              .recat_deparse_literal(as.character(r$category)),
+                              cmt))
     }
     block <- c(
       "df <- df |>",
       sprintf("  mutate(`%s` = {", oc),
       sprintf("    .cur <- if (%s %%in%% names(df)) df[[%s]] else NA_character_",
-              deparse(oc), deparse(oc)),
+              .recat_deparse_literal(oc), .recat_deparse_literal(oc)),
       "    case_when(",
       "      !is.na(.cur) ~ .cur,",
       arms,
@@ -351,9 +704,13 @@ generate_recat_R <- function(rules, dataset_id, data_cols = NULL) {
 # --- CSV round-trip ----------------------------------------------------------
 
 #' Read a recat rules CSV (empty tibble if the file doesn't exist).
+#'
+#' A blank `sibling_pattern` reads as NA (an empty pattern is no pattern).
+#' `match_type` is kept as written; validate_recat() reports unrecognised
+#' values.
 read_recat <- function(path) {
   if (!file.exists(path)) return(empty_recat_tibble())
-  readr::read_csv(
+  df <- readr::read_csv(
     path, na = "<NA>", show_col_types = FALSE,
     col_types = readr::cols(
       recat_id        = readr::col_character(),
@@ -371,6 +728,10 @@ read_recat <- function(path) {
       source_dataset  = readr::col_character()
     )
   )
+  # Conform like read_recodes() / read_normalizations(): every schema column
+  # present, in order, typed (priority numeric, see .recat_priority()), with
+  # any extra columns kept after them. A blank sibling pattern reads as NA.
+  .conform_recat_schema(df)
 }
 
 #' Write a recat rules tibble with explicit NA encoding.

@@ -75,7 +75,9 @@ expect_warning_schema <- function(w) {
 test_that("empty_rule_warnings has the documented typed schema", {
   w <- empty_rule_warnings()
   expect_equal(nrow(w), 0L)
-  expect_named(w, c("kind", "id", "target", "message", "n_before", "n_after"))
+  expect_named(w, c("kind", "id", "target", "message", "n_before", "n_after",
+                   "severity"))
+  expect_type(w$severity, "character")
   expect_type(w$kind, "character")
   expect_type(w$id, "character")
   expect_type(w$target, "character")
@@ -300,4 +302,81 @@ test_that("recode checks run on the normalized data, in export order", {
                    c("recode_no_match", "norm_spec_drift"))
   expect_equal(nrow(collect_rule_warnings(df, rules, normalizations = norms)),
                0L)
+})
+
+
+# --- recode_fully_shadowed ---------------------------------------------------
+
+test_that("a recode whose every matched cell an earlier rule claimed is reported", {
+  df <- tibble::tibble(drink1 = c("capuccino", "capuccino"))
+  rules <- dplyr::bind_rows(
+    rw_recode("drink1", "exact",    "capuccino", "Cappuccino"),
+    rw_recode("drink1", "exact_ci", "CAPUCCINO", "Something else")
+  )
+  s <- apply_recodes(df, rules)$summary
+  # The second rule DID match, so recode_no_match cannot see it.
+  expect_equal(s$cells_matched[2], 2L)
+  expect_equal(s$cells_shadowed[2], 2L)
+  expect_equal(nrow(warn_recodes_no_match(df, rules)), 0L)
+
+  w <- collect_rule_warnings(df, rules)
+  expect_warning_schema(w)
+  expect_identical(w$kind, "recode_fully_shadowed")
+  expect_identical(w$id, rules$rule_id[2])
+  expect_identical(w$severity, "warning")
+  expect_equal(w$n_before, 2L)
+  expect_match(w$message, "already claimed every one of the 2 cells")
+  expect_match(w$message, "first rule to claim a cell wins")
+})
+
+test_that("a partly shadowed rule and a no-op rule are not called shadowed", {
+  # Row 2 belongs to the second rule alone, so it is only PARTLY shadowed.
+  partly <- dplyr::bind_rows(
+    rw_recode("drink1", "exact",    "capuccino", "Cappuccino"),
+    rw_recode("drink1", "exact_ci", "CAPUCCINO", "Other")
+  )
+  df <- tibble::tibble(drink1 = c("capuccino", "CAPUCCINO"))
+  expect_false("recode_fully_shadowed" %in%
+                 collect_rule_warnings(df, partly)$kind)
+
+  # Changes nothing, but nothing shadowed it either.
+  noop <- rw_recode("drink1", "exact", "latte", "latte")
+  expect_false("recode_fully_shadowed" %in%
+                 collect_rule_warnings(tibble::tibble(drink1 = "latte"),
+                                       noop)$kind)
+})
+
+
+# --- recat_no_match ----------------------------------------------------------
+
+test_that("a recat rule matching no row is reported", {
+  df <- cafe_df()
+  rules <- rw_recat("drink_family", "Tea-based", "drink1", "oolong")
+  w <- collect_rule_warnings(df, empty_recodes_tibble(), rules)
+  expect_warning_schema(w)
+  expect_identical(w$kind, "recat_no_match")
+  expect_identical(w$id, rules$recat_id)
+  expect_identical(w$target, "drink_family = Tea-based")
+  expect_identical(w$severity, "warning")
+  expect_equal(w$n_before, 0L)
+  expect_match(w$message, "matched no row", fixed = TRUE)
+  expect_match(w$message, "\"oolong\"", fixed = TRUE)
+})
+
+test_that("a recat rule that matches rows is not reported", {
+  expect_equal(nrow(collect_rule_warnings(
+    cafe_df(), empty_recodes_tibble(),
+    rw_recat("drink_family", "Milk-based", "drink1", "latte"))), 0L)
+})
+
+test_that("recat_no_match does not repeat a rule recat_terms_recoded_away covers", {
+  df    <- cafe_df()
+  recat <- rw_recat("drink_family", "Espresso-based", "drink1", "capuccino")
+  # The recode rewrites the very wording the recat term looks for, so after
+  # the recodes the rule matches nothing. ONE warning, the one that explains
+  # why, not two.
+  rules <- rw_recode("drink1", "exact", "capuccino", "cappuccino")
+  w <- collect_rule_warnings(df, rules, recat)
+  expect_identical(w$kind, "recat_terms_recoded_away")
+  expect_false("recat_no_match" %in% w$kind)
 })

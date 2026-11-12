@@ -84,6 +84,8 @@ mod_variable_picker_ui <- function(id) {
         "Click a row to select. Sort with the headers; filter with the search box above each column."
       )),
       shiny::br(), shiny::br(),
+      # Plain text, not a one-column datatable (see empty_state()).
+      shiny::uiOutput(ns("tbl_empty")),
       DT::DTOutput(ns("tbl"))
     )
   )
@@ -126,14 +128,25 @@ mod_variable_picker_server <- function(id, shared_state, external_var_r = NULL) 
       shiny::isolate(tryCatch(external_var_r(), error = function(e) NULL))
     }
 
+    # Two different empty states, which the old single message confused: with
+    # no dataset there is nothing to pick from, but with a dataset loaded an
+    # empty table means the free-text filter hid every column, and telling the
+    # user to go back to the Data tab sent them the wrong way.
+    output$tbl_empty <- shiny::renderUI({
+      meta <- shared_state$meta
+      if (is.null(meta) || nrow(meta) == 0) {
+        return(empty_state("No dataset loaded. Load one on the Data tab."))
+      }
+      tb <- var_tbl()
+      if (!is.null(tb) && nrow(tb) > 0) return(NULL)
+      empty_state(paste0(
+        "No free-text candidates in this dataset. Untick \"Free-text ",
+        "candidates only\" above to see all ", nrow(meta), " columns."))
+    })
+
     output$tbl <- DT::renderDT({
       df <- var_tbl()
-      if (is.null(df) || nrow(df) == 0) {
-        return(DT::datatable(
-          tibble::tibble(message = "No dataset loaded. Use the Data tab."),
-          rownames = FALSE, options = list(dom = "t")
-        ))
-      }
+      if (is.null(df) || nrow(df) == 0) return(NULL)
       # Draw with the shared selection already applied, so a table that is
       # rendered late (or re-rendered by the filter checkbox) shows the
       # variable the rest of the app is working on.

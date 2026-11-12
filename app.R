@@ -125,16 +125,15 @@ server <- function(input, output, session) {
   # Distinct values of the selected column AFTER normalization, so Browse
   # values, Clusters and Spellcheck show (and mint rules against) normalized
   # values.
+  #
+  # The EMPTY value "" is kept (including values a normalization squished down
+  # to ""), so a rule can target empty cells from Browse values: "" to
+  # "Unknown", or to missing with action delete. Clusters and Spellcheck skip
+  # it themselves. Missing values (NA) stay out: a rule targets those with an
+  # NA old_value (`<NA>` in the recodes CSV).
+  # value_frequency_table() lives in R/mod_value_table.R so it can be tested.
   unique_values_r <- shiny::reactive({
-    v <- selected_var_r()
-    d <- normalized_r()
-    if (is.null(v) || is.null(d) || !(v %in% names(d))) return(NULL)
-    x <- d[[v]]
-    x <- x[!is.na(x) & nzchar(x)]
-    if (length(x) == 0) return(NULL)
-    tibble::tibble(value = x) |>
-      dplyr::count(value, name = "n") |>
-      dplyr::arrange(dplyr::desc(n))
+    value_frequency_table(normalized_r(), selected_var_r())
   })
 
   mod_value_table_server("value_table", shared_state,

@@ -1,8 +1,14 @@
 # Run with: testthat::test_dir("tests/testthat")
 #
-# dt_truncate_defs() (columnDefs that shorten long cells to one line and put
-# the whole value in the cell title), dt_truncate_css() and dt_truncate_hint()
-# in R/ui_helpers.R. Pure builders; every string here is synthetic.
+# dt_truncate_defs() (columnDefs that shorten long cells to one line and put a
+# longer, capped copy in the cell title), dt_truncate_css() and
+# dt_truncate_hint() in R/ui_helpers.R. Pure builders; every string here is
+# synthetic.
+#
+# The renderer is JavaScript that only a browser runs, and this project has no
+# JS engine among its dependencies, so the cuts themselves are asserted on the
+# emitted renderer rather than executed. The two "wired into a real datatable"
+# tests below cover everything the R side does decide.
 
 source(file.path("..", "..", "R", "ui_helpers.R"))
 
@@ -46,12 +52,30 @@ test_that("the renderer only touches the display path", {
   expect_match(js, "typeof data === 'undefined'", fixed = TRUE)
 })
 
-test_that("the renderer keeps the full value reachable in the cell title", {
+test_that("the renderer puts a longer, but bounded, value in the cell title", {
   js <- .render_js(dt_truncate_defs())
   expect_match(js, "title=", fixed = TRUE)
-  expect_match(js, "s.replace(/\"/g, '&quot;')", fixed = TRUE)
+  # The title is built from the CAPPED copy, not from the whole value: it used
+  # to carry every byte, which made the page as big as the data (security F9).
+  expect_match(js, "full.replace(/\"/g, '&quot;')", fixed = TRUE)
+  expect_no_match(js, "s.replace(/\"/g, '&quot;')", fixed = TRUE)
   expect_match(js, "\\\\u2026")
   expect_match(js, "rs-dt-trunc", fixed = TRUE)
+})
+
+test_that("the cell title is capped, well above the visible cut (security F9)", {
+  js <- .render_js(dt_truncate_defs())
+  # Default: 60 characters shown, 1000 kept for hover.
+  expect_match(js, "s.length <= 1000", fixed = TRUE)
+  expect_match(js, "s.substr(0, 1000)", fixed = TRUE)
+
+  js <- .render_js(dt_truncate_defs(chars = 20, title_chars = 200))
+  expect_match(js, "s.length <= 20", fixed = TRUE)
+  expect_match(js, "s.length <= 200", fixed = TRUE)
+  expect_match(js, "s.substr(0, 200)", fixed = TRUE)
+
+  # Both cuts trim a half-cut HTML entity, not just the visible one.
+  expect_equal(length(gregexpr("/&[#a-zA-Z0-9]*$/", js, fixed = TRUE)[[1]]), 2L)
 })
 
 test_that("the renderer will not let a value break out of the title attribute", {
@@ -71,6 +95,9 @@ test_that("dt_truncate_defs rejects a nonsense budget or target", {
   expect_error(dt_truncate_defs(chars = NA), "positive")
   expect_error(dt_truncate_defs(chars = "60"), "positive")
   expect_error(dt_truncate_defs(targets = "review"), "0-based")
+  expect_error(dt_truncate_defs(title_chars = 0), "title_chars")
+  expect_error(dt_truncate_defs(title_chars = NA), "title_chars")
+  expect_error(dt_truncate_defs(title_chars = c(10, 20)), "title_chars")
 })
 
 # --- wired into a real datatable -----------------------------------------------
@@ -102,15 +129,12 @@ test_that("dataset markup still reaches the renderer HTML-escaped", {
   expect_true(any(grepl("&lt;img", cells, fixed = TRUE)))
 })
 
-test_that("both motivating tables use the shared helper and keep escaping", {
-  for (f in c("mod_value_table.R", "mod_preview_export.R")) {
-    src <- paste(readLines(file.path("..", "..", "R", f), warn = FALSE),
-                 collapse = "\n")
-    expect_match(src, "dt_truncate_defs()", fixed = TRUE, info = f)
-    expect_match(src, "dt_truncate_css()", fixed = TRUE, info = f)
-    expect_false(grepl("escape\\s*=\\s*FALSE", src), info = f)
-  }
-})
+# The grep over mod_value_table.R / mod_preview_export.R that used to sit here
+# was deleted: it read those files' SOURCE TEXT for "dt_truncate_defs()" and
+# "escape = FALSE", which proves nothing runs, passes on a broken renderer and
+# fails on a harmless rewording. The two tests above exercise the real
+# datatable, and test-escape_guard.R checks escape = FALSE across every app
+# source from parse tokens, so comments and strings cannot fool it.
 
 # --- css + hint ----------------------------------------------------------------
 
@@ -122,11 +146,18 @@ test_that("dt_truncate_css holds the span to one line", {
   expect_match(html, "text-overflow: ellipsis", fixed = TRUE)
 })
 
-test_that("dt_truncate_hint says how to reach the full value", {
-  html <- as.character(dt_truncate_hint())
+test_that("dt_truncate_hint does not promise the full value on hover (security F9)", {
+  # Rendered tags wrap over lines; compare the text as one run of words.
+  html <- gsub("\\s+", " ", paste(as.character(dt_truncate_hint()),
+                                  collapse = " "))
   expect_match(html, "text-muted")
   expect_match(html, "Hover")
-  expect_match(html, "full value")
+  # It used to say hovering shows "the full value", which stopped being true
+  # when the title was capped. It now points at the export for that.
+  expect_no_match(html, "full value", fixed = TRUE)
+  expect_match(html, "read more of it", fixed = TRUE)
+  expect_match(html, "exported files always use the complete value",
+               fixed = TRUE)
 })
 
 test_that("dt_truncate_hint appends an extra sentence", {

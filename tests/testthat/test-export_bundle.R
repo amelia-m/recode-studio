@@ -393,6 +393,175 @@ test_that("the bundle script rebuilds the cleaned data from the original file", 
                            file.size(file.path(dir, "cafe_orders_cleaned.csv"))))
 })
 
+# Build a bundle for `df` (written to CSV and read back the way the app reads
+# it), run its script from the original file's folder, and return both.
+.run_bundle_script <- function(df, rules, recat, norms, file_name) {
+  src <- tempfile("fx_meta_")
+  dir.create(src)
+  path <- file.path(src, file_name)
+  readr::write_csv(df, path, na = "")
+  raw <- read_dataset(path)
+  res <- build_cleaned_dataset(raw, rules, recat, norms)
+  prov <- build_provenance(source_file_meta(path, file_name = path), raw, res,
+                           rules, recat, norms, "0.1.0")
+  id  <- bundle_dataset_id(file_name)
+  dir <- tempfile("bundle_meta_")
+  write_export_bundle(dir, res, prov, rules, recat, norms, id)
+  old <- setwd(src)
+  on.exit(setwd(old), add = TRUE)
+  env <- new.env(parent = globalenv())
+  suppressMessages(eval(parse(file.path(dir, sprintf("clean_%s.R", id))),
+                        envir = env))
+  list(cleaned = res$df, script_df = env$df,
+       bundle_csv = file.path(dir, sprintf("%s_cleaned.csv", id)),
+       script_csv = file.path(src, sprintf("%s_cleaned_reproduced.csv", id)))
+}
+
+test_that("the bundle script reproduces columns whose names hold regex metacharacters", {
+  # Before the fix the recode rule on `q1.a` also rewrote `q1_a` in the script
+  # (unescaped `.`), and `price ($)` was not reachable by its own pattern.
+  df <- tibble::tibble(
+    order_id    = as.character(1:5),
+    `q1.a`      = c("yes", "no", "Yes ", "yes", NA),
+    q1_a        = c("yes", "yes", "no", "yes", "yes"),
+    `price ($)` = c("free", "2.50", "FREE", NA, "free"),
+    `my col`    = c("hot", "iced", "HOT", "hot", NA))
+  norms <- dplyr::bind_rows(
+    .fx_norm("q1.a", c("squish", "lowercase")),
+    .fx_norm("price ($)", "uppercase"))
+  rules <- dplyr::bind_rows(
+    .fx_rule("q1.a", "yes", "Y"),
+    .fx_rule("price ($)", "FREE", "0.00"),
+    .fx_rule("my col", "hot", "Hot"))
+  recat <- .fx_recat_rule("temp", "Hot drink", "hot", vars = "my col")
+  out <- .run_bundle_script(df, rules, recat, norms, "meta names.csv")
+
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(out$cleaned$`q1.a`, c("Y", "no", "Y", "Y", NA))
+  expect_identical(out$cleaned$q1_a, df$q1_a)
+  expect_identical(out$cleaned$`price ($)`, c("0.00", "2.50", "0.00", NA, "0.00"))
+  expect_identical(out$cleaned$`my col`, c("Hot", "iced", "HOT", "Hot", NA))
+  expect_identical(out$cleaned$temp, c("Hot drink", NA, "Hot drink", "Hot drink", NA))
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+})
+
+test_that("the bundle script skips unusable rules exactly as the app does", {
+  # Rules that used to crash the export (a sibling pattern that does not
+  # compile, in all three rule types) or that the script ran differently
+  # (a regex recode valid in one regex engine only, a blank sibling pattern,
+  # an unrecognised recat match type, a recat regex term that does not
+  # compile). The app skips each one and the script must skip it identically.
+  df <- tibble::tibble(
+    order_id = as.character(1:4),
+    drink1   = c("Latte", "mocha", "latte", NA),
+    drink2   = c("mocha", "Latte", NA, "cap"),
+    other    = c("latte", "latte", "latte", "latte"))
+  norms <- dplyr::bind_rows(
+    .fx_norm("drink1", "uppercase", "drink[0-9"),          # does not compile
+    .fx_norm("other", "titlecase"))
+  bad_sib   <- .fx_rule("drink1", "mocha", "MOCHA", "drink[")
+  blank_sib <- .fx_rule("drink2", "cap", "cappuccino", "  ")
+  rx_tre    <- .fx_rule("drink1", "a{,2}", "HIT")        # TRE ok, ICU error
+  rx_tre$match_type <- "regex"
+  rx_lu     <- .fx_rule("drink2", "\\p{Lu}", "UPPER")    # ICU ok, TRE error
+  rx_lu$match_type  <- "regex"
+  rules <- dplyr::bind_rows(bad_sib, blank_sib, rx_tre, rx_lu)
+  recat <- dplyr::bind_rows(
+    .fx_recat_rule("fam", "Bad pattern", "latte", vars = "drink1",
+                   pattern = "("),
+    .fx_recat_rule("fam", "Bogus type", "latte", vars = "drink1"),
+    .fx_recat_rule("fam", "Bad term", "[x;latte", vars = "drink2"),
+    .fx_recat_rule("fam", "Blank pattern", "mocha", vars = "drink2",
+                   pattern = ""))
+  recat$match_type[2] <- "fuzzy"
+  recat$match_type[3] <- "Regex "
+  expect_no_error(out <- .run_bundle_script(df, rules, recat, norms,
+                                            "unusable rules.csv"))
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+  # What the app did: bad-pattern rules skipped, blank pattern = own column.
+  expect_identical(out$cleaned$drink1, c("HIT", "HIT", "HIT", NA))
+  expect_identical(out$cleaned$drink2, c("mocha", "Latte", NA, "cappuccino"))
+  expect_identical(out$cleaned$other, rep("Latte", 4))
+  # Recat: the bad-pattern and bogus-type rules match nothing; the bad term
+  # is dropped and "latte" still matches; the blank pattern reads as none.
+  expect_identical(out$cleaned$fam, c("Blank pattern", "Bad term", NA, NA))
+})
+
+test_that("the bundle script skips a rule whose column is not in the data", {
+  # engine 3: the app resolves such a rule to no column and leaves the data
+  # alone, but the script emitted a mutate() naming the missing column and
+  # died, while provenance told the reader to run that script.
+  df <- tibble::tibble(order_id = as.character(1:3),
+                       drink1   = c("cap", "latte", "cap"))
+  rules <- dplyr::bind_rows(
+    .fx_rule("drink1", "cap", "cappuccino"),
+    .fx_rule("gone", "cap", "cappuccino"),                 # no such column
+    .fx_rule("drink1", "latte", "LATTE", "absent[0-9]+"))  # matches nothing
+  expect_no_error(out <- .run_bundle_script(df, rules, NULL, NULL,
+                                            "absent column.csv"))
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+  expect_identical(out$cleaned$drink1, c("cappuccino", "latte", "cappuccino"))
+  expect_identical(names(out$cleaned), names(df))
+})
+
+test_that("the bundle script skips a recat out_col that already exists", {
+  # engine 5: apply_recat() leaves an existing column alone, so the script
+  # must too, or the reproduced CSV stops matching the cleaned CSV.
+  df <- tibble::tibble(order_id = as.character(1:3),
+                       drink1   = c("latte", "mocha", "latte"),
+                       fam      = c("Manual", NA, NA))
+  recat <- .fx_recat_rule("fam", "Milk-based", "latte", vars = "drink1")
+  expect_no_error(out <- .run_bundle_script(df, NULL, recat, NULL,
+                                            "recat collision.csv"))
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+  # The gaps stay empty: the source column is not rewritten.
+  expect_identical(out$cleaned$fam, c("Manual", NA, NA))
+})
+
+test_that("provenance carries warning severity, and notes are marked", {
+  df <- tibble::tibble(city = c("Portland", "portland "))
+  rule <- .fx_rule("city", "portland", "Portland")
+  rule$match_type <- "trimmed_ci"
+  rule$rule_id <- recode_rule_id("city", "trimmed_ci", "portland")
+  rule$norm_spec <- ""                              # written unnormalized
+  norms <- .fx_norm("city", "titlecase")            # now title case: a note
+  res  <- build_cleaned_dataset(df, rule, NULL, norms)
+  expect_identical(res$warnings$severity, "note")
+  prov <- build_provenance(list(file_name = "x.csv"), df, res, rule, NULL,
+                           norms, NA)
+  expect_named(prov$warnings, c("kind", "severity", "message"))
+  expect_identical(prov$warnings$severity, "note")
+  txt <- provenance_text(prov)
+  expect_match(txt, "Warnings (0)", fixed = TRUE)
+  expect_match(txt, "Notes (1)", fixed = TRUE)
+  expect_match(txt, "- (note) ", fixed = TRUE)
+})
+
+test_that("an empty-to-missing rule leaves no visible trace in the cleaned CSV", {
+  # Documented limitation, pinned: the cleaned CSV writes "" and NA the same
+  # way (an empty cell), so a rule turning "" into NA changes nothing a reader
+  # of that one file can see. The rule file still carries it.
+  cleaned <- list(df = tibble::tibble(a = c("", NA, "x")))
+  f1 <- tempfile(fileext = ".csv"); f2 <- tempfile(fileext = ".csv")
+  readr::write_csv(tibble::tibble(a = c("", "", "x")), f1, na = BUNDLE_CSV_NA)
+  readr::write_csv(cleaned$df, f2, na = BUNDLE_CSV_NA)
+  expect_identical(readLines(f1), readLines(f2))
+  rule <- .fx_rule("a", "", NA_character_)
+  rule$action <- "delete"
+  rf <- tempfile(fileext = ".csv")
+  write_recodes(rule, rf)
+  back <- read_recodes(rf)
+  expect_identical(back$old_value, "")
+  expect_identical(back$action, "delete")
+})
+
 test_that("the script warns when the input is not the recorded file", {
   x   <- .fx_prov()
   dir <- tempfile("bundle_sha_")
@@ -457,9 +626,6 @@ test_that("the download handler content builds a zip with every entry", {
     })
 })
 
-test_that("no em dashes in the bundle code or its UI text", {
-  for (f in c("export_bundle.R", "mod_preview_export.R")) {
-    src <- readLines(file.path("..", "..", "R", f), encoding = "UTF-8")
-    expect_false(any(grepl(.em_dash, src, fixed = TRUE)), info = f)
-  }
-})
+# The em dash check over these two sources used to live here as a grep. It is
+# gone: test-em_dash_guard.R makes the same check over every project text
+# file, which is strictly more than these two.

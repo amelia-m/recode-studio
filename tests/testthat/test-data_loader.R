@@ -25,7 +25,7 @@ test_that("build_meta classifies free-text vs non-candidates", {
   meta <- build_meta(.fixture())
   expect_named(meta, c("column","group","n_unique","na_share","median_len",
                        "median_words","is_free_text_candidate","is_long_text",
-                       "text_kind"))
+                       "text_kind","lang_share_en"))
   pick <- function(col) meta$is_free_text_candidate[meta$column == col]
   expect_true(pick("drink"))
   expect_true(pick("city"))
@@ -48,7 +48,7 @@ test_that("build_meta handles an empty data frame", {
   expect_equal(nrow(meta), 0)
   expect_named(meta, c("column","group","n_unique","na_share","median_len",
                        "median_words","is_free_text_candidate","is_long_text",
-                       "text_kind"))
+                       "text_kind","lang_share_en"))
 })
 
 test_that("build_meta flags long-text vs short-text candidates", {
@@ -117,6 +117,78 @@ test_that("bundled example dataset classification is unchanged", {
   for (col in c("order_id", "size", "price", "order_date")) {
     expect_false(pick(col), info = col)
   }
+})
+
+# cspell:ignore etait froid matin tres
+# Distinct English sentences (a candidate needs more than 10 unique values).
+.en_notes <- function(n) {
+  paste0("Order ", seq_len(n),
+         ": the flat white was smooth and the staff were very friendly.")
+}
+
+test_that("build_meta reports lang_share_en for free-text candidates only", {
+  df <- tibble::tibble(
+    note = c(.en_notes(12),
+             "Le cafe etait froid et le service etait tres lent ce matin."),
+    code = as.character(1:13)
+  )
+  m <- build_meta(df)
+  expect_true("lang_share_en" %in% names(m))
+  expect_type(m$lang_share_en, "double")
+  # Non-candidate columns are never scanned.
+  expect_true(is.na(m$lang_share_en[m$column == "code"]))
+  # Reported only: the candidate flag is untouched.
+  expect_true(m$is_free_text_candidate[m$column == "note"])
+  expect_false(m$is_free_text_candidate[m$column == "code"])
+})
+
+test_that("build_meta lang_share_en is the English share of detectable values", {
+  skip_if_not_installed("cld2")
+  df <- tibble::tibble(
+    note = c(.en_notes(12),
+             "Le cafe etait froid et le service etait tres lent ce matin.",
+             # Too short to detect: excluded from the share, not counted as
+             # non-English.
+             "ok", "fine", "good", "meh")
+  )
+  s <- build_meta(df)$lang_share_en
+  expect_gte(s, 0)
+  expect_lte(s, 1)
+  expect_equal(s, 12 / 13)
+})
+
+test_that("build_meta lang_share_en is NA when nothing is detectable", {
+  # All values under the detection minimum.
+  df <- tibble::tibble(drink = c("latte", "espresso", "mocha", "cortado",
+                                 "americano", "cold brew", "flat white",
+                                 "cappuccino", "macchiato", "ristretto",
+                                 "affogato"))
+  m <- build_meta(df)
+  expect_true(m$is_free_text_candidate)
+  expect_true(is.na(m$lang_share_en))
+})
+
+test_that("build_meta lang_share_en is NA for every column without cld2", {
+  # Stand in an R session without cld2. The helpers are source()d into the
+  # global environment, so the stand-in goes there and is restored after.
+  real <- lang_detection_available
+  assign("lang_detection_available", function() FALSE, envir = globalenv())
+  withr::defer(assign("lang_detection_available", real, envir = globalenv()))
+  df <- tibble::tibble(note = .en_notes(12))
+  m <- build_meta(df)
+  expect_true(m$is_free_text_candidate)
+  expect_true(is.na(m$lang_share_en))
+})
+
+test_that("bundled example: lang_share_en set only on the candidates", {
+  path <- file.path("..", "..", "inst", "extdata", "example_messy.csv")
+  skip_if_not(file.exists(path), "bundled example dataset not found")
+  meta <- build_meta(read_dataset(path))
+  non <- meta$column[!meta$is_free_text_candidate]
+  expect_true(all(is.na(meta$lang_share_en[meta$column %in% non])))
+  skip_if_not_installed("cld2")
+  # The sentence-length review column is detectable and mostly English.
+  expect_gt(meta$lang_share_en[meta$column == "review"], 0.5)
 })
 
 test_that("column_group extracts the prefix before the first underscore", {

@@ -1,6 +1,9 @@
 # Text normalization & corpus analysis: design spec
 
 **Date:** 2026-08-13
+**Status (2026-09-16):** features A and D are being built as written here.
+Features B and C are superseded by
+[2026-09-16-word-fixes.md](2026-09-16-word-fixes.md). Feature E is deferred.
 **Origin:** `ext/tokenization_reference.Rmd` + accompanying note
 on tokenization / normalization (conflation → stemming → lemmatization).
 

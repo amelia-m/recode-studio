@@ -267,7 +267,7 @@ test_that("validate_recodes flags an invalid regex pattern", {
   expect_equal(issues$invalid_regex$old_value, "broken[unclosed")
 })
 
-test_that("generate_recode_R emits str_detect for regex rules", {
+test_that("generate_recode_R emits grepl() for regex rules (the app's engine)", {
   rules <- tibble::tibble(
     rule_id = "r1", variable = "drink", apply_to_siblings = FALSE,
     sibling_pattern = NA_character_, match_type = "regex",
@@ -277,8 +277,14 @@ test_that("generate_recode_R emits str_detect for regex rules", {
   )
   code <- generate_recode_R(rules, "d")
   expect_silent(parse(text = code))
-  expect_true(grepl("str_detect", code))
+  expect_true(grepl("grepl(\"espresso\", drink)", code, fixed = TRUE))
+  expect_false(grepl("str_detect", code, fixed = TRUE))
   expect_false(grepl("== \"espresso\"", code))
+  # A pattern the app's engine rejects is an arm that matches nothing.
+  rules$old_value <- "\\p{Lu}"
+  code <- generate_recode_R(rules, "d")
+  expect_true(grepl("rep_len(FALSE, length(drink)) ~", code, fixed = TRUE))
+  expect_equal(nrow(validate_recodes(rules)$invalid_regex), 1L)
 })
 
 test_that("generate_recode_R sibling rule uses across()", {
@@ -424,15 +430,127 @@ test_that("apply_recodes summary separates matched / changed / shadowed", {
 
 # --- Defect 4 + the agreement guard -----------------------------------------
 
+# Column names that are not plain identifiers. A plain rule must reach its
+# named column and nothing else in BOTH engines:
+#   q1.a / q1_a  - the `.` used to be an unescaped wildcard in the script, so a
+#                  rule on q1.a also rewrote q1_a
+#   price ($)    - `(`, `)` and `$` used to make the script's pattern wrong
+#   my col       - a space; also carries empty and whitespace-only cells
+tricky_df <- function(df = synthetic_df()) {
+  df$`q1.a`      <- c("yes", "no", "yes", "YES", NA, "yes")
+  df$q1_a        <- c("yes", "yes", "no", "yes", "yes", NA)
+  df$`price ($)` <- c("free", "2", "free ", "", "FREE", NA)
+  df$`my col`    <- c("hot", "iced", "", "  ", "hot", NA)
+  df
+}
+
+tricky_rules <- function() {
+  dplyr::bind_rows(
+    mk_rule("q1.a",      "exact",      "yes", "Y"),
+    mk_rule("price ($)", "trimmed_ci", "free", "0"),
+    mk_rule("my col",    "exact",      "hot", "Hot"),
+    # Empty old_value: trimmed_ci also claims the whitespace-only cell.
+    mk_rule("my col",    "trimmed_ci", "",    "unknown")
+  )
+}
+
+# Rules the two regex engines (base TRE in the app, ICU in stringr) disagree
+# on, plus unusable sibling patterns. The script used to emit str_detect()
+# (ICU): `\p{Lu}` (TRE rejects it) then matched in the script only, and
+# `a{,2}` (ICU rejects it) crashed the script. Sibling rules with a pattern
+# that does not compile used to throw everywhere; a blank pattern reached
+# every column in the app and crashed the script's matches("").
+engine_df <- function(df = tricky_df()) {
+  df$code  <- c("Abc", "abc", "ABC", "x1", NA, "a")
+  df$code2 <- c("b", "a", NA, "aa", "", "c")
+  df$fam1  <- c("v", "w", "v", NA, "v", "w")
+  df$fam2  <- c("v", "v", "w", "w", NA, "v")
+  df
+}
+
+engine_rules <- function() {
+  dplyr::bind_rows(
+    mk_rule("code",  "regex", "\\p{Lu}",       "ICU-only"),  # TRE: invalid
+    mk_rule("code",  "regex", "[a",            "broken"),    # invalid in both
+    mk_rule("code",  "regex", "^[[:upper:]]",  "UP"),
+    mk_rule("code2", "regex", "a{,2}",         "TRE-only"),  # ICU: invalid
+    mk_rule("fam1",  "exact", "v", "V", siblings = TRUE, pattern = "fam["),
+    mk_rule("fam1",  "exact", "w", "W", siblings = TRUE, pattern = "  ")
+  )
+}
+
 test_that("generate_recode_R agrees with apply_recodes cell for cell", {
-  df      <- synthetic_df()
-  rules   <- synthetic_rules()
+  df      <- engine_df(tricky_df())
+  rules   <- dplyr::bind_rows(synthetic_rules(), tricky_rules(),
+                              engine_rules())
   applied <- apply_recodes(df, rules)$df
   genned  <- eval_generated_recodes(df, rules)
+  expect_identical(names(genned), names(applied))
   for (col in names(df)) {
     expect_identical(genned[[col]], applied[[col]],
                      info = sprintf("column %s", col))
   }
+  # The tricky columns came out as intended, not merely equally wrong.
+  expect_identical(applied$`q1.a`, c("Y", "no", "Y", "YES", NA, "Y"))
+  expect_identical(applied$q1_a, df$q1_a)                 # untouched
+  expect_identical(applied$`price ($)`, c("0", "2", "0", "", "0", NA))
+  expect_identical(applied$`my col`,
+                   c("Hot", "iced", "unknown", "unknown", "Hot", NA))
+  # One regex engine on both sides; unusable patterns match nothing.
+  expect_identical(applied$code, c("UP", "abc", "UP", "x1", NA, "a"))
+  expect_identical(applied$code2,
+                   c("TRE-only", "TRE-only", NA, "TRE-only", "TRE-only",
+                     "TRE-only"))
+  # The invalid sibling rule is skipped; the blank-pattern rule is plain.
+  expect_identical(applied$fam1, c("v", "W", "v", NA, "v", "W"))
+  expect_identical(applied$fam2, df$fam2)
+  # Plain rules are single-column mutate()s on a backticked name, never a
+  # matches() pattern.
+  code <- generate_recode_R(rules, "synthetic")
+  expect_true(grepl("mutate(`q1.a` = case_when(", code, fixed = TRUE) ||
+              grepl("mutate(q1.a = case_when(", code, fixed = TRUE))
+  expect_true(grepl("mutate(`price ($)` = case_when(", code, fixed = TRUE))
+  expect_true(grepl("mutate(`my col` = case_when(", code, fixed = TRUE))
+  expect_false(grepl("matches(\"^q1", code, fixed = TRUE))
+  expect_false(grepl("matches(\"^price", code, fixed = TRUE))
+  expect_false(grepl("# WARNING", code, fixed = TRUE))
+})
+
+test_that("a plain rule's pattern is its escaped column name", {
+  # Before the fix: `^q1.a$` grouped and warned as if it reached q1_a too.
+  rules <- dplyr::bind_rows(
+    mk_rule("q1.a", "exact", "yes", "Y"),
+    mk_rule("q1_a", "exact", "yes", "Y"))
+  code <- generate_recode_R(rules, "d")
+  expect_false(grepl("# WARNING", code, fixed = TRUE))
+  expect_equal(lengths(regmatches(code, gregexpr("case_when", code)))[[1]], 2L)
+
+  # Every metacharacter a name can carry, one rule each: the script parses,
+  # runs, and each rule reaches only its own column.
+  nms <- c("a.b", "a_b", "w{2}", "x[1]", "a|b", "c^d", "e+f", "g*h", "i?j",
+           "back\\slash", "tick`name", "if")
+  df  <- tibble::as_tibble(stats::setNames(
+    lapply(nms, function(n) c("v", "w")), nms), .name_repair = "minimal")
+  rules <- dplyr::bind_rows(lapply(nms[nms != "a_b"], function(n)
+    mk_rule(n, "exact", "v", paste0("V:", n))))
+  code <- generate_recode_R(rules, "d")
+  expect_silent(parse(text = code))
+  applied <- apply_recodes(df, rules)$df
+  genned  <- eval_generated_recodes(df, rules)
+  for (n in nms) {
+    expect_identical(genned[[n]], applied[[n]], info = n)
+  }
+  expect_identical(applied$a_b, c("v", "w"))
+  expect_identical(applied$`w{2}`, c("V:w{2}", "w"))
+})
+
+test_that("a sibling rule plus a plain rule on a family member still warns", {
+  rules <- dplyr::bind_rows(
+    mk_rule("q1.a", "exact", "a", "A"),
+    mk_rule("q1.a", "exact", "b", "B", siblings = TRUE,
+            pattern = "^q1[._]a$"))
+  code <- generate_recode_R(rules, "d")
+  expect_true(grepl("#   q1.a", code, fixed = TRUE))
 })
 
 # The same guard with column normalizations in front of the recodes. The app
@@ -498,9 +616,24 @@ eval_generated_with_norms <- function(df, rules, norms) {
 }
 
 test_that("generated script agrees with normalize-then-recode cell for cell", {
-  df    <- synthetic_norm_df()
-  rules <- synthetic_norm_rules()
-  norms <- synthetic_norms()
+  # Plus the metacharacter columns, each normalized, with recodes written
+  # against the normalized values. q1_a must be reached by neither step.
+  # Plus the engine-divergent and unusable-pattern rules, and a
+  # normalization whose sibling pattern does not compile (skipped by both).
+  df    <- engine_df(tricky_df(synthetic_norm_df()))
+  rules <- dplyr::bind_rows(
+    synthetic_norm_rules(),
+    mk_rule("q1.a",      "exact", "YES",  "Y"),
+    mk_rule("price ($)", "exact", "FREE", "0"),
+    mk_rule("my col",    "exact", "",     "unknown"),
+    engine_rules())
+  norms <- dplyr::bind_rows(
+    synthetic_norms(),
+    mk_norm_rule("q1.a",      "uppercase"),
+    mk_norm_rule("price ($)", c("squish", "uppercase")),
+    mk_norm_rule("my col",    "squish"),
+    mk_norm_rule("fam1",      "uppercase", siblings = TRUE,
+                 pattern = "fam[0-9"))
   applied <- apply_recodes(apply_normalizations(df, norms)$df, rules)$df
   genned  <- eval_generated_with_norms(df, rules, norms)
   expect_identical(names(genned), names(applied))
@@ -519,6 +652,18 @@ test_that("generated script agrees with normalize-then-recode cell for cell", {
   code <- generate_recode_R(rules, "synthetic", normalizations = norms)
   expect_true(grepl("`drink notes` = str_to_title(str_squish(`drink notes`))",
                     code, fixed = TRUE))
+  expect_true(grepl("`price ($)` = toupper(str_squish(`price ($)`))",
+                    code, fixed = TRUE))
+  # The metacharacter columns: normalized, then recoded, and nothing else.
+  expect_identical(applied$`q1.a`, c("Y", "NO", "Y", "Y", NA, "Y"))
+  expect_identical(applied$q1_a, df$q1_a)
+  expect_identical(applied$`price ($)`, c("0", "2", "0", "", "0", NA))
+  # "  " squishes to "", so the exact "" rule claims both blank cells.
+  expect_identical(applied$`my col`,
+                   c("hot", "iced", "unknown", "unknown", "hot", NA))
+  # The bad-pattern normalization was skipped in both engines.
+  expect_identical(applied$fam2, df$fam2)
+  expect_true(grepl("# SKIPPED: the normalization", code, fixed = TRUE))
   expect_lt(regexpr("Column normalizations", code, fixed = TRUE)[1],
             regexpr("case_when(", code, fixed = TRUE)[1])
 })
@@ -654,7 +799,12 @@ test_that("an NA-targeting rule survives the recodes CSV round trip", {
 test_that("an unusable match_type emits a FALSE arm rather than a live one", {
   code <- generate_recode_R(mk_rule("x", "regx", "a", "A"), "d")
   expect_silent(parse(text = code))
-  expect_true(grepl("FALSE ~ \"A\"", code, fixed = TRUE))
+  expect_true(grepl("rep_len(FALSE, length(x)) ~ \"A\"", code, fixed = TRUE))
+  # As the ONLY arm it must still run: a scalar FALSE made case_when() fail
+  # to recycle `.default`.
+  df <- tibble::tibble(x = c("a", "b"))
+  expect_identical(eval_generated_recodes(df, mk_rule("x", "regx", "a", "A"))$x,
+                   c("a", "b"))
 })
 
 test_that(".fingerprint_key standardizes word order and whitespace/punctuation", {
@@ -1039,3 +1189,327 @@ test_that("normalize_value leaves values untouched for regex", {
   expect_identical(normalize_value(x, "regex"), x)
 })
 
+
+# =============================================================================
+# October review: codegen against the data's own columns, merge by key,
+# clustering cost, and the awkward-input agreement cases.
+# =============================================================================
+
+# Like eval_generated_recodes(), but able to pass the data's column names.
+# The eval() runs code this test just generated from its own rule table.
+eval_gen <- function(df, rules, data_cols = NULL) {
+  code <- generate_recode_R(rules, "d", data_cols = data_cols)
+  env  <- new.env(parent = globalenv())
+  env$df <- df
+  suppressWarnings(suppressMessages(eval(parse(text = code), envir = env)))
+  env$df
+}
+
+
+# --- engine 1: the overlap warning must know the data's columns --------------
+
+test_that("two sibling patterns sharing an unnamed column warn (engine 1)", {
+  # Neither rule NAMES drink2, but both patterns reach it, and they chain:
+  # "cap" -> "latte" then "latte" -> "mocha".
+  rules <- dplyr::bind_rows(
+    mk_rule("drink1", "exact", "cap",   "latte", siblings = TRUE,
+            pattern = "^drink[12]$"),
+    mk_rule("drink3", "exact", "latte", "mocha", siblings = TRUE,
+            pattern = "^drink[23]$"))
+  df <- tibble::tibble(drink1 = "cap", drink2 = "cap", drink3 = "americano")
+
+  # The two engines really do disagree on the shared column: the app is
+  # single pass, the script runs the two blocks in sequence.
+  expect_identical(apply_recodes(df, rules)$df$drink2, "latte")
+  expect_identical(eval_gen(df, rules)$drink2, "mocha")
+
+  # Told the data's columns, the script says so instead of staying silent.
+  warned <- generate_recode_R(rules, "d", data_cols = names(df))
+  expect_match(warned, "# WARNING")
+  expect_match(warned, "drink2")
+
+  # Without data_cols, unchanged: the sweep can only see the rules' names.
+  expect_false(grepl("# WARNING", generate_recode_R(rules, "d"), fixed = TRUE))
+})
+
+test_that("a column reached by one pattern is not reported as overlapping", {
+  rules <- mk_rule("drink1", "exact", "cap", "cappuccino", siblings = TRUE,
+                   pattern = "^drink[0-9]+$")
+  df <- tibble::tibble(drink1 = "cap", drink2 = "cap", other = "cap")
+  expect_false(grepl("# WARNING",
+                     generate_recode_R(rules, "d", data_cols = names(df)),
+                     fixed = TRUE))
+})
+
+
+# --- engine 7: the overlap sweep must not throw ------------------------------
+
+test_that("a column name too long for TRE does not break codegen (engine 7)", {
+  # base grepl() THROWS on a pattern of roughly 2,600 characters or more, and
+  # a plain rule's pattern is its column name, escaped and anchored.
+  long <- paste(rep("a", 5000), collapse = "")
+  expect_false(regex_compiles(paste0("^", long, "$")))   # TRE really refuses
+  # grepl() warns as well as throwing, hence the suppression.
+  expect_error(suppressWarnings(grepl(paste0("^", long, "$"), "probe")))
+
+  expect_no_error(generate_recode_R(mk_rule(long, "exact", "x", "Y"), "d"))
+  # And when the long name is merely one of the loaded columns.
+  expect_no_error(generate_recode_R(
+    mk_rule("kept", "exact", "x", "Y"), "d", data_cols = c("kept", long)))
+  expect_false(.pattern_hits_name(paste0("^", long, "$"), long))
+})
+
+
+# --- engine 3: a rule for a column the data does not have --------------------
+
+test_that("a rule for an absent column is skipped in codegen (engine 3)", {
+  rules <- mk_rule("gone", "exact", "cap", "cappuccino")
+  df    <- tibble::tibble(kept = "cap")
+
+  # The app resolves it to no column and leaves the data alone.
+  expect_length(.recode_cols(df, rules), 0L)
+
+  # Without data_cols the script names a column that is not there and dies.
+  expect_error(eval_gen(df, rules), "gone")
+
+  # Told the columns, it says it skipped the rule, and then agrees.
+  code <- generate_recode_R(rules, "d", data_cols = names(df))
+  expect_match(code, "# SKIPPED")
+  expect_match(code, "That column is not in")
+  expect_match(code, rules$rule_id)
+  expect_identical(eval_gen(df, rules, data_cols = names(df)),
+                   apply_recodes(df, rules)$df)
+})
+
+test_that("a sibling pattern matching no column is skipped too", {
+  rules <- mk_rule("drink1", "exact", "cap", "cappuccino", siblings = TRUE,
+                   pattern = "^nothing[0-9]$")
+  df    <- tibble::tibble(kept = "cap")
+  code  <- generate_recode_R(rules, "d", data_cols = names(df))
+  expect_match(code, "No column in")
+  expect_identical(eval_gen(df, rules, data_cols = names(df)),
+                   apply_recodes(df, rules)$df)
+})
+
+
+# --- engine 2: merge_recode_rules collides on the KEY -----------------------
+
+test_that("a stale id no longer hides a new rule for the same key (engine 2)", {
+  stale <- mk_rule("city", "exact", "lincon", "OLD")
+  stale$rule_id <- "deadbeefcafe"        # e.g. saved before a key edit
+  fresh <- mk_rule("city", "exact", "lincon", "NEW")
+
+  merged <- merge_recode_rules(stale, fresh)
+  expect_equal(nrow(merged), 1L)
+  expect_identical(merged$new_value, "NEW")
+  # The winner carries the id its own key says it must carry.
+  expect_identical(merged$rule_id, recode_key_id(merged))
+
+  # The point of all of it: the new rule actually runs.
+  expect_identical(apply_recodes(tibble::tibble(city = "lincon"),
+                                 merged)$df$city, "NEW")
+})
+
+test_that("merging by key keeps a colliding rule where it stood", {
+  base <- dplyr::bind_rows(mk_rule("city", "exact", "a", "A"),
+                           mk_rule("city", "exact", "b", "B"),
+                           mk_rule("city", "exact", "z", "Z"))
+  out  <- merge_recode_rules(base, mk_rule("city", "exact", "b", "B2"))
+  expect_identical(out$old_value, c("a", "b", "z"))
+  expect_identical(out$new_value, c("A", "B2", "Z"))
+})
+
+test_that("merge_recode_rules de-duplicates when base is empty", {
+  # The old nrow(base) == 0 early return handed the overlay back untouched,
+  # so two rows for one key both survived and the second could never run.
+  dup <- dplyr::bind_rows(mk_rule("city", "exact", "a", "V1"),
+                          mk_rule("city", "exact", "a", "V2"))
+  out <- merge_recode_rules(empty_recodes_tibble(), dup)
+  expect_equal(nrow(out), 1L)
+  expect_identical(out$new_value, "V2")
+})
+
+test_that("merging does not restamp norm_spec", {
+  base <- mk_rule("city", "exact", "a", "A")
+  base$norm_spec <- "city=squish"
+  over <- mk_rule("city", "exact", "a", "A2")
+  over$norm_spec <- "city=titlecase"
+  expect_identical(merge_recode_rules(base, over)$norm_spec, "city=titlecase")
+  # A rule with a different key still appends rather than replacing.
+  expect_equal(nrow(merge_recode_rules(base, mk_rule("city", "exact", "b",
+                                                     "B"))), 2L)
+  # NA old_value is a key like any other.
+  expect_equal(nrow(merge_recode_rules(
+    mk_rule("c", "exact", NA_character_, "A"),
+    mk_rule("c", "exact", NA_character_, "B"))), 1L)
+})
+
+
+# --- clustering cost: self-comparison dropped, output unchanged --------------
+
+test_that("clustering does not compare a value with itself", {
+  # Rebuilds the old two-argument distance step and requires the SAME
+  # partition, for an edit-distance metric and a q-gram metric.
+  old_partition <- function(keys, algorithm, threshold = 0.8, q = 2) {
+    sim <- if (algorithm %in% c("jw", "cosine", "jaccard")) {
+      1 - stringdist::stringdistmatrix(keys, keys, method = algorithm, q = q)
+    } else {
+      d    <- stringdist::stringdistmatrix(keys, keys, method = algorithm)
+      lens <- outer(nchar(keys), nchar(keys), pmax)
+      lens[lens == 0] <- 1L
+      1 - d / lens
+    }
+    adj <- sim >= threshold
+    diag(adj) <- FALSE
+    as.integer(igraph::components(igraph::graph_from_adjacency_matrix(
+      adj, mode = "undirected", diag = FALSE))$membership)
+  }
+  groups <- function(x) sort(vapply(split(seq_along(x), x),
+                                    function(i) paste(i, collapse = "-"),
+                                    character(1)))
+  sets <- list(c("cappuccino", "capuccino", "cappucino", "espresso",
+                 "expresso", "latte", "late", "mocha"),
+               c("latte", "late"), "latte", c("cap", "cap", "cap"),
+               c("alpha", "bravo", "charlie"))
+  for (keys in sets) {
+    for (a in c("osa", "cosine")) {
+      expect_identical(
+        groups(cluster_strings(keys, algorithm = a, threshold = 0.8,
+                               q = 2)$cluster_id),
+        groups(old_partition(keys, a)),
+        info = paste(a, paste(keys, collapse = ",")))
+    }
+  }
+})
+
+
+# --- tests 4: the .rule_hits() NA invariant ---------------------------------
+
+test_that(".rule_hits always returns a plain logical with no NA (tests 4)", {
+  # CLAUDE.md: a single NA here makes the caller's `if (any(hit))` throw
+  # "missing value where TRUE/FALSE needed" and aborts Apply & Export.
+  values <- list(
+    c("latte", NA, "", "   ", "LATTE"),
+    c(NA_character_, NA_character_),
+    character(0),
+    c("café", intToUtf8(0x202e), "<NA>", "a\nb", "\\", "\"'"),
+    NA_character_
+  )
+  olds <- list("latte", NA_character_, "", "   ", "^lat", "<NA>", "[",
+               "café", "a\nb")
+  types <- c(RECODE_MATCH_TYPES, NA_character_, "nonsense", "")
+
+  bad_type <- character(0)
+  bad_na   <- character(0)
+  bad_len  <- character(0)
+  bad_attr <- character(0)
+  for (vi in seq_along(values)) for (o in olds) for (mt in types) {
+    v   <- values[[vi]]
+    hit <- .rule_hits(v, o, mt)
+    label <- sprintf("values[[%d]] / old=%s / type=%s", vi,
+                     if (is.na(o)) "NA" else sprintf("'%s'", o),
+                     if (is.na(mt)) "NA" else sprintf("'%s'", mt))
+    if (!is.logical(hit) || is.object(hit)) bad_type <- c(bad_type, label)
+    if (anyNA(hit))                         bad_na   <- c(bad_na, label)
+    if (length(hit) != length(v))           bad_len  <- c(bad_len, label)
+    if (!is.null(attributes(hit)))          bad_attr <- c(bad_attr, label)
+  }
+  expect_identical(bad_type, character(0))
+  expect_identical(bad_na,   character(0))
+  expect_identical(bad_len,  character(0))
+  expect_identical(bad_attr, character(0))
+})
+
+
+# --- tests 1 and 6: awkward input, app and script agreement -----------------
+
+test_that("an embedded newline, a very long value and RTL text agree", {
+  nl <- "oat milk\nextra hot"
+  expect_identical(eval_gen(tibble::tibble(v = c(nl, "other")),
+                            mk_rule("v", "exact", nl, "FIXED")),
+                   apply_recodes(tibble::tibble(v = c(nl, "other")),
+                                 mk_rule("v", "exact", nl, "FIXED"))$df)
+
+  long <- paste(rep("a", 20000), collapse = "")
+  dfl  <- tibble::tibble(v = c(long, "other"))
+  expect_identical(eval_gen(dfl, mk_rule("v", "exact", long, "FIXED")),
+                   apply_recodes(dfl, mk_rule("v", "exact", long,
+                                              "FIXED"))$df)
+
+  # Arabic, built at runtime so this file holds no right-to-left run.
+  ar  <- intToUtf8(c(0x0645, 0x0631, 0x062d, 0x0628, 0x0627))
+  dfa <- tibble::tibble(v = c(ar, "other"))
+  expect_identical(eval_gen(dfa, mk_rule("v", "exact", ar, "FIXED")),
+                   apply_recodes(dfa, mk_rule("v", "exact", ar, "FIXED"))$df)
+})
+
+test_that("a bidi control character does not break the script (security F3)", {
+  # R's parser refuses these raw, even inside a string literal, and
+  # deparse() does not escape them. Built at runtime: a raw one in this file
+  # would stop the file itself from parsing.
+  for (cp in c(0x202a, 0x202e, 0x2066, 0x2069)) {
+    val <- paste0("oat", intToUtf8(cp), "milk")
+    df  <- tibble::tibble(v = c(val, "other"))
+    rules <- mk_rule("v", "exact", val, "FIXED")
+
+    code <- generate_recode_R(rules, "d")
+    expect_false(grepl(intToUtf8(cp), code, fixed = TRUE))  # escaped
+    expect_match(code, sprintf("\\\\u%04x", cp))
+    expect_no_error(parse(text = code))
+    # And it still means the same string, so the recode fires.
+    expect_identical(eval_gen(df, rules), apply_recodes(df, rules)$df)
+    expect_identical(eval_gen(df, rules)$v, c("FIXED", "other"))
+  }
+  # A value with no bidi character is emitted exactly as deparse() had it.
+  plain <- "quotes \" backslash \\ café"
+  expect_identical(.deparse_literal(plain), deparse(plain))
+})
+
+test_that("a regex rule with a capture group replaces the whole cell", {
+  rules <- mk_rule("v", "regex", "^(lat)te([0-9]+)$", "FIXED")
+  df    <- tibble::tibble(v = c("latte12", "mocha"))
+  expect_identical(apply_recodes(df, rules)$df$v, c("FIXED", "mocha"))
+  expect_identical(eval_gen(df, rules), apply_recodes(df, rules)$df)
+  # Documented: no backreference substitution, the cell is replaced whole.
+  expect_false(grepl("\\1", generate_recode_R(rules, "d"), fixed = TRUE))
+})
+
+test_that("duplicate column names: the app takes the first, the script refuses", {
+  # KNOWN DEFECT, pinned not fixed. read_dataset() repairs duplicate names,
+  # so this is reachable through the API only. The app recodes the FIRST
+  # column of that name and says nothing; the generated script will not run
+  # on such a frame at all, so the two do NOT agree.
+  df <- data.frame(a = c("cap", "latte"), a = c("cap", "mocha"),
+                   check.names = FALSE, stringsAsFactors = FALSE)
+  expect_identical(names(df), c("a", "a"))
+  rules <- mk_rule("a", "exact", "cap", "FIXED")
+
+  got <- apply_recodes(df, rules)$df
+  expect_identical(got[[1]], c("FIXED", "latte"))
+  expect_identical(got[[2]], c("cap", "mocha"))     # second column untouched
+
+  expect_error(eval_gen(df, rules), "duplicate names")
+  # Nothing reports it either.
+  expect_equal(nrow(validate_recodes(rules, df)$missing_column), 0L)
+})
+
+test_that("a literal <NA> old_value is destroyed by the CSV round trip", {
+  # KNOWN DEFECT, pinned not fixed (engine 4 / security F11): `<NA>` is the
+  # deliberate, documented sentinel for a missing value, so a value whose
+  # text really is "<NA>" cannot be told apart from one. Changing the
+  # sentinel costs compatibility with existing rule files and is the owner's
+  # decision.
+  rules <- mk_rule("v", "exact", "<NA>", "FIXED")
+  path  <- withr::local_tempfile(fileext = ".csv")
+  write_recodes(rules, path)
+  back <- read_recodes(path)
+
+  expect_true(is.na(back$old_value))                # was the literal "<NA>"
+  expect_identical(back$new_value, "FIXED")         # other fields survive
+
+  # Before the round trip the rule matches the literal text; after it, the
+  # rule targets missing cells instead, which is a different rule.
+  df <- tibble::tibble(v = c("<NA>", NA))
+  expect_identical(apply_recodes(df, rules)$df$v, c("FIXED", NA))
+  expect_identical(apply_recodes(df, back)$df$v, c("<NA>", "FIXED"))
+})

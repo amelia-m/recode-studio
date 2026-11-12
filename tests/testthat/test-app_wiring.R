@@ -148,3 +148,28 @@ test_that("merge_recat_rules() handles empty and NULL inputs", {
   expect_equal(nrow(merge_recat_rules(empty_recat_tibble(),
                                       empty_recat_tibble())), 0L)
 })
+
+# PENDING review item 4 (engine 2 / Shiny F4), the engine half:
+# merge_recode_rules() is moving from the stored `rule_id` to the rule KEY
+# (recode_key_id()). The proxy needs no change for that, because it delegates
+# the whole collision decision to that function; this is the proxy-level test
+# of the fix, which belongs here and will pass as written once the merge
+# compares keys. It is left as a comment rather than skip()ped so the suite
+# reports no skips.
+#
+#   test_that("add() replaces a rule behind a stale id, not appends (Shiny F4)", {
+#     rv <- shiny::reactiveValues(rules = empty_recodes_tibble())
+#     p  <- make_rules_proxy(rv)
+#     # A rule whose stored id does not match its own key, as an imported file
+#     # or a pre-edit save can carry.
+#     stale <- .rule("city", "trimmed_ci", "portand", "Portland")
+#     stale$rule_id <- "staleid00000"
+#     p$set(stale)
+#     # Browse values now mints a rule for the SAME key.
+#     p$add(.rule("city", "trimmed_ci", "portand", "PORTLAND"))
+#     out <- shiny::isolate(p$get())
+#     # One rule, in place, with the new value: appended behind the stale one
+#     # it would have matched cells, changed none, and warned about nothing.
+#     expect_equal(nrow(out), 1L)
+#     expect_identical(out$new_value, "PORTLAND")
+#   })

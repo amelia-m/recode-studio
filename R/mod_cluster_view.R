@@ -105,6 +105,273 @@ cluster_recode_pairs <- function(members, keep, excluded = character(0)) {
   )
 }
 
+# --- Input guard, recompute cap and card cap (pure) --------------------------
+
+#' Drop missing, empty and whitespace-only values before clustering/matching.
+#'
+#' `unique_values_r()` keeps the empty string so Browse values can target it,
+#' but a blank is meaningless to a similarity cluster or a taxonomy match: ""
+#' and "   " would even cluster together once whitespace is squished.
+#'
+#' @param uv tibble(value, n) or NULL.
+#' @return `uv` without those rows (NULL stays NULL).
+cluster_drop_blank <- function(uv) {
+  if (is.null(uv) || nrow(uv) == 0) return(uv)
+  v <- as.character(uv$value)
+  uv[!is.na(v) & nzchar(trimws(v)), , drop = FALSE]
+}
+
+# Algorithms that build a full N x N distance matrix. Key collision, n-gram
+# fingerprint and the phonetic ones bucket on a key and scale linearly.
+CLUSTER_PAIRWISE_ALGORITHMS <- c("jw", "osa", "lv", "lcs", "cosine", "jaccard")
+
+# Most distinct values a pairwise algorithm clusters. Measured on synthetic
+# 6-18 character strings (lower + squish): 1000 values take about 1 s for
+# osa / lv / lcs / jw and 2-2.5 s for cosine / jaccard; 1500 take about 2 s
+# and 5 s; 2000 about 3 s and 8 s. Time and memory grow with the square.
+PAIRWISE_CLUSTER_CAP <- 1000L
+
+# The three count metrics are edit distances: one pair costs the PRODUCT of
+# the two lengths, so a handful of long values can cost more than a thousand
+# short ones, which the value cap above cannot see. jw and the two q-gram
+# metrics are not length-sensitive in the same way and are left to the value
+# cap. Measured (R 4.6.1, stringdist 0.9.17) on 20 synthetic values of 3,200
+# characters: osa 24.9 s, lv 15.2 s, lcs 13.3 s, against jw 0.44 s,
+# cosine 0.09 s, jaccard 0.06 s.
+CLUSTER_EDIT_DISTANCE_ALGORITHMS <- c("osa", "lv", "lcs")
+
+# Most characters, summed over the values, an edit-distance algorithm will
+# compare on either side.
+#
+# PROVISIONAL: a judgement read off the measurements, not a measured
+# constant, and the owner has the last word on it. Measured elapsed time for
+# osa over synthetic values (lower + squish): 40,000 characters 1.7-12.1 s
+# depending on the shape, 64,000 characters 24.9 s, 128,000 characters
+# 217.5 s. The documented supported workload (1,000 values of 6-18
+# characters) is 6,000-18,000 characters, so 40,000 leaves it untouched and
+# bites well before the range that costs minutes.
+PAIRWISE_CLUSTER_CHAR_CAP <- 40000L
+
+# Most cluster cards drawn at once. Each card is a table of inputs rebuilt by
+# renderUI, so hundreds of them make the tab crawl.
+MAX_CLUSTER_CARDS <- 50L
+
+#' Is `algorithm` a quadratic pairwise one?
+cluster_is_pairwise <- function(algorithm) {
+  length(algorithm) == 1L && !is.na(algorithm) &&
+    algorithm %in% CLUSTER_PAIRWISE_ALGORITHMS
+}
+
+#' Is `algorithm` an edit distance, whose cost grows with value LENGTH as
+#' well as with the number of values?
+cluster_is_edit_distance <- function(algorithm) {
+  length(algorithm) == 1L && !is.na(algorithm) &&
+    algorithm %in% CLUSTER_EDIT_DISTANCE_ALGORITHMS
+}
+
+#' Length of each value for the character budget, in bytes.
+#'
+#' `nchar()` in characters THROWS on a value that is not valid UTF-8, and this
+#' app ingests arbitrary third-party files. Bytes never throw and are an upper
+#' bound on characters, which is the safe direction for a cost budget.
+.budget_lengths <- function(values) {
+  n <- suppressWarnings(nchar(as.character(values), type = "bytes",
+                              allowNA = TRUE))
+  n[is.na(n)] <- 0L
+  as.integer(n)
+}
+
+#' How many of `chars`, taken in order, fit inside a character budget.
+#'
+#' Always at least one, so there is something to compare: a single value
+#' longer than the whole budget is kept. (One value on its own forms no
+#' cluster, and the self-comparison that makes it expensive today is being
+#' removed from `cluster_strings()` separately.)
+.fit_char_budget <- function(chars, budget) {
+  if (length(chars) == 0L) return(0L)
+  max(1L, sum(cumsum(as.numeric(chars)) <= as.numeric(budget)))
+}
+
+#' Limit the values a pairwise algorithm clusters to the most frequent ones
+#' that fit both budgets: at most `cap` values, and for an edit distance at
+#' most `char_cap` characters in all.
+#'
+#' Linear algorithms are never capped. The character budget applies to the
+#' edit distances only: their cost grows with the square of the value length,
+#' so 20 values of 6,400 characters cost minutes while 1,000 values of 12
+#' cost seconds, and the value count alone cannot tell them apart
+#' (security F6).
+#'
+#' @param uv        tibble(value, n).
+#' @param algorithm one of CLUSTER_ALGORITHMS.
+#' @param cap       maximum distinct values for a pairwise algorithm.
+#' @param char_cap  maximum characters in all for an edit-distance algorithm.
+#' @return list(uv, capped, n_total, cap, kept, reason, chars_total): `uv` is
+#'   the (possibly) reduced table, most frequent first when capped; `n_total`
+#'   the distinct values before capping; `kept` how many are being clustered;
+#'   `reason` `"values"` or `"characters"`, whichever budget bit.
+cluster_cap_values <- function(uv, algorithm, cap = PAIRWISE_CLUSTER_CAP,
+                               char_cap = PAIRWISE_CLUSTER_CHAR_CAP) {
+  n_total <- if (is.null(uv)) 0L else nrow(uv)
+  out <- list(uv = uv, capped = FALSE, n_total = n_total,
+              cap = as.integer(cap), kept = n_total, reason = "values",
+              chars_total = 0L)
+  if (!cluster_is_pairwise(algorithm) || n_total == 0L) return(out)
+
+  chars <- .budget_lengths(uv$value)
+  out$chars_total <- as.integer(sum(chars))
+
+  ord <- order(-uv$n, seq_len(n_total))
+  n_by_value <- min(n_total, max(0L, as.integer(cap)))
+  keep_n <- n_by_value
+  reason <- "values"
+  if (cluster_is_edit_distance(algorithm)) {
+    n_by_chars <- .fit_char_budget(chars[ord][seq_len(n_by_value)], char_cap)
+    if (n_by_chars < keep_n) {
+      keep_n <- n_by_chars
+      reason <- "characters"
+    }
+  }
+  if (keep_n >= n_total) return(out)
+
+  out$uv     <- uv[ord[seq_len(keep_n)], , drop = FALSE]
+  out$capped <- TRUE
+  out$kept   <- as.integer(keep_n)
+  out$reason <- reason
+  out
+}
+
+#' Which multi-member clusters get a card: the largest first, at most
+#' `max_cards` of them.
+#'
+#' @param cl        cluster_strings() output.
+#' @param max_cards maximum cards to draw.
+#' @return list(ids, sizes, n_total): ids and sizes of the clusters to draw,
+#'   in drawing order, and how many multi-member clusters exist in all.
+cluster_cards_to_show <- function(cl, max_cards = MAX_CLUSTER_CARDS) {
+  if (is.null(cl) || nrow(cl) == 0) {
+    return(list(ids = integer(0), sizes = integer(0), n_total = 0L))
+  }
+  tab   <- table(cl$cluster_id)
+  ids   <- as.integer(names(tab))
+  sizes <- as.integer(tab)
+  multi <- sizes > 1
+  ids   <- ids[multi]
+  sizes <- sizes[multi]
+  # Largest first; ties keep ascending cluster id (order() is stable).
+  o <- order(-sizes)
+  ids   <- ids[o]
+  sizes <- sizes[o]
+  n_total <- length(ids)
+  keep <- seq_len(min(n_total, max(0L, as.integer(max_cards))))
+  list(ids = ids[keep], sizes = sizes[keep], n_total = n_total)
+}
+
+# Where to go when a cap bit. One copy, so the value cap, the length cap and
+# the taxonomy matcher all point at the linear algorithms in the same words.
+CLUSTER_LINEAR_HINT <- paste0(
+  "To cluster them all, choose Key collision, N-gram fingerprint, Soundex or ",
+  "Metaphone, which handle any number of values quickly.")
+
+#' Limit what the Reference Taxonomy Matcher compares.
+#'
+#' `match_taxonomy()` builds a full values-by-targets distance matrix, and its
+#' call site applied no cap of any kind, so the same length cost reachable on
+#' the Clusters tab was reachable here with no bound at all: 20 values of
+#' 6,400 characters against 20 reference terms of 6,400 characters took
+#' 229.7 s with `osa` (0.17 s with the built-in 51-term state list, whose
+#' terms are short, and 6.3 s with `jw`).
+#'
+#' Only the edit distances are capped, and only on characters: the number of
+#' values is left alone because this tab reports on the whole column and
+#' 1,000 values against 51 short terms measured 0.17 s.
+#'
+#' @param uv       tibble(value, n), blanks already dropped.
+#' @param targets  character vector of reference terms.
+#' @param method   the distance metric chosen in the UI.
+#' @param char_cap maximum characters on each side.
+#' @return list(uv, targets, capped, values_total, values_kept,
+#'   targets_total, targets_kept).
+taxonomy_cap_input <- function(uv, targets, method,
+                               char_cap = PAIRWISE_CLUSTER_CHAR_CAP) {
+  n_values  <- if (is.null(uv)) 0L else nrow(uv)
+  n_targets <- length(targets)
+  out <- list(uv = uv, targets = targets, capped = FALSE,
+              values_total = n_values, values_kept = n_values,
+              targets_total = n_targets, targets_kept = n_targets)
+  if (!cluster_is_edit_distance(method) || n_values == 0L ||
+      n_targets == 0L) {
+    return(out)
+  }
+
+  ord <- order(-uv$n, seq_len(n_values))
+  keep_v <- .fit_char_budget(.budget_lengths(uv$value)[ord], char_cap)
+  keep_t <- .fit_char_budget(.budget_lengths(targets), char_cap)
+
+  if (keep_v >= n_values && keep_t >= n_targets) return(out)
+
+  if (keep_v < n_values) {
+    out$uv <- uv[ord[seq_len(keep_v)], , drop = FALSE]
+    out$values_kept <- as.integer(keep_v)
+  }
+  if (keep_t < n_targets) {
+    out$targets <- targets[seq_len(keep_t)]
+    out$targets_kept <- as.integer(keep_t)
+  }
+  out$capped <- TRUE
+  out
+}
+
+#' The note shown when a pairwise algorithm was capped, or NULL.
+#'
+#' @param capping cluster_cap_values() result. `kept` and `reason` may be
+#'   absent (an older caller): then every value up to `cap` was kept and the
+#'   value cap is what bit.
+cluster_cap_note <- function(capping) {
+  if (is.null(capping) || !isTRUE(capping$capped)) return(NULL)
+  kept  <- format(capping$kept %||% capping$cap, big.mark = ",")
+  total <- format(capping$n_total, big.mark = ",")
+  why <- if (identical(capping$reason, "characters")) {
+    sprintf(paste0(
+      "Clustering the %s most frequent of %s distinct values. This algorithm ",
+      "compares every character of every value with every character of every ",
+      "other, so a few very long values cost more than a thousand short ",
+      "ones."), kept, total)
+  } else {
+    sprintf(paste0(
+      "Clustering the %s most frequent of %s distinct values. This algorithm ",
+      "compares every value with every other, which gets very slow past %s ",
+      "values."), kept, total, kept)
+  }
+  help_line(paste(why, CLUSTER_LINEAR_HINT))
+}
+
+#' The note shown when the taxonomy matcher's input was reduced, or NULL.
+#'
+#' @param capping taxonomy_cap_input() result.
+taxonomy_cap_note <- function(capping) {
+  if (is.null(capping) || !isTRUE(capping$capped)) return(NULL)
+  num <- function(x) format(x, big.mark = ",")
+  parts <- character(0)
+  if (capping$values_kept < capping$values_total) {
+    parts <- c(parts, sprintf(
+      "the %s most frequent of %s distinct values",
+      num(capping$values_kept), num(capping$values_total)))
+  }
+  if (capping$targets_kept < capping$targets_total) {
+    parts <- c(parts, sprintf(
+      "the first %s of %s reference terms",
+      num(capping$targets_kept), num(capping$targets_total)))
+  }
+  help_line(sprintf(paste0(
+    "Matching %s. This distance metric compares every character of every ",
+    "value with every character of every term, so a few very long values ",
+    "cost more than a thousand short ones. For the whole list, pick a ",
+    "shorter reference list or the Jaro-Winkler metric, which is not ",
+    "length-sensitive in the same way."),
+    paste(parts, collapse = " against ")))
+}
+
 # --- Built-in standard reference taxonomies ----------------------------------
 BUILTIN_TAXONOMIES <- list(
   "US 50 States & DC" = c(
@@ -393,6 +660,7 @@ mod_cluster_view_ui <- function(id) {
           "for you."
         ),
         shiny::uiOutput(ns("conflicts")),
+        shiny::uiOutput(ns("cap_note")),
         shiny::uiOutput(ns("clusters_ui"))
       )
     ),
@@ -467,6 +735,7 @@ mod_cluster_view_ui <- function(id) {
           )
         ),
         shiny::hr(),
+        shiny::uiOutput(ns("tax_cap_note")),
         shiny::uiOutput(ns("tax_summary_banner")),
         shiny::uiOutput(ns("tax_empty")),
         DT::dataTableOutput(ns("tax_match_table"))
@@ -478,16 +747,32 @@ mod_cluster_view_ui <- function(id) {
 #' @param selected_var_r   reactive selected variable name
 #' @param unique_values_r  reactive tibble(value, n) for current var
 #' @param rules_proxy      list(add=, set=, get=)
+#' @param debounce_ms      wait after the last clustering-settings change
+#'                         before clustering again (a slider drag is one run).
+#' @param pairwise_cap     see PAIRWISE_CLUSTER_CAP. An argument so tests can
+#'                         exercise the cap without a thousand values.
+#' @param pairwise_char_cap see PAIRWISE_CLUSTER_CHAR_CAP. An argument so
+#'                         tests can exercise it without 40,000 characters.
+#' @param max_cards        see MAX_CLUSTER_CARDS.
 mod_cluster_view_server <- function(id, shared_state,
                                     selected_var_r,
                                     unique_values_r,
-                                    rules_proxy) {
+                                    rules_proxy,
+                                    debounce_ms  = 500,
+                                    pairwise_cap = PAIRWISE_CLUSTER_CAP,
+                                    pairwise_char_cap =
+                                      PAIRWISE_CLUSTER_CHAR_CAP,
+                                    max_cards    = MAX_CLUSTER_CARDS) {
   shiny::moduleServer(id, function(input, output, session) {
 
     # --- Similarity Clustering Server Logic -----------------------------------
 
     output$algo_note <- shiny::renderUI({
-      alg <- input$algorithm
+      # NULL until the select input has registered, as on the first render and
+      # after a re-render: `if (NULL == "...")` is "argument is of length
+      # zero" and takes the note down (Shiny F13). Default to the algorithm
+      # the UI selects, like every other reader in this module.
+      alg <- input$algorithm %||% "jw"
       if (alg == "fingerprint") {
         shiny::tags$small(shiny::tags$span(
           class = "text-success fw-bold",
@@ -512,7 +797,8 @@ mod_cluster_view_server <- function(id, shared_state,
     })
 
     output$threshold_note <- shiny::renderUI({
-      if (input$algorithm %in% c("fingerprint", "ngram_fingerprint", "soundex", "metaphone")) {
+      alg <- input$algorithm %||% "jw"
+      if (alg %in% c("fingerprint", "ngram_fingerprint", "soundex", "metaphone")) {
         shiny::tags$small(shiny::tags$em(
           "Threshold is bypassed by this exact-key / phonetic algorithm."
         ))
@@ -523,17 +809,67 @@ mod_cluster_view_server <- function(id, shared_state,
       }
     })
 
+    # Clustering settings, debounced: dragging the threshold slider, stepping
+    # q or ticking several normalizers queues ONE recomputation once the
+    # inputs have been still for `debounce_ms`, not one per intermediate
+    # value. The notes above read the inputs directly and stay instant.
+    settings_r <- shiny::reactive({
+      alg <- input$algorithm
+      q   <- suppressWarnings(as.integer(input$qgram))
+      if (length(q) != 1L || is.na(q)) q <- 2L
+      list(
+        algorithm = alg,
+        # The threshold only matters to pairwise algorithms. Blanking it for
+        # the others keeps it out of the cache key, so moving the slider under
+        # Key collision is a cache hit rather than a rerun.
+        threshold = if (cluster_is_pairwise(alg)) input$threshold
+                    else NA_real_,
+        q         = max(1L, q),
+        # normalize_for_cluster() applies steps in a fixed order, so sorting
+        # only makes the cache key independent of tick order.
+        normalize = sort(input$normalize %||% character(0)))
+    })
+    settings_d <- shiny::debounce(settings_r, debounce_ms)
+
+    # What gets clustered: blanks dropped, pairwise algorithms capped.
+    cluster_input_r <- shiny::reactive({
+      s  <- settings_d()
+      uv <- cluster_drop_blank(unique_values_r())
+      if (is.null(uv) || nrow(uv) == 0 || is.null(s$algorithm)) return(NULL)
+      capping <- cluster_cap_values(uv, s$algorithm, pairwise_cap,
+                                    pairwise_char_cap)
+      list(uv       = capping$uv,
+           capping  = capping[c("capped", "n_total", "cap", "kept",
+                                "reason")],
+           settings = s)
+    })
+
+    # Cached on exactly what the computation reads (values, counts,
+    # algorithm, threshold, q, normalizers), so returning to an earlier
+    # setting is instant. Session-scoped: one user's column values never sit
+    # in a cache another session could hit. bindCache() rather than a
+    # hand-rolled cache around the pure call, because it slots into the
+    # reactive graph as-is: clusters_r() keeps its name and its callers
+    # (cards, conflicts, Apply) are untouched.
     clusters_r <- shiny::reactive({
-      uv <- unique_values_r()
-      if (is.null(uv) || nrow(uv) == 0) return(NULL)
+      ci <- cluster_input_r()
+      if (is.null(ci)) return(NULL)
+      s <- ci$settings
       cluster_strings(
-        values      = uv$value,
-        frequencies = uv$n,
-        threshold   = input$threshold,
-        algorithm   = input$algorithm,
-        q           = max(1L, as.integer(input$qgram %||% 2L)),
-        normalize   = input$normalize %||% character(0)
+        values      = ci$uv$value,
+        frequencies = ci$uv$n,
+        threshold   = s$threshold,
+        algorithm   = s$algorithm,
+        q           = s$q,
+        normalize   = s$normalize
       )
+    }) |>
+      shiny::bindCache(cluster_input_r(), cache = "session")
+
+    output$cap_note <- shiny::renderUI({
+      ci <- cluster_input_r()
+      if (is.null(ci)) return(NULL)
+      cluster_cap_note(ci$capping)
     })
 
     output$sibling_preview <- shiny::renderUI({
@@ -590,18 +926,23 @@ mod_cluster_view_server <- function(id, shared_state,
       cl <- clusters_r()
       if (is.null(cl) || nrow(cl) == 0) return(shiny::tags$em("No data."))
 
-      cluster_sizes <- cl |>
-        dplyr::count(cluster_id, name = "size") |>
-        dplyr::filter(size > 1) |>
-        dplyr::arrange(dplyr::desc(size))
+      shown <- cluster_cards_to_show(cl, max_cards)
 
-      if (nrow(cluster_sizes) == 0) {
+      if (shown$n_total == 0) {
         return(shiny::tags$em(
           "No multi-member clusters at this threshold. Try lowering it or picking a different algorithm."
         ))
       }
 
-      cards <- lapply(cluster_sizes$cluster_id, function(cid) {
+      count_line <- if (length(shown$ids) < shown$n_total) {
+        help_line(sprintf(
+          paste0("Showing %d of %d clusters, largest first. Raise the ",
+                 "similarity threshold or choose a stricter algorithm to ",
+                 "narrow the list."),
+          length(shown$ids), shown$n_total))
+      }
+
+      cards <- lapply(shown$ids, function(cid) {
         members <- cl[cl$cluster_id == cid, ] |>
           dplyr::arrange(dplyr::desc(n))
         modal <- members$value[1]   # most frequent = default suggested target
@@ -633,7 +974,7 @@ mod_cluster_view_server <- function(id, shared_state,
         )
       })
 
-      do.call(shiny::tagList, cards)
+      shiny::tagList(count_line, cards)
     })
 
     # Single handler for all cluster recode buttons (avoids observer accumulation
@@ -749,17 +1090,31 @@ mod_cluster_view_server <- function(id, shared_state,
       character(0)
     })
 
-    taxonomy_matches_r <- shiny::reactive({
-      uv <- unique_values_r()
+    # What the matcher compares: blanks dropped, and for an edit-distance
+    # metric the two sides bounded by the character budget.
+    taxonomy_input_r <- shiny::reactive({
+      # A blank value has nothing to match against a standard list.
+      uv <- cluster_drop_blank(unique_values_r())
       targets <- taxonomy_targets_r()
       if (is.null(uv) || nrow(uv) == 0 || length(targets) == 0) return(NULL)
+      taxonomy_cap_input(uv, targets, input$tax_method %||% "jw",
+                         pairwise_char_cap)
+    })
+
+    taxonomy_matches_r <- shiny::reactive({
+      ti <- taxonomy_input_r()
+      if (is.null(ti)) return(NULL)
       match_taxonomy(
-        values           = uv$value,
-        frequencies      = uv$n,
-        taxonomy_targets = targets,
+        values           = ti$uv$value,
+        frequencies      = ti$uv$n,
+        taxonomy_targets = ti$targets,
         method           = input$tax_method %||% "jw",
         threshold        = input$tax_threshold %||% 0.75
       )
+    })
+
+    output$tax_cap_note <- shiny::renderUI({
+      taxonomy_cap_note(taxonomy_input_r())
     })
 
     output$tax_sibling_preview <- shiny::renderUI({

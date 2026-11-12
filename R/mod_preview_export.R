@@ -87,47 +87,131 @@ normalization_summary_table <- function(normalizations, summary = NULL) {
                  columns = columns, cells_changed = cells)
 }
 
+#' Rule-warning rows for recode rules whose target column is not in the data.
+#'
+#' Reads `validate_recodes(rules, data)$missing_column` (columns `rule_id`,
+#' `variable`, `sibling_pattern`) rather than inventing its own signal, so the
+#' Validate report on the Recodes tab and this panel always agree about which
+#' rules are affected.
+#'
+#' Why it belongs here: nothing clears the rule set when a dataset is loaded,
+#' which is deliberate (rules are reusable across files), so a rule for an
+#' absent column is the ordinary consequence of loading a second file. The app
+#' skips such a rule silently today. This REPORTS it and changes nothing: the
+#' downloads keep working, and the exported script skips the same rules.
+#'
+#' Tolerant of a validator that does not report the class, so it is a no-op on
+#' a build without it.
+#'
+#' @param rules recode rule tibble.
+#' @param data  the loaded data frame, or NULL.
+#' @return a tibble in the `empty_rule_warnings()` schema, possibly empty.
+.warn_recodes_missing_column <- function(rules, data) {
+  none <- empty_rule_warnings()
+  if (is.null(data) || is.null(rules) || !is.data.frame(rules) ||
+      nrow(rules) == 0) {
+    return(none)
+  }
+  iss <- tryCatch(validate_recodes(rules, data = data),
+                  error = function(e) NULL)
+  x <- if (is.list(iss)) iss$missing_column else NULL
+  if (!is.data.frame(x) || nrow(x) == 0) return(none)
+  pat <- if ("sibling_pattern" %in% names(x)) as.character(x$sibling_pattern)
+         else rep(NA_character_, nrow(x))
+  tibble::tibble(
+    kind     = rep("recode_missing_column", nrow(x)),
+    id       = as.character(x$rule_id),
+    target   = as.character(x$variable),
+    message  = sprintf(paste0(
+      "Recode rule for column '%s'%s did nothing: the loaded dataset has no ",
+      "such column. Loading a dataset does not clear the rule set, so this ",
+      "is expected if the rule was written for another file. The exported ",
+      "script skips it too."),
+      as.character(x$variable),
+      ifelse(is.na(pat), "", sprintf(" (sibling pattern '%s')", pat))),
+    n_before = rep(NA_integer_, nrow(x)),
+    n_after  = rep(NA_integer_, nrow(x)),
+    severity = rep("warning", nrow(x))
+  )
+}
+
 #' Render the "rules that did nothing" panel.
 #'
 #' Pure (tags only, no reactivity) so it can be unit tested.
 #'
+#' Reads `severity` (RULE_WARNING_SEVERITIES in R/rule_warnings.R). Rows with
+#' severity "warning" (or no severity at all: a tibble from before the column
+#' existed) go in the yellow box and are counted as rules that did less than
+#' expected. Rows with severity "note" are stamp-only differences the rule's
+#' match type already ignores, so they cannot change the result: they are
+#' listed in a separate, collapsed block titled with their count, and they do
+#' not replace the all-clear line when there are no warnings. Any other
+#' severity value is treated as a warning, the safe side.
+#'
 #' @param warnings a tibble in the `empty_rule_warnings()` schema (see
 #'   R/rule_warnings.R), or NULL when there is nothing to check: no data
 #'   loaded, or no rules of either kind in the session.
-#' @return NULL when `warnings` is NULL; a quiet "No problems found" line when
-#'   it has no rows; otherwise a warning box listing every item in plain
-#'   language.
+#' @return NULL when `warnings` is NULL; otherwise a tagList holding either
+#'   the quiet "No problems found" line or the warning box, followed by the
+#'   notes block when there are notes.
 rule_warnings_ui <- function(warnings) {
   if (is.null(warnings)) return(NULL)
+  sev <- if ("severity" %in% names(warnings)) as.character(warnings$severity)
+         else rep("warning", nrow(warnings))
+  is_note <- !is.na(sev) & sev == "note"
+  notes <- warnings[is_note, , drop = FALSE]
+  warnings <- warnings[!is_note, , drop = FALSE]
   n <- nrow(warnings)
+
+  notes_ui <- if (nrow(notes) > 0) shiny::div(
+    class = "rs-rule-notes mb-2",
+    guide_note(
+      title = sprintf("%d note%s: stamp differences that cannot change the result",
+                      nrow(notes), if (nrow(notes) == 1) "" else "s"),
+      shiny::tags$small(class = "d-block text-muted mb-1", paste0(
+        "These rules were written under a different normalization, but their ",
+        "match type already ignores the difference, so they match the same ",
+        "cells either way. Listed for the record; nothing needs fixing.")),
+      shiny::tags$ul(class = "mb-1 small",
+                     lapply(notes$message, function(m) shiny::tags$li(m)))))
+
   if (n == 0) {
-    return(shiny::div(
-      class = "small text-muted mb-2 rs-rule-warnings-ok",
-      "No problems found: every normalization changes something, every ",
-      "recode rule matches at least one cell and was written under the ",
-      "current normalization, and no recategorization rule loses rows to the ",
-      "recodes."
-    ))
+    return(shiny::tagList(
+      # This line enumerates what WAS checked, so it goes stale the moment a
+      # check is added to R/rule_warnings.R. Keep it in step with the kinds
+      # collect_rule_warnings() can report.
+      shiny::div(
+        class = "small text-muted mb-2 rs-rule-warnings-ok",
+        "No problems found: every normalization changes something, every ",
+        "recode rule matches at least one cell that no earlier rule had ",
+        "already claimed and was written under the current normalization, ",
+        "every recode rule reaches a column that is in the data, and every ",
+        "recategorization rule matches at least one row, before and after the ",
+        "recodes."
+      ),
+      notes_ui))
   }
   n_recat <- sum(warnings$kind == "recat_terms_recoded_away")
   n_drift <- sum(warnings$kind %in% c("norm_spec_drift", "norm_spec_unstamped"))
-  shiny::div(
-    class = "alert alert-warning rs-rule-warnings",
-    role  = "alert",
-    shiny::strong(sprintf("%d rule%s did less than expected.",
-                          n, if (n == 1) "" else "s")),
-    shiny::tags$ul(
-      class = "mb-1",
-      lapply(warnings$message, function(m) shiny::tags$li(m))
+  shiny::tagList(
+    shiny::div(
+      class = "alert alert-warning rs-rule-warnings",
+      role  = "alert",
+      shiny::strong(sprintf("%d rule%s did less than expected.",
+                            n, if (n == 1) "" else "s")),
+      shiny::tags$ul(
+        class = "mb-1",
+        lapply(warnings$message, function(m) shiny::tags$li(m))
+      ),
+      if (n_drift > 0) shiny::tags$small(class = "d-block", shiny::tags$em(
+        "Normalizations are applied before the recodes, so recode rules must ",
+        "describe the values as the normalizations leave them.")),
+      if (n_recat > 0) shiny::tags$small(class = "d-block", shiny::tags$em(
+        "Recodes are applied first and recategorization second, so ",
+        "recategorization terms must describe the values as the recodes ",
+        "leave them."))
     ),
-    if (n_drift > 0) shiny::tags$small(class = "d-block", shiny::tags$em(
-      "Normalizations are applied before the recodes, so recode rules must ",
-      "describe the values as the normalizations leave them.")),
-    if (n_recat > 0) shiny::tags$small(class = "d-block", shiny::tags$em(
-      "Recodes are applied first and recategorization second, so ",
-      "recategorization terms must describe the values as the recodes ",
-      "leave them."))
-  )
+    notes_ui)
 }
 
 
@@ -312,6 +396,7 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
           .warn_recodes_no_match_from_summary(diff$df_normalized, r,
                                               diff$summary),
           .warn_norm_spec_drift(r, nn, names(d)),
+          .warn_recodes_missing_column(r, d),
           warn_recat_terms_recoded_away(diff$df_normalized, diff$df_after,
                                         recat)
         )},
@@ -383,9 +468,23 @@ mod_preview_export_server <- function(id, shared_state, rules_proxy,
     })
 
     # One script: normalization blocks first, then the recode blocks.
+    #
+    # `data_cols` matters: without it generate_recode_R() tests the overlap
+    # WARNING only against columns some rule names, so two sibling patterns
+    # that share a third column of the real data warn in the bundle's script
+    # and not in this one, and a rule for an absent column is skipped in one
+    # and not the other. The same rules must not produce two different
+    # scripts. R/export_bundle.R already passes the loaded column names.
+    #
+    # `data_cols` is what makes the previewed script carry the same overlap
+    # warning and the same `# SKIPPED` comments as the bundle's copy. With NULL
+    # (no data loaded) the generator behaves as it did before the argument
+    # existed.
     script_r <- function() {
+      d <- shared_state$data
       generate_recode_R(rules_proxy$get(), dataset_id = dataset_id(),
-                        normalizations = norms_r())
+                        normalizations = norms_r(),
+                        data_cols = if (!is.null(d)) names(d) else NULL)
     }
 
     output$r_preview <- shiny::renderText(script_r())

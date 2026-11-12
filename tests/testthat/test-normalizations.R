@@ -13,6 +13,9 @@ source(file.path("..", "..", "R", "recat_helpers.R"))
 source(file.path("..", "..", "R", "data_loader.R"))
 source(file.path("..", "..", "R", "rule_proxies.R"))
 source(file.path("..", "..", "R", "rule_warnings.R"))
+# mod_preview_export.R calls app_version_from_description(); without this the
+# file only passed when an earlier test file had sourced export_bundle.R.
+source(file.path("..", "..", "R", "export_bundle.R"))
 source(file.path("..", "..", "R", "mod_preview_export.R"))
 source(file.path("..", "..", "R", "mod_normalize.R"))
 
@@ -200,8 +203,8 @@ test_that("validate_normalizations reports each issue class", {
   data <- tibble::tibble(a = "x", b = "x", d = "x", drink1 = "x", drink2 = "y")
   iss <- validate_normalizations(rules, data = data)
   expect_named(iss, c("no_ops", "invalid_ops", "conflicting_case",
-                      "duplicate_targets", "missing_column",
-                      "overlapping_targets"))
+                      "duplicate_targets", "invalid_sibling_pattern",
+                      "missing_column", "overlapping_targets"))
   expect_equal(iss$no_ops$variable, "a")
   expect_equal(iss$conflicting_case$variable, "b")
   expect_match(iss$invalid_ops$detail, "banana")
@@ -338,6 +341,29 @@ test_that("generated normalization code parses and uses the right calls", {
   expect_true(grepl("`drink notes` = tolower(`drink notes`)", code, fixed = TRUE))
   expect_true(grepl("`2nd drink` = str_trim(`2nd drink`)", code, fixed = TRUE))
   expect_true(grepl("No recode rules defined", code, fixed = TRUE))
+})
+
+test_that("a normalization on a metacharacter column reaches only that column", {
+  df <- tibble::tibble(`q1.a` = c(" yes ", "no"), q1_a = c(" yes ", "no"),
+                       `price ($)` = c(" free", "2"))
+  norms <- dplyr::bind_rows(
+    mk_norm("q1.a", c("trim", "uppercase")),
+    mk_norm("price ($)", "trim"))
+  applied <- apply_normalizations(df, norms)$df
+  genned  <- eval_script(df, empty_recodes_tibble(), norms)
+  expect_identical(applied$`q1.a`, c("YES", "NO"))
+  expect_identical(applied$q1_a, df$q1_a)
+  expect_identical(applied$`price ($)`, c("free", "2"))
+  for (col in names(df)) {
+    expect_identical(genned[[col]], applied[[col]], info = col)
+  }
+  # Normalization plus recode on the same metacharacter column.
+  rules <- mk_recode("price ($)", "exact", "free", "0")
+  genned <- eval_script(df, rules, norms)
+  expect_identical(genned$`price ($)`, c("0", "2"))
+  expect_identical(genned$`price ($)`,
+                   apply_recodes(applied, rules)$df$`price ($)`)
+  expect_identical(genned$q1_a, df$q1_a)
 })
 
 test_that("a normalization with no usable ops emits no code at all", {
@@ -510,7 +536,10 @@ test_that("adding a rule updates the proxy; re-adding replaces it", {
       expect_identical(tail(names(tbl), 1), "remove")
       expect_equal(tbl$changes, "collapse spaces + Title Case")
 
-      session$setInputs(delete_row = out$norm_id)
+      # Remove carries the row position as well as the id, so that duplicated,
+      # blank or NA ids from an imported file cannot take out the wrong rule.
+      session$setInputs(delete_row = as.character(jsonlite::toJSON(
+        list(row = 1L, id = out$norm_id), auto_unbox = TRUE)))
       expect_equal(nrow(shiny::isolate(proxy$get())), 0L)
     })
 })
@@ -532,10 +561,11 @@ test_that("the sibling choice builds the family pattern in plain language", {
       expect_true(out$apply_to_siblings)
       expect_equal(out$sibling_pattern, "^drink[0-9]+$")
 
-      # An invalid typed pattern degrades to a single-column rule.
+      # An invalid typed pattern yields no draft at all (it used to degrade
+      # quietly to a single-column rule), and Add refuses it.
       session$setInputs(sibling_mode = "custom", sibling_pattern = "drink[")
       expect_null(pattern_cols_r())
-      expect_false(draft_rule_r()$apply_to_siblings)
+      expect_null(draft_rule_r())
       note <- paste(unlist(output$sibling_note), collapse = " ")
       expect_match(note, "not a valid regular expression")
     })

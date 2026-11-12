@@ -40,3 +40,28 @@ Smtih
 # test-string_helpers.R: deliberately INVALID match_type, to exercise
 # validate_recodes()$invalid_enum. Not a misspelling of anything real.
 regx
+
+# tests/testthat/*.R: fixtures added in the September 2026 work.
+# Spellcheck word-replacement tests (coffe -> coffee, dont -> don't,
+# Title Case and ALL CAPS mirroring), taxonomy and cluster tests
+# (misspelled neighbourhood and city names), and normalization tests.
+capu
+chioce
+choclate
+coffe
+dont
+Mckenze
+moca
+portand
+portlnd
+seatle
+springfeld
+sugr
+uptwn
+
+# Fixtures added with the October defect fixes: a misspelt city and state for
+# the taxonomy and sibling-pattern tests, and a nonsense token the Spellcheck
+# tests need hunspell to reject.
+lincon
+Nebrska
+zzbadzz

@@ -5,6 +5,83 @@
 # rows + "Create rule for selected" wires into the rule editor.
 # =============================================================================
 
+#' Distinct values of one column with their counts, most frequent first.
+#'
+#' Feeds `unique_values_r` in app.R (Browse values, Clusters, Spellcheck).
+#' The EMPTY value "" is KEPT, so a rule can target empty cells; missing
+#' values (NA) are dropped, because a rule targets those with an NA old_value.
+#' Pure (no Shiny).
+#'
+#' @param df  Data frame (normally the normalized frame), or NULL.
+#' @param var Column name, or NULL.
+#' @return tibble(value, n), or NULL when there is nothing to show.
+value_frequency_table <- function(df, var) {
+  if (is.null(var) || length(var) != 1 || is.na(var) || is.null(df) ||
+      !(var %in% names(df))) return(NULL)
+  x <- df[[var]]
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(NULL)
+  tibble::tibble(value = as.character(x)) |>
+    dplyr::count(value, name = "n") |>
+    dplyr::arrange(dplyr::desc(n))
+}
+
+# How Browse values shows the EMPTY value "". Display only: the row's value is
+# still "", so a rule made from it has old_value "". The label is constant
+# markup, never dataset text, and is styled (italic, muted, dashed outline,
+# explanatory tooltip) so a real value that happens to read "(empty)" (shown
+# as plain text) cannot be mistaken for it.
+EMPTY_VALUE_LABEL <- "(empty)"
+EMPTY_VALUE_TITLE <- paste0(
+  "An empty value: the cell holds no text (it is not missing). ",
+  "A rule made from this row targets empty cells.")
+
+#' DataTables columnDefs entry that labels the empty value, then applies the
+#' usual one-line truncation (`dt_truncate_defs()`) to everything else.
+#'
+#' Put it BEFORE any other columnDefs entry with a `render` for the same
+#' column: DataTables gives earlier entries priority. Relies on `escape = TRUE`
+#' for the targeted column, like `dt_truncate_defs()`. Display only: sorting,
+#' search and cell editing see the real value.
+#'
+#' Also used by the Recodes table (R/mod_recode_editor.R), where an empty
+#' old_value / new_value would otherwise look exactly like a missing one.
+#'
+#' @param targets  0-based column indices.
+#' @param chars    Passed to `dt_truncate_defs()`.
+#' @param truncate FALSE leaves every non-empty value as it is.
+dt_empty_value_defs <- function(targets, chars = 60, truncate = TRUE) {
+  trunc_js <- if (isTRUE(truncate)) {
+    as.character(dt_truncate_defs(chars = chars)[[1]]$render)
+  } else {
+    "function(data, type, row, meta) { return data; }"
+  }
+  label <- sprintf(
+    '<span class="rs-empty-value" title="%s">%s</span>',
+    htmltools::htmlEscape(EMPTY_VALUE_TITLE, attribute = TRUE),
+    htmltools::htmlEscape(EMPTY_VALUE_LABEL))
+  js <- paste(c(
+    "function(data, type, row, meta) {",
+    sprintf("  if (type === 'display' && data === '') { return %s; }",
+            jsonlite::toJSON(label, auto_unbox = TRUE)),
+    sprintf("  return (%s)(data, type, row, meta);", trunc_js),
+    "}"), collapse = "\n")
+  list(list(targets = targets, render = DT::JS(js)))
+}
+
+# CSS for the empty-value label.
+dt_empty_value_css <- function() {
+  shiny::singleton(shiny::tags$head(shiny::tags$style(shiny::HTML("
+    td .rs-empty-value {
+      font-style: italic;
+      color: #6c757d;
+      border: 1px dashed #adb5bd;
+      border-radius: 3px;
+      padding: 0 4px;
+    }
+  "))))
+}
+
 mod_value_table_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::card(
@@ -18,7 +95,12 @@ mod_value_table_ui <- function(id) {
       shiny::p("Click the rows you want to fix, then \"Create recode rule ",
                "for selected rows\". Each gets a rule on the Recodes tab, ",
                "where you type the value it should become. Nothing changes ",
-               "in your data file.")
+               "in your data file."),
+      shiny::p("A cell that holds no text at all is listed as an outlined, ",
+               "italic ", shiny::tags$em("(empty)"), ". A rule made from it ",
+               "targets empty cells: give it a new value such as ",
+               "\"Unknown\", or set its action to \"delete\" to make them ",
+               "missing. Missing cells are not listed.")
     ),
     bslib::card_body(
       fillable = FALSE,
@@ -32,6 +114,7 @@ mod_value_table_ui <- function(id) {
         "Recodes tab.")),
       shiny::uiOutput(ns("toolbar")),
       dt_truncate_css(),
+      dt_empty_value_css(),
       # Column widths must not move when the sort changes. `autoWidth = FALSE`
       # alone does not do it: the browser still lays the table out from the
       # content on the current page, so sorting by n (short values on screen)
@@ -94,12 +177,15 @@ mod_value_table_server <- function(id, shared_state,
         filter    = "top",
         class     = "display rs-value-table",
         # escape stays TRUE (the default): value is raw dataset text, and
-        # dt_truncate_defs() relies on escaped input.
+        # dt_truncate_defs() / dt_empty_value_defs() rely on escaped input.
         options   = list(
           pageLength = 25,
           autoWidth  = FALSE,
           # Percent widths: adapts to the window, stays put across sorts.
+          # The empty-value renderer comes first so it wins for the value
+          # column (it applies the truncation itself for every other value).
           columnDefs = c(
+            dt_empty_value_defs(targets = 0),
             list(list(targets = 0, width = "70%"),
                  list(targets = 1, width = "10%"),
                  list(targets = 2, width = "20%")),
