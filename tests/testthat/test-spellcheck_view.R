@@ -186,6 +186,23 @@ test_that("an all-blank column shows the empty state, not a table", {
   })
 })
 
+test_that("the rendered table keeps the generated-markup column last", {
+  # Replaces a source-text assertion on the escape index (tests 3). The index
+  # is -ncol(df), so only a table whose LAST column is the generated one
+  # leaves the dataset columns escaped: this reads the order off the table
+  # the module actually rendered.
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+  uv <- tibble::tibble(value = "cappucino", n = 3L)
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv), {
+    session$flushReact()
+    tbl <- jsonlite::fromJSON(paste(output$tbl))
+    headers <- regmatches(tbl$x$container,
+                          gregexpr("(?<=<th>)[^<]+", tbl$x$container,
+                                   perl = TRUE))[[1]]
+    expect_identical(headers, c("value", "n", "flagged_token", "action"))
+  })
+})
+
 test_that("a badge payload with awkward characters creates the rule unchanged", {
   skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
   uv <- tibble::tibble(value = "cappucino", n = 3L)
