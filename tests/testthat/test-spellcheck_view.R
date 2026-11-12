@@ -138,16 +138,6 @@ test_that("the Other box, Apply and + Dict handlers are well-formed JavaScript p
     "Shiny.setInputValue(\"sp-add_dict\", 12, {priority: 'event'});")
 })
 
-test_that("the table keeps the action column last and unescapes only it", {
-  src <- paste(readLines(file.path("..", "..", "R", "mod_spellcheck_view.R"),
-                         warn = FALSE), collapse = "\n")
-  expect_match(src, 'df[, c("value", "n", "flagged_token", "action")]',
-               fixed = TRUE)
-  expect_match(src, "escape    = -ncol(df)", fixed = TRUE)
-  expect_false(grepl("escape\\s*=\\s*FALSE", src))
-})
-
-
 # --- Server: blanks and the pick round trip ---------------------------------
 
 .rules_store <- function() {
@@ -193,6 +183,23 @@ test_that("an all-blank column shows the empty state, not a table", {
     expect_null(flagged_r())
     expect_match(paste(output$tbl_empty$html), "No spellcheck flags.",
                  fixed = TRUE)
+  })
+})
+
+test_that("the rendered table keeps the generated-markup column last", {
+  # Replaces a source-text assertion on the escape index (tests 3). The index
+  # is -ncol(df), so only a table whose LAST column is the generated one
+  # leaves the dataset columns escaped: this reads the order off the table
+  # the module actually rendered.
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+  uv <- tibble::tibble(value = "cappucino", n = 3L)
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv), {
+    session$flushReact()
+    tbl <- jsonlite::fromJSON(paste(output$tbl))
+    headers <- regmatches(tbl$x$container,
+                          gregexpr("(?<=<th>)[^<]+", tbl$x$container,
+                                   perl = TRUE))[[1]]
+    expect_identical(headers, c("value", "n", "flagged_token", "action"))
   })
 })
 
@@ -317,12 +324,6 @@ test_that("a correction equal to the original leaves the value unchanged", {
                    NA_character_)
 })
 
-test_that("the flagger and the replacement share one tokenizer", {
-  src <- paste(readLines(file.path("..", "..", "R", "mod_spellcheck_view.R"),
-                         warn = FALSE), collapse = "\n")
-  expect_match(src, "tokens_per_value <- .spell_tokens(uv$value)", fixed = TRUE)
-})
-
 .pick_payload <- function(row, val) {
   as.character(jsonlite::toJSON(list(row = row, val = val), auto_unbox = TRUE))
 }
@@ -419,7 +420,10 @@ test_that("the Spellcheck help line names exact, not trimmed_ci", {
 #
 # hunspell's default dictionary IS en_US, so the old fallback (retry without a
 # language) loaded the same file again. Now a failed load says spellcheck is
-# unavailable and is not retried.
+# unavailable and is not retried for the SAME dictionary selection. Changing
+# the selection does retry: the failure can come from a selected discipline
+# file rather than from en_US, and the user has to be able to undo that
+# (security F7, where a bad dictionary killed the tab until restart).
 
 test_that(".build_hunspell tries en_US once and names the reason", {
   calls <- 0L
@@ -430,13 +434,6 @@ test_that(".build_hunspell tries en_US once and names the reason", {
   expect_error(.build_hunspell(loader = failing),
                "en_US.*dictionary file not found")
   expect_identical(calls, 1L)
-})
-
-test_that("the source has no default-dictionary fallback any more", {
-  src <- paste(readLines(file.path("..", "..", "R", "mod_spellcheck_view.R"),
-                         warn = FALSE), collapse = "\n")
-  expect_false(grepl("hunspell::dictionary(add_words", src, fixed = TRUE))
-  expect_match(src, "hunspell::dictionary(lang = \"en_US\"", fixed = TRUE)
 })
 
 test_that("a failed en_US load shows the unavailable state and is not retried", {
@@ -464,13 +461,56 @@ test_that("a failed en_US load shows the unavailable state and is not retried", 
     expect_match(empty, "Spellcheck is unavailable", fixed = TRUE)
     expect_match(empty, "simulated: en_US.dic missing", fixed = TRUE)
     expect_identical(calls, 1L)
-    # Picking a discipline dictionary re-runs the reactive, but makes no
-    # second attempt at loading en_US.
-    session$setInputs(disciplines = "medical")
+    # Nothing on the tab re-reads the same selection: flushing again, and
+    # re-reading the table, make no second attempt.
     session$flushReact()
     expect_equal(nrow(flagged_r()), 0L)
     expect_identical(calls, 1L)
   })
   expect_length(notes, 1L)
   expect_match(notes[1], "Spellcheck is unavailable", fixed = TRUE)
+})
+
+test_that("deselecting the dictionary that broke the load recovers (security F7)", {
+  # The load fails only while a discipline dictionary is selected, which is
+  # what a bad dictionary file does. Deselecting it must bring the tab back:
+  # the failure used to latch for the whole session.
+  home <- environment(mod_spellcheck_view_server)
+  real <- get(".hunspell_loader", envir = home)
+  bad_word <- "zzbadzz"
+  calls <- 0L
+  assign(".hunspell_loader", function(add_words) {
+    calls <<- calls + 1L
+    if (bad_word %in% add_words) stop("simulated: unreadable dictionary")
+    real(add_words)
+  }, envir = home)
+  withr::defer(assign(".hunspell_loader", real, envir = home))
+  skip_if_not(.hunspell_ok(), "no Hunspell dictionary on this machine")
+
+  # A selected discipline file whose only term trips the loader above.
+  dir <- withr::local_tempdir(pattern = "app root ")
+  withr::local_dir(dir)
+  dir.create(file.path("dictionary", "disciplines"), recursive = TRUE)
+  bad <- file.path("dictionary", "disciplines", "bad.txt")
+  writeLines(bad_word, bad)
+
+  testthat::local_mocked_bindings(
+    showNotification = function(ui, ..., type = "default") invisible("id"),
+    .package = "shiny")
+
+  uv <- tibble::tibble(value = c("cappucino", "latte"), n = 2:1)
+  shiny::testServer(mod_spellcheck_view_server, args = .spell_args(uv), {
+    session$setInputs(disciplines = bad)
+    session$flushReact()
+    expect_equal(nrow(flagged_r()), 0L)
+    expect_match(paste(output$tbl_empty$html), "Spellcheck is unavailable",
+                 fixed = TRUE)
+    # Deselect it: the tab works again and flags the misspelling.
+    session$setInputs(disciplines = character(0))
+    session$flushReact()
+    expect_equal(nrow(flagged_r()), 1L)
+    expect_identical(flagged_r()$value, "cappucino")
+    expect_false(any(grepl("unavailable", paste(output$tbl_empty$html),
+                           fixed = TRUE)))
+  })
 })

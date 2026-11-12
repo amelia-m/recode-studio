@@ -442,6 +442,139 @@ test_that("cluster_cap_values keeps the most frequent values for pairwise algori
   expect_equal(PAIRWISE_CLUSTER_CAP, 1000L)
 })
 
+test_that("only the edit distances count as length-sensitive", {
+  expect_true(all(vapply(c("osa", "lv", "lcs"), cluster_is_edit_distance,
+                         logical(1))))
+  expect_false(any(vapply(c("jw", "cosine", "jaccard", "fingerprint",
+                            "ngram_fingerprint", "soundex", "metaphone"),
+                          cluster_is_edit_distance, logical(1))))
+  # Every length-sensitive algorithm is also a pairwise one.
+  expect_true(all(CLUSTER_EDIT_DISTANCE_ALGORITHMS %in%
+                    CLUSTER_PAIRWISE_ALGORITHMS))
+  expect_false(cluster_is_edit_distance(NULL))
+  expect_false(cluster_is_edit_distance(NA_character_))
+})
+
+test_that("an edit distance over very long values is capped on characters (security F6)", {
+  # Few values, each long: the value cap cannot see this, and the measured
+  # cost of NOT capping it was minutes (20 values of 6,400 characters took
+  # 217 s with osa, against 0.4 s for the linear algorithms).
+  long <- vapply(1:6, function(i) strrep(letters[i], 100L), character(1))
+  uv <- tibble::tibble(value = long, n = c(1L, 9L, 3L, 9L, 7L, 2L))
+
+  capped <- cluster_cap_values(uv, "osa", cap = 1000L, char_cap = 250L)
+  expect_true(capped$capped)
+  expect_identical(capped$reason, "characters")
+  expect_equal(capped$kept, 2L)
+  expect_equal(capped$n_total, 6L)
+  expect_equal(capped$chars_total, 600L)
+  # Most frequent first, ties keeping input order, as the value cap does.
+  expect_equal(capped$uv$value, long[c(2, 4)])
+
+  # The same values under a metric that is not length-sensitive: untouched.
+  expect_false(cluster_cap_values(uv, "jw", cap = 1000L,
+                                  char_cap = 250L)$capped)
+  expect_false(cluster_cap_values(uv, "cosine", cap = 1000L,
+                                  char_cap = 250L)$capped)
+  # And under a linear algorithm, untouched.
+  expect_false(cluster_cap_values(uv, "fingerprint", cap = 1000L,
+                                  char_cap = 250L)$capped)
+})
+
+test_that("the character cap always leaves one value and defers to the value cap", {
+  # A single value longer than the whole budget is still clustered: dropping
+  # everything would leave nothing to look at.
+  one <- tibble::tibble(value = strrep("a", 500L), n = 1L)
+  kept <- cluster_cap_values(one, "lcs", cap = 1000L, char_cap = 10L)
+  expect_false(kept$capped)          # nothing was dropped
+  expect_equal(nrow(kept$uv), 1L)
+
+  # Short values, many of them: the value cap bites and says so, not the
+  # character cap.
+  many <- tibble::tibble(value = sprintf("v%03d", 1:10), n = 10:1)
+  by_values <- cluster_cap_values(many, "lv", cap = 4L, char_cap = 40000L)
+  expect_true(by_values$capped)
+  expect_identical(by_values$reason, "values")
+  expect_equal(by_values$kept, 4L)
+
+  expect_equal(PAIRWISE_CLUSTER_CHAR_CAP, 40000L)
+})
+
+test_that("the character budget survives a value that is not valid UTF-8", {
+  # nchar() in characters THROWS on such a value, and the app ingests
+  # arbitrary third-party files, so the budget counts bytes.
+  bad <- rawToChar(c(charToRaw("caf"), as.raw(0xe9)))
+  uv <- tibble::tibble(value = c(bad, "latte"), n = 2:1)
+  expect_error(nchar(uv$value))
+  expect_identical(.budget_lengths(uv$value), c(4L, 5L))
+  capped <- cluster_cap_values(uv, "osa", cap = 1000L, char_cap = 3L)
+  expect_true(capped$capped)
+  expect_equal(capped$kept, 1L)
+  tax <- taxonomy_cap_input(uv, c(bad, "Latte"), "osa", char_cap = 3L)
+  expect_equal(tax$values_kept, 1L)
+  expect_equal(tax$targets_kept, 1L)
+})
+
+test_that("cluster_cap_note explains a character cap differently from a value cap", {
+  chars <- as.character(cluster_cap_note(
+    list(capped = TRUE, n_total = 40L, kept = 6L, reason = "characters")))
+  expect_match(chars, "6 most frequent of 40 distinct values", fixed = TRUE)
+  expect_match(chars, "every character of every value", fixed = TRUE)
+  # Both notes point at the linear algorithms in the same words.
+  expect_match(chars, CLUSTER_LINEAR_HINT, fixed = TRUE)
+  values <- as.character(cluster_cap_note(
+    list(capped = TRUE, n_total = 40L, kept = 6L, reason = "values")))
+  expect_match(values, "compares every value with every other", fixed = TRUE)
+  expect_match(values, CLUSTER_LINEAR_HINT, fixed = TRUE)
+})
+
+test_that("taxonomy_cap_input bounds both sides for an edit distance only (item 4)", {
+  # 20 values of 6,400 characters against 20 reference terms of the same
+  # length measured 229.7 s with osa; the call site had no cap at all.
+  uv <- tibble::tibble(value = vapply(1:6, function(i) strrep("x", 100L),
+                                      character(1)),
+                       n = c(1L, 9L, 3L, 9L, 7L, 2L))
+  targets <- vapply(1:5, function(i) strrep("y", 100L), character(1))
+
+  capped <- taxonomy_cap_input(uv, targets, "osa", char_cap = 250L)
+  expect_true(capped$capped)
+  expect_equal(capped$values_total, 6L)
+  expect_equal(capped$values_kept, 2L)
+  expect_equal(capped$targets_total, 5L)
+  expect_equal(capped$targets_kept, 2L)
+  expect_equal(nrow(capped$uv), 2L)
+  expect_length(capped$targets, 2L)
+
+  # Jaro-Winkler and the q-gram metrics are left alone, as on the Clusters
+  # tab, and so is a short built-in reference list.
+  for (m in c("jw", "cosine", "jaccard")) {
+    expect_false(taxonomy_cap_input(uv, targets, m, char_cap = 250L)$capped,
+                 info = m)
+  }
+  short <- tibble::tibble(value = c("nebraska", "Nebrska"), n = 2:1)
+  expect_false(taxonomy_cap_input(short, c("Nebraska", "Iowa"), "osa",
+                                  char_cap = 250L)$capped)
+  # No values or no targets: nothing to cap, and no error.
+  expect_false(taxonomy_cap_input(uv[0, ], targets, "osa")$capped)
+  expect_false(taxonomy_cap_input(uv, character(0), "osa")$capped)
+})
+
+test_that("taxonomy_cap_note names each side that was reduced", {
+  expect_null(taxonomy_cap_note(NULL))
+  expect_null(taxonomy_cap_note(list(capped = FALSE)))
+  both <- as.character(taxonomy_cap_note(list(
+    capped = TRUE, values_total = 40L, values_kept = 6L,
+    targets_total = 1200L, targets_kept = 10L)))
+  expect_match(both, "6 most frequent of 40 distinct values", fixed = TRUE)
+  expect_match(both, "first 10 of 1,200 reference terms", fixed = TRUE)
+  expect_match(both, "Jaro-Winkler", fixed = TRUE)
+  # Only the values side reduced: the terms side is not mentioned.
+  vals <- as.character(taxonomy_cap_note(list(
+    capped = TRUE, values_total = 40L, values_kept = 6L,
+    targets_total = 51L, targets_kept = 51L)))
+  expect_false(grepl("reference terms", vals, fixed = TRUE))
+})
+
 test_that("cluster_cap_note is silent when nothing was capped and explains the cap otherwise", {
   expect_null(cluster_cap_note(NULL))
   expect_null(cluster_cap_note(list(capped = FALSE, n_total = 5L, cap = 10L)))
@@ -672,4 +805,68 @@ test_that("the taxonomy matcher shows its empty state for an all-blank column", 
 test_that("the Similarity Clustering UI has a slot for the cap note", {
   html <- as.character(mod_cluster_view_ui("cv"))
   expect_true(grepl('id="cv-cap_note"', html, fixed = TRUE))
+  expect_true(grepl('id="cv-tax_cap_note"', html, fixed = TRUE))
+})
+
+test_that("an edit distance over long values clusters fewer and says why (security F6)", {
+  uv <- tibble::tibble(
+    value = vapply(1:4, function(i) paste0(strrep("ab", 50L), i),
+                   character(1)),
+    n     = c(10L, 3L, 2L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server,
+    args = .cluster_server_args(uv, pairwise_char_cap = 250L), {
+    .cluster_defaults(session, algorithm = "osa")
+    expect_equal(nrow(clusters_r()), 2L)
+    note <- as.character(output$cap_note$html)
+    expect_match(note, "2 most frequent of 4 distinct values", fixed = TRUE)
+    expect_match(note, "every character of every value", fixed = TRUE)
+    expect_match(note, "Key collision", fixed = TRUE)
+
+    # Jaro-Winkler is not length-sensitive: every value, no note.
+    session$setInputs(algorithm = "jw"); session$elapse(600)
+    expect_equal(nrow(clusters_r()), 4L)
+    expect_null(output$cap_note)
+  })
+})
+
+test_that("the taxonomy matcher bounds an edit distance and says why (item 4)", {
+  uv <- tibble::tibble(
+    value = vapply(1:4, function(i) paste0(strrep("cd", 50L), i),
+                   character(1)),
+    n     = c(10L, 3L, 2L, 1L))
+  shiny::testServer(
+    mod_cluster_view_server,
+    args = .cluster_server_args(uv, pairwise_char_cap = 250L), {
+    session$setInputs(tax_source_type = "paste",
+                      tax_paste = paste0(strrep("cd", 50L), "1"),
+                      tax_method = "osa", tax_threshold = 0.75)
+    expect_equal(nrow(taxonomy_matches_r()), 2L)
+    note <- as.character(output$tax_cap_note$html)
+    expect_match(note, "2 most frequent of 4 distinct values", fixed = TRUE)
+    expect_match(note, "Jaro-Winkler", fixed = TRUE)
+
+    # The same column under Jaro-Winkler: every value matched, no note.
+    session$setInputs(tax_method = "jw")
+    expect_equal(nrow(taxonomy_matches_r()), 4L)
+    expect_null(output$tax_cap_note)
+  })
+})
+
+test_that("the algorithm notes render before the select input registers (Shiny F13)", {
+  # input$algorithm is NULL on the first render and after a re-render, and
+  # `if (NULL == "fingerprint")` is an error that takes the note down.
+  shiny::testServer(
+    mod_cluster_view_server, args = .cluster_server_args(.uv), {
+    expect_null(input$algorithm)
+    expect_match(paste(output$algo_note$html), "Pairwise similarity",
+                 fixed = TRUE)
+    expect_match(paste(output$threshold_note$html),
+                 "similarity &gt;= threshold are clustered", fixed = TRUE)
+    # And they follow the input once it arrives.
+    session$setInputs(algorithm = "fingerprint")
+    expect_match(paste(output$algo_note$html), "key collision", fixed = TRUE)
+    expect_match(paste(output$threshold_note$html), "Threshold is bypassed",
+                 fixed = TRUE)
+  })
 })
