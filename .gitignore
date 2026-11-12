@@ -24,7 +24,15 @@ tmp_*
 
 # Exported outputs the user generates locally
 recodes_master.csv
+normalizations_master.csv
+recat_*.csv
 recode_*.R
+recat_*.R
+*_cleaned_bundle_*.zip
 
 # Agent scratch space (drafts, review findings, contracts)
 _scratch/
+
+# Agent worktrees created by the harness inside the repo. Only the worktrees:
+# a project .claude/settings.json is still committable.
+.claude/worktrees/

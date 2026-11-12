@@ -21,7 +21,7 @@ Load any CSV or Excel file, pick a text column, and Recode Studio helps you:
 - **Normalize** whole columns first: trim spaces, collapse repeated spaces, and set lower, UPPER or Title Case.
 - **Browse** unique values alphabetically or grouped by string similarity.
 - **Cluster** with 10 algorithms (Jaro-Winkler, Levenshtein, OSA, longest common substring, Cosine, Jaccard, linear $O(N)$ Key-Collision Fingerprint, N-gram Fingerprint, Soundex, Metaphone) with built-in pros/cons reference guides.
-- **Match Taxonomies** against uploaded reference standard lists (e.g. ISO codes, state names, customer taxonomies).
+- **Match Taxonomies** against a reference list: three ship with the app (US 50 states and DC, a 5-point Likert scale, common department names), or upload your own (ISO codes, customer taxonomies, anything one per line).
 - **Spot** likely typos via Hunspell spellcheck and rare-member-in-cluster flags.
 - **Explore** long text: common words and phrases (with your own stopword lists), a word cloud, and which languages the entries are written in.
 - **Build** "old value → new value" recode rules, with optional propagation to sibling columns (e.g. `drink1`, `drink2`, ...).
@@ -291,7 +291,7 @@ quietly corrupting your rules.
 
 - `trimmed_ci` (default): compare after `str_squish(tolower(...))`. `" Cappuccino "` matches `"cappuccino"`.
 - `exact_ci`: case-insensitive exact compare.
-- `exact`: byte-for-byte exact compare.
+- `exact`: exact compare, character for character (capitalization and spaces included).
 - `regex`: `old_value` is an (unanchored) regular expression matched against the value with `grepl`; a match replaces the **whole cell** with `new_value` (no partial substitution or backreferences). Anchor with `^…$` to require a full match. An invalid or empty pattern is flagged by Validate and matches nothing; use `^$` to match empty cells. The app and the exported script use the same regular-expression engine (base R's), so a pattern behaves the same in both.
 
 Rules are matched against the values **after** column normalizations. An
@@ -320,7 +320,9 @@ CSV.
 
 The exported `recode_<dataset>.R` runs the **normalization steps first**, one
 `mutate()` per normalization rule, then the recodes. The recodes are one
-`dplyr::case_when()` block per sibling-pattern. **All match types share the
+`dplyr::case_when()` block per target: one per column for ordinary rules, one
+per sibling pattern for rules that propagate across a family. **All match
+types share the
 block**, so every arm is tested against the column as the normalizations left
 it, and the first matching arm wins:
 
@@ -341,6 +343,17 @@ df <- df |>
 A regex rule becomes a `grepl("<pattern>", <col>)` arm. A rule whose sibling
 pattern is not a valid regular expression gets a `# SKIPPED` comment instead
 of code, because the app skips it too.
+
+A rule on a single column gets the simpler shape, with the column name
+backticked when it is not a syntactic R name:
+
+```r
+df <- df |>
+  mutate(city = case_when(
+    str_squish(tolower(city)) == "lincoln ne" ~ "Lincoln",
+    .default = city
+  ))
+```
 
 Run it against a data frame named `df` to apply the normalizations and
 recodes. The script and the app's in-app preview are guaranteed to agree: a
@@ -410,7 +423,8 @@ recode-studio/
     mod_import_recodes.R
   dictionary/              # spellcheck tiers (seed / custom / user)
   stopwords/               # Text analysis stopword tiers (base / custom / user)
-  inst/extdata/            # bundled example dataset
+  inst/extdata/            # bundled example datasets (cafe orders, survey)
+  vignettes/               # getting started, long-text analysis, recategorization
   tests/testthat/          # unit and module tests
 ```
 

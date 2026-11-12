@@ -4,6 +4,11 @@ Open items for Recode Studio, in full wording so they can be answered later.
 Defect detail lives in [docs/review-2026-10-adversarial.md](docs/review-2026-10-adversarial.md);
 cross-repo items in [docs/upstream-port-candidates.md](docs/upstream-port-candidates.md).
 
+An options memo covering questions 3 to 8 below (what is at stake, the options
+with their costs, what comparable packages do, a recommendation and what it
+assumes) is at `_scratch/decisions/memo.md`, with its seven read-only probe
+scripts beside it. It deliberately does NOT cover question 9.
+
 ## Waiting on Amelia
 
 1. **Merge and push, once the defects are fixed.** Amelia, 2026-11-12: "fix
@@ -158,11 +163,47 @@ on a round trip; and whether a priming `flushReact()` before the first
   reads values before recodes are applied.
 - Reporting the DT escaping defect upstream is done; upstream fixed it along
   with 15 other items and declined only the cluster debounce.
+- **The three vignettes have never been checked against the code, and no test
+  covers them.** `vignettes/getting-started.Rmd`, `long-text-analysis.Rmd` and
+  `recategorization.Rmd` run real code against the bundled CSVs and
+  `DESCRIPTION` declares `VignetteBuilder: knitr`, so a behaviour change can
+  break them silently. Neither `CLAUDE.md` nor `README.md` mentioned them at
+  all until 2026-11-12. The check is to render all three and read the output.
+- Whether the README should link the three vignettes for users, as opposed to
+  listing the folder for agents, is a content decision nobody has made.
+- **The readxl half of the blanks rule was read from the package's formals,
+  not end to end.** readxl's `na` default is `""` alone, so a cell holding the
+  literal text `NA` should arrive from Excel as the string `"NA"` while CSV
+  gives missing. The check is to read an `.xlsx` whose cells hold a blank, a
+  whitespace-only value and the two letters `NA` through `read_dataset()` and
+  confirm the first two are NA and the third is not. It needs a package that
+  writes `.xlsx`, which is deliberately not a dependency.
+- The CI cache reasoning in `CLAUDE.md` was confirmed only as far as the env
+  var's placement and the workflow's own comment. Nobody has read
+  `r-lib/actions`' source or a CI run log, which is what would settle it.
+- A defensive fix for the per-cluster input hypothesis, from the options memo:
+  key the `exclude_<cid>` / `target_<cid>` ids on a hash of the member set
+  (`digest` is already a dependency) rather than on a cluster index, which
+  makes a stale tick unreachable whether or not the browser still sends it.
+  Four read sites. It was not given to the October fix agents, because it
+  changes behaviour on an unconfirmed hypothesis; it belongs with whoever
+  takes question 8.
+- The documentation pass of 2026-11-12 deliberately left four areas alone
+  because the three fix branches will change them: the whole testing table
+  and its total, the `source_dataset` / `source_quarter` paragraph (a fix
+  agent is moving that literal behind a named constant), the free-text
+  classifier and example-dataset paragraphs, and the emitted-shape paragraph
+  in "Generated R shape". Re-measure each from a fresh run after integration;
+  do not hand-adjust the counts.
 
 ## Done, kept for context
 
-- cspell now reports 0 issues in 58 files (2026-09-21), after allowlisting 13
-  deliberate fixture misspellings and 31 technical terms.
+- cspell now reports 0 issues in 60 files (re-run 2026-11-12), after
+  allowlisting 13 deliberate fixture misspellings and 33 technical terms.
+  `.claude/**` and `_scratch/**` were added to its ignore list on 2026-11-12:
+  agent worktrees and review scratch hold whole extra copies of the repo, and
+  without those entries the run scanned 1855 files and died on a mutant copy's
+  missing dictionary.
 - Git history is not being rewritten: the early fixtures that hinted at the
   upstream agency are fixed in the current tree only, which Amelia accepted on
   2026-09-15 because no agreement prohibits naming the partner.

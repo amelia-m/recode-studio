@@ -23,9 +23,10 @@ script and, on request, a cleaned COPY of the data as a separate download.
 ### Origin
 
 Ported and generalized from an earlier data pipeline's "Recode Studio" Shiny
-section for a state agency. That version was agency-specific (quarter dropdown
-reading merged CSVs, agency column prefixes, a bundled medical dictionary, a
-multi-section shell). This repo is the standalone, domain-neutral spin-off. If
+section, built for one organization's recurring data deliveries. That version
+was tied to its own setting (a reporting-period dropdown reading merged CSVs,
+source-specific column prefixes, a bundled medical dictionary, a multi-section
+shell). This repo is the standalone, domain-neutral spin-off. If
 you change shared logic here, the upstream copy does NOT auto-update (and
 vice versa): they diverged on purpose. What was ported back from upstream, what
 was declined, and defects present in both are logged in
@@ -91,8 +92,10 @@ R/
                          #   unique_values_r) + dt_empty_value_defs()/_css()
   mod_cluster_view.R     # TWO sub-tabs: "Similarity Clustering" (target +
                          #   exclude + conflict refusal + algorithm guide) and
-                         #   "Reference Taxonomy Matcher" (match a column against
-                         #   a standard list, then emit recode rules)
+                         #   "Reference Taxonomy Matcher" (match a column
+                         #   against a standard list: three in
+                         #   BUILTIN_TAXONOMIES, or an uploaded one, then
+                         #   emit recode rules)
                          #   also defines PURE cluster_target_decision() +
                          #   cluster_recode_pairs(), cluster_drop_blank(),
                          #   cluster_cap_values(), cluster_cards_to_show(),
@@ -125,7 +128,18 @@ stopwords/               # Text analysis stopword tiers (see Stopwords)
   base_stopwords.txt     # base (committed, seeded from EN_STOPWORDS)
   custom_stopwords.txt   # project (committed, shared additions)
   user_stopwords.txt     # user (GITIGNORED, per-user additions)
-inst/extdata/example_messy.csv
+inst/extdata/
+  example_messy.csv      # the Data tab's "load bundled example" (30 rows)
+  example_survey.csv     # survey-shaped fixture, used by the vignettes only
+                         #   (25 rows: respondent_id, department,
+                         #   feedback_theme1/2, training_need,
+                         #   experience_rating, submission_date,
+                         #   detailed_comments)
+vignettes/               # getting-started, long-text-analysis,
+                         #   recategorization (knitr; DESCRIPTION declares
+                         #   VignetteBuilder). They run real code against the
+                         #   bundled CSVs, so a behaviour change can break
+                         #   them. Nothing in the test suite covers them.
 tests/testthat/          # see Testing
 ```
 
@@ -170,10 +184,16 @@ The "Recoding:" variable banner sits above the tab set.
   string `""` (so Browse values can mint a rule for empty cells) and drops NA.
   Clusters, the taxonomy matcher and Spellcheck drop blanks themselves
   (`cluster_drop_blank()`, `.spell_drop_blank()`).
-- **Loaded blanks are NA, not `""`.** `read_dataset()` uses readr's defaults
-  (`na = c("", "NA")`, `trim_ws = TRUE`), so empty, quoted-blank and
-  whitespace-only CSV cells arrive as NA (readxl does the same for Excel). A
-  loaded file therefore never contains `""`; the `""` handling matters mainly
+- **Loaded blanks are NA, not `""`.** `read_dataset()` overrides neither
+  reader's `na` nor `trim_ws`, so their own defaults decide, and the two
+  readers do NOT agree.
+  readr's are `na = c("", "NA")` and `trim_ws = TRUE`, so empty, quoted-blank
+  and whitespace-only CSV cells arrive as NA, and so does a cell holding the
+  literal text `NA`.
+  readxl's are `na = ""` and `trim_ws = TRUE`, so blank and whitespace-only
+  Excel cells also arrive as NA, but a cell holding the literal text `NA`
+  arrives as the STRING `"NA"`.
+  Either way a loaded file never contains `""`; the `""` handling matters mainly
   for values a normalization squishes to `""` and data arriving other ways.
   NA cells cannot currently be targeted from Browse values (open question in
   `docs/upstream-port-candidates.md`).
@@ -259,7 +279,11 @@ options, which only change how values are grouped and never rewrite data.
 NULL)` emits the normalization blocks FIRST (one `mutate()` per rule, or
 `mutate(across(matches(<pattern>, ignore.case = FALSE), ...))` for a family),
 then **one `dplyr::case_when()` block per `effective_pattern`**; all match
-types share the block. Single-column rules → plain `mutate()`; sibling rules →
+types share the block. The emitted SHAPE follows the pattern, not the sibling
+flag: a group whose pattern names exactly one syntactic column (a plain rule's
+escaped `^<name>$`, or a sibling pattern the user typed that happens to be
+`^<syntactic name>$`) becomes a single-column `mutate()` with the column
+written by `.r_col_token()`; every other group becomes
 `mutate(across(matches("<pattern>", ignore.case = FALSE), function(.x)
 case_when(...)))`.
 
@@ -289,6 +313,13 @@ Arm LHS by match type (**both sides are normalized identically**):
 | `regex` | `grepl("<pattern>", <col>)` |
 | `old_value` is NA | `is.na(<col>)` |
 | unusable match_type, or `regex` that is `""` or does not compile | `rep_len(FALSE, length(<col>))` |
+
+The rows are the match-type cases, not a precedence list.
+The code tests in this order, in `generate_recode_R()` and `.rule_hits()`
+alike: unusable `match_type` first (never-matching arm), then an NA
+`old_value` (`is.na()`, which therefore wins over `regex`), then a `regex`
+pattern that is `""` or does not compile (never-matching arm), then `regex`,
+then the three equality forms.
 
 Always ends each arm set with `.default = <col>` so unmatched values pass
 through. Prepends a WARNING comment block when any column is reached by more
@@ -525,8 +556,10 @@ Every cell edit goes through the pure `apply_recode_edit()`, which returns
 - Pairwise algorithms (`jw`, `osa`, `lv`, `lcs`, `cosine`, `jaccard`) cluster
   at most `PAIRWISE_CLUSTER_CAP = 1000` distinct values (most frequent kept),
   with a `help_line()` pointing to key collision, n-gram fingerprint, soundex
-  and metaphone, which are linear and never capped. Measured: 1000 values
-  about 1 s (edit-distance) to 2.5 s (cosine/jaccard); 2000 about 3 s to 8 s.
+  and metaphone, which are linear and never capped. Measured once in September
+  2026 on the development laptop, not re-measured since: 1000 values about 1 s
+  (edit-distance) to 2.5 s (cosine/jaccard); 2000 about 3 s to 8 s. The cap
+  counts VALUES, so long values can cost far more than these figures suggest.
 - At most `MAX_CLUSTER_CARDS = 50` cards, largest first, with a "Showing N of
   M" line. The server takes `debounce_ms`, `pairwise_cap`, `max_cards`
   arguments so tests can use small values.
@@ -540,8 +573,9 @@ Every cell edit goes through the pure `apply_recode_edit()`, which returns
 ### Spellcheck (`R/mod_spellcheck_view.R`)
 
 - The flagger and the correction share one tokenizer, `.spell_tokens()`
-  (`SPELL_TOKEN_RUN`: lowercase runs of ASCII letters and apostrophes). Only
-  the FIRST unrecognized token per value is flagged.
+  (`SPELL_TOKEN_RUN`: lowercase runs of ASCII letters and apostrophes).
+  Single-character tokens are dropped before checking (`nchar(toks) > 1`), and
+  only the FIRST unrecognized token per value is flagged.
 - A suggestion (or the "Other" box) makes a rule that replaces ONLY the
   flagged word: `spell_replace_token()` replaces every whole-word,
   case-insensitive occurrence, keeps surrounding quote marks, and mirrors ALL
@@ -618,7 +652,11 @@ writes is the stopword tier files.
 ## Gotchas (learned the hard way, don't reintroduce)
 
 - **`case_when`, not `case_match`.** `dplyr::case_match()` is deprecated as of
-  dplyr 1.2.0 and prints a warning at runtime. The generator uses `case_when`.
+  dplyr 1.2.0 and prints a warning at runtime (re-measured on dplyr 1.2.1).
+  Its deprecation message points to `recode_values()`; do NOT follow it. The
+  generator uses `case_when`, which is not deprecated, works with the
+  `.default` passthrough the single-pass invariant needs, and does not raise
+  the generated script's dplyr floor.
 - **tidyselect `matches()` ignores case by default.** `apply_recodes()` and
   `apply_normalizations()` resolve sibling patterns with case-sensitive
   `grep()`, so every generated `matches()` passes `ignore.case = FALSE`.
@@ -698,7 +736,8 @@ writes is the stopword tier files.
   `<img src=x onerror=...>` then executes on render. Use
   `escape = -ncol(df)` with the generated-markup column placed LAST (the
   pattern in `mod_recode_editor`, `mod_spellcheck_view`, `mod_recategorize`,
-  `mod_normalize`), or a name-based index. When adding a column to one of
+  `mod_normalize` and `mod_text_analysis`), or a name-based index. When adding a
+  column to one of
   those tables, keep the action/delete column last or the escape index
   silently points at user data.
 - **Free-text classifier** (`build_meta`) excludes dates, numbers, and small
@@ -836,8 +875,11 @@ normalize, preview & export, recategorize, recode editor, spellcheck, text
 analysis, value table, variable picker) are Shiny-free at load time because
 every `shiny::` call sits inside a function body, and their server wiring is
 exercised with `shiny::testServer()`. Keep new modules that way. For local
-runs set `RENV_CONFIG_SYNCHRONIZED_CHECK=FALSE` (see Gotchas). CI runs the suite on every push/PR via
-`.github/workflows/tests.yml` (r-lib/actions + DESCRIPTION-driven deps).
+runs set `RENV_CONFIG_SYNCHRONIZED_CHECK=FALSE` (see Gotchas).
+CI runs the suite via `.github/workflows/tests.yml` (r-lib/actions +
+DESCRIPTION-driven deps) on pushes to `main` and on pull requests targeting
+`main` ONLY: a push to a feature branch with no open PR runs nothing, so the
+local suite is the only evidence until the PR exists.
 
 CI sets `RENV_CONFIG_AUTOLOADER_ENABLED: "false"` at job level, and it must stay.
 `setup-r-dependencies` runs `Rscript` without `--vanilla`, so `.Rprofile` would
@@ -898,9 +940,11 @@ CSV, R or text.
 
 ### Features deliberately NOT ported from upstream
 
-Don't re-add these without a reason. They are quarter-ordered, network-path,
-or agency-coupled and do not generalize: raw-vs-pre-cleaned review basis
-(`preclean_for_review`, `rebase_rules_onto_raw`, `prior_quarter_recodes`),
+Don't re-add these without a reason. They assume a recurring delivery cycle, a
+shared network path, or one organization's conventions, and do not generalize:
+raw-vs-pre-cleaned review basis (`preclean_for_review`,
+`rebase_rules_onto_raw`, and upstream's carry-forward of the previous period's
+recodes, `prior_quarter_recodes` there),
 per-variable review-status store, value-level flagging to a shared queue,
 "save to network folder" export targets, `recode_script_candidates()` filename
 contract, the place-name-seeded 4th dictionary tier, and
