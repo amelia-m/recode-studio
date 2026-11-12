@@ -863,6 +863,16 @@ recode_key_id <- function(rules) {
 #'                       value with the corrected word. Not changed here.
 #'                       cols: rule_id, variable, old_value, new_value, notes,
 #'                       old_words, new_words
+#'   missing_column     : (needs `data`) the rule resolves to no column of
+#'                       `data`, so it does nothing: a plain rule naming a
+#'                       column that is not there, or a sibling pattern no
+#'                       column matches. Its siblings validate_normalizations()
+#'                       and validate_recat() both report this, and it is how
+#'                       the UI can say WHY a rule did nothing instead of
+#'                       leaving the user to guess. A rule skipped for an
+#'                       uncompilable sibling pattern is left to
+#'                       `invalid_sibling_pattern` and not repeated here.
+#'                       cols: rule_id, variable, sibling_pattern
 #'   stale              : rule whose old_value is no longer in any target column
 #'                       (computed only if `data` is provided)
 validate_recodes <- function(rules, data = NULL) {
@@ -922,6 +932,21 @@ validate_recodes <- function(rules, data = NULL) {
   } else {
     issues$rule_chains <- tibble::tibble(variable = character(0),
                                          ambiguous = character(0))
+  }
+
+  # Rules that reach no column of the data at all. A rule already reported as
+  # invalid_sibling_pattern is skipped for that reason and is not listed twice.
+  if (!is.null(data) && nrow(rules) > 0) {
+    miss <- vapply(seq_len(nrow(rules)), function(i) {
+      if (isTRUE(bad_sib[i])) return(FALSE)
+      length(.recode_cols(data, rules[i, ])) == 0L
+    }, logical(1))
+    issues$missing_column <- rules[miss, c("rule_id", "variable",
+                                           "sibling_pattern"), drop = FALSE]
+  } else {
+    issues$missing_column <- tibble::tibble(rule_id = character(0),
+                                            variable = character(0),
+                                            sibling_pattern = character(0))
   }
 
   if (!is.null(data) && nrow(rules) > 0) {
