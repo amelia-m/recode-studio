@@ -240,6 +240,7 @@
     "uniques",
     "unnest",
     "unparseable",
+    "unpushed",
     "upserts",
     "vapply",
     "winkler",
