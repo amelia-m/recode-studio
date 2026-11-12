@@ -107,7 +107,18 @@ cross-repo items in [docs/upstream-port-candidates.md](docs/upstream-port-candid
     and holds no work data, but it was spun out of a work pipeline, so an agent
     cannot settle which category it is. One sentence from Amelia would go into
     `.agents/project-profile.md` verbatim.
-17. **The development-story deck.** The draft task contract is at
+17. **This repository has no `.gitattributes`.** `git commit` warns "LF will be
+    replaced by CRLF" on this machine, where `core.autocrlf=true` is global, so
+    the working tree can hold mixed endings and byte-level comparisons (the
+    bundle's byte-identical reproduction test, SHA-256 of a loaded file) can
+    differ between checkouts. The file wanted is `* text=auto eol=lf`, with
+    `text eol=crlf` for `.bat` and `.cmd`, `binary` for `.rds`, `.RData`,
+    `.xlsx`, `.pdf` and images, and `-text` for `.reg`, followed by
+    `git add --renormalize .`. Deliberately NOT done on 2026-11-12: three fix
+    agents held worktrees of every file in `R/` and `tests/`, and a tree-wide
+    renormalize would have collided with all three. Do it as its own commit on
+    a clean tree once those branches are integrated.
+18. **The development-story deck.** The draft task contract is at
     `_scratch/contracts/2026-11-10-dev-story-deck-draft.md` and has four open
     decisions: whether agents may read this project's 8 session transcripts
     (several of those sessions read the private upstream work repository, so
