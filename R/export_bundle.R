@@ -374,7 +374,7 @@ generate_clean_script <- function(rules, recat, normalizations, dataset_id,
   fname    <- file_base_name(source_file_name)
   if (is.na(fname)) fname <- "your_original_file.csv"
   is_excel <- tolower(tools::file_ext(fname)) %in% c("xlsx", "xls")
-  sheet_arg <- if (is.na(sheet)) "1" else deparse(as.character(sheet))
+  sheet_arg <- if (is.na(sheet)) "1" else .deparse_literal(as.character(sheet))
 
   read_block <- if (is_excel) {
     c("df <- tibble::as_tibble(",
@@ -411,10 +411,10 @@ generate_clean_script <- function(rules, recat, normalizations, dataset_id,
     "library(stringr)",
     "library(tidyr)",
     "",
-    sprintf("input_file  <- %s", deparse(fname)),
+    sprintf("input_file  <- %s", .deparse_literal(fname)),
     sprintf("output_file <- file.path(dirname(input_file), %s)",
-            deparse(sprintf("%s_cleaned_reproduced.csv", dataset_id))),
-    sprintf("expected_sha256 <- %s", deparse(as.character(sha256))),
+            .deparse_literal(sprintf("%s_cleaned_reproduced.csv", dataset_id))),
+    sprintf("expected_sha256 <- %s", .deparse_literal(as.character(sha256))),
     "",
     "if (!file.exists(input_file)) {",
     "  stop(\"Cannot find \", input_file, \". Put it in the working folder \",",

@@ -242,6 +242,42 @@ clean_sibling_pattern <- function(x) {
   intersect(cols, all_cols)
 }
 
+# Code points R's parser REFUSES to read raw from source, even inside a
+# string literal: the bidi embeddings and overrides (U+202A to U+202E) and the
+# isolates (U+2066 to U+2069). Parsing stops with "bidi formatting not
+# allowed, use escapes instead".
+#
+# deparse() does not escape them, so a value holding one (ordinary Arabic or
+# Hebrew pasted out of a word processor carries these routinely) produced a
+# generated script that would not parse AT ALL, while the provenance told the
+# reader to run it.
+.BIDI_CODEPOINTS <- c(0x202a:0x202e, 0x2066:0x2069)
+
+# Rewrite those code points as \uXXXX escapes, which parse back to the exact
+# same string (so the script still reproduces the data byte for byte). Only
+# these nine code points are touched: every other byte is left as it was, or
+# the byte-identical reproduction test would move for unrelated reasons.
+.escape_bidi <- function(txt) {
+  if (length(txt) == 0) return(txt)
+  for (cp in .BIDI_CODEPOINTS) {
+    ch <- intToUtf8(cp)
+    if (any(grepl(ch, txt, fixed = TRUE))) {
+      # fixed = TRUE makes the replacement a LITERAL string: no backslash
+      # processing, so this must be the one backslash we want emitted.
+      # Doubling it here wrote `\\u202e`, which parses as a backslash
+      # followed by "u202e" - a different value, and the recode then matched
+      # nothing while the script still ran.
+      txt <- gsub(ch, sprintf("\\u%04x", cp), txt, fixed = TRUE)
+    }
+  }
+  txt
+}
+
+# deparse() for a value that is about to be emitted as a STRING LITERAL in a
+# generated script. The one place literals are built, so nothing reaches a
+# script with a raw bidi character in it.
+.deparse_literal <- function(x) .escape_bidi(deparse(x))
+
 # Escape every regex metacharacter so the result matches `x` literally.
 # stringr (ICU), not base gsub (TRE): a TRE character class holding `{}`
 # throws "Invalid contents of {}" (see the Gotchas in CLAUDE.md). The class is
@@ -1217,7 +1253,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
         r  <- g[i, ]
         mt <- as.character(r$match_type)
         rhs <- if (identical(as.character(r$action), "delete")) "NA_character_"
-               else deparse(as.character(r$new_value))
+               else .deparse_literal(as.character(r$new_value))
         cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                  paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
         # An arm that matches nothing is a FULL-LENGTH FALSE: a bare scalar
@@ -1240,7 +1276,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
           # app and the script use ONE regex engine (TRE). str_detect() (ICU)
           # used to disagree on patterns like `\p{Lu}` or `a{,2}`. grepl()
           # is FALSE on a missing cell, as in the app. Replaces the whole cell.
-          sprintf("grepl(%s, %s)", deparse(as.character(r$old_value)),
+          sprintf("grepl(%s, %s)", .deparse_literal(as.character(r$old_value)),
                   col_token)
         } else {
           # Normalize BOTH sides identically for the case-insensitive types.
@@ -1254,7 +1290,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
             exact_ci   = tolower(as.character(r$old_value)),
             trimmed_ci = stringr::str_squish(tolower(as.character(r$old_value))),
             as.character(r$old_value))
-          sprintf("%s == %s", col_expr, deparse(target))
+          sprintf("%s == %s", col_expr, .deparse_literal(target))
         }
         arms <- c(arms, sprintf("    %s ~ %s,%s", lhs, rhs, cmt))
       }
@@ -1291,7 +1327,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
         # but apply_recodes() resolves the pattern with case-sensitive grep().
         # Without it the script also recoded e.g. `Drink3` for "^drink[0-9]+$".
         sprintf("  mutate(across(matches(%s, ignore.case = FALSE), function(.x) {",
-                deparse(as.character(pattern))),
+                .deparse_literal(as.character(pattern))),
         "    case_when(",
         make_arms(".x"),
         "      .default = .x",
@@ -1920,7 +1956,7 @@ stamp_recode_norm_spec <- function(rules, normalizations, data_cols = NULL) {
         "df <- df |>",
         sprintf(paste0("  mutate(across(matches(%s, ignore.case = FALSE), ",
                        "function(.x) %s))%s"),
-                deparse(as.character(sp)),
+                .deparse_literal(as.character(sp)),
                 .normalize_expr(".x", ops), cmt),
         "")
     } else {

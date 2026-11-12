@@ -137,6 +137,27 @@ recat_rule_id <- function(out_col, category, vars, include_terms,
   }, logical(1), USE.NAMES = FALSE)
 }
 
+# Bidi code points R's parser refuses to read raw from source, and a deparse()
+# that escapes them. Private mirrors of .BIDI_CODEPOINTS / .escape_bidi() /
+# .deparse_literal() in string_helpers.R, because this file must stay
+# sourceable on its own; keep them in step (a test pins the two agreeing).
+.RECAT_BIDI_CODEPOINTS <- c(0x202a:0x202e, 0x2066:0x2069)
+
+.recat_escape_bidi <- function(txt) {
+  if (length(txt) == 0) return(txt)
+  for (cp in .RECAT_BIDI_CODEPOINTS) {
+    ch <- intToUtf8(cp)
+    if (any(grepl(ch, txt, fixed = TRUE))) {
+      # fixed = TRUE: the replacement is literal, so this is the ONE
+      # backslash that must reach the script (see .escape_bidi()).
+      txt <- gsub(ch, sprintf("\\u%04x", cp), txt, fixed = TRUE)
+    }
+  }
+  txt
+}
+
+.recat_deparse_literal <- function(x) .recat_escape_bidi(deparse(x))
+
 # The rule's sibling pattern, blank read as NA.
 .recat_pattern <- function(rule) {
   sp <- .recat_clean_pattern(rule$sibling_pattern)
@@ -417,10 +438,10 @@ validate_recat <- function(rules, data = NULL) {
       "FALSE"
     } else if (match_type == "regex") {
       sprintf("str_detect(`%s`, regex(%s, ignore_case = TRUE))",
-              col, deparse(term))
+              col, .recat_deparse_literal(term))
     } else {
       sprintf("str_detect(tolower(`%s`), fixed(%s))",
-              col, deparse(tolower(term)))
+              col, .recat_deparse_literal(tolower(term)))
     }
   }
   clauses <- character(0)
@@ -513,13 +534,15 @@ generate_recat_R <- function(rules, dataset_id, data_cols = NULL) {
       cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
       arms <- c(arms, sprintf("    %s ~ %s,%s",
-                              cond, deparse(as.character(r$category)), cmt))
+                              cond,
+                              .recat_deparse_literal(as.character(r$category)),
+                              cmt))
     }
     block <- c(
       "df <- df |>",
       sprintf("  mutate(`%s` = {", oc),
       sprintf("    .cur <- if (%s %%in%% names(df)) df[[%s]] else NA_character_",
-              deparse(oc), deparse(oc)),
+              .recat_deparse_literal(oc), .recat_deparse_literal(oc)),
       "    case_when(",
       "      !is.na(.cur) ~ .cur,",
       arms,
