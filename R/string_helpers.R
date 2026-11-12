@@ -464,14 +464,37 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
   } else {
     # Metrics already in 0..1 (higher d = less similar): jw, cosine, jaccard.
     # Count metrics (osa, lv, lcs) are normalized by the longer string length.
+    # ONE argument, not two. The two-argument form computed the whole n x n
+    # matrix, including every value against ITSELF, and the diagonal was then
+    # thrown away by `diag(adj) <- FALSE` below. That is pure waste, and it is
+    # also the single worst case: a value compared with itself is the maximal
+    # dynamic-programming workload for an edit distance. Measured here on
+    # R 4.6.1 / stringdist 0.9.17, one 1 MB value with `jw` took 480 s the
+    # old way and 0 s this way, and `osa` died with "Could not allocate
+    # enough memory" rather than returning. Every ordinary pairwise run
+    # roughly halves too.
+    #
+    # The one-argument form returns a `dist`: the lower triangle only, and
+    # zero-length for n <= 1. as.matrix() puts it back into the full
+    # symmetric n x n shape with a zero diagonal, so everything below
+    # (outer(), the threshold, diag(adj) <- FALSE, igraph) is unchanged and
+    # the clustering OUTPUT is identical. Dimnames are dropped so igraph
+    # still gets unnamed vertices.
+    .full_matrix <- function(d, n) {
+      m <- as.matrix(d)
+      dim(m) <- c(n, n)
+      dimnames(m) <- NULL
+      m
+    }
+    n_keys <- length(keys)
     if (algorithm %in% c("jw", "cosine", "jaccard")) {
-      d   <- stringdist::stringdistmatrix(keys, keys, method = algorithm, q = q)
-      sim <- 1 - d
+      d   <- stringdist::stringdistmatrix(keys, method = algorithm, q = q)
+      sim <- 1 - .full_matrix(d, n_keys)
     } else {
-      d    <- stringdist::stringdistmatrix(keys, keys, method = algorithm)
+      d    <- stringdist::stringdistmatrix(keys, method = algorithm)
       lens <- outer(nchar(keys), nchar(keys), pmax)
       lens[lens == 0] <- 1L
-      sim  <- 1 - d / lens
+      sim  <- 1 - .full_matrix(d, n_keys) / lens
     }
     adj <- sim >= threshold
     diag(adj) <- FALSE
