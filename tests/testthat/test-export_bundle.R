@@ -490,6 +490,41 @@ test_that("the bundle script skips unusable rules exactly as the app does", {
   expect_identical(out$cleaned$fam, c("Blank pattern", "Bad term", NA, NA))
 })
 
+test_that("the bundle script skips a rule whose column is not in the data", {
+  # engine 3: the app resolves such a rule to no column and leaves the data
+  # alone, but the script emitted a mutate() naming the missing column and
+  # died, while provenance told the reader to run that script.
+  df <- tibble::tibble(order_id = as.character(1:3),
+                       drink1   = c("cap", "latte", "cap"))
+  rules <- dplyr::bind_rows(
+    .fx_rule("drink1", "cap", "cappuccino"),
+    .fx_rule("gone", "cap", "cappuccino"),                 # no such column
+    .fx_rule("drink1", "latte", "LATTE", "absent[0-9]+"))  # matches nothing
+  expect_no_error(out <- .run_bundle_script(df, rules, NULL, NULL,
+                                            "absent column.csv"))
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+  expect_identical(out$cleaned$drink1, c("cappuccino", "latte", "cappuccino"))
+  expect_identical(names(out$cleaned), names(df))
+})
+
+test_that("the bundle script skips a recat out_col that already exists", {
+  # engine 5: apply_recat() leaves an existing column alone, so the script
+  # must too, or the reproduced CSV stops matching the cleaned CSV.
+  df <- tibble::tibble(order_id = as.character(1:3),
+                       drink1   = c("latte", "mocha", "latte"),
+                       fam      = c("Manual", NA, NA))
+  recat <- .fx_recat_rule("fam", "Milk-based", "latte", vars = "drink1")
+  expect_no_error(out <- .run_bundle_script(df, NULL, recat, NULL,
+                                            "recat collision.csv"))
+  .cols_identical(out$script_df, out$cleaned)
+  expect_identical(readBin(out$script_csv, "raw", file.size(out$script_csv)),
+                   readBin(out$bundle_csv, "raw", file.size(out$bundle_csv)))
+  # The gaps stay empty: the source column is not rewritten.
+  expect_identical(out$cleaned$fam, c("Manual", NA, NA))
+})
+
 test_that("provenance carries warning severity, and notes are marked", {
   df <- tibble::tibble(city = c("Portland", "portland "))
   rule <- .fx_rule("city", "portland", "Portland")
