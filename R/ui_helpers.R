@@ -145,12 +145,6 @@ card_header_help <- function(title, ...) {
   bslib::card_header(shiny::span(title, help_btn(..., title = title)))
 }
 
-#' Muted placeholder shown instead of a table that has nothing to show.
-#'
-#' Use this in a uiOutput next to the DTOutput, and have renderDT return NULL
-#' in the same state. Do NOT render `DT::datatable(tibble(message = ...))`:
-#' DT draws a header row with the literal column name "message" and a sort
-#' arrow, which reads as an unfinished placeholder.
 #' Readable title for a validation or warning class name.
 #'
 #' Renderers look class names up in a fixed vector of titles. A plain
@@ -171,35 +165,16 @@ issue_class_title <- function(nm, titles = character(0)) {
   paste0(toupper(substr(words, 1, 1)), substring(words, 2))
 }
 
+#' Muted placeholder shown instead of a table that has nothing to show.
+#'
+#' Use this in a uiOutput next to the DTOutput, and have renderDT return NULL
+#' in the same state. Do NOT render `DT::datatable(tibble(message = ...))`:
+#' DT draws a header row with the literal column name "message" and a sort
+#' arrow, which reads as an unfinished placeholder.
 empty_state <- function(text) {
   shiny::div(class = "text-muted fst-italic py-2", text)
 }
 
-#' DT column definitions that keep long cells to one readable line.
-#'
-#' A table with one long free-text column (a sentence-length review, a long
-#' note) wraps that cell over many lines, so a page of 25 rows is far taller
-#' than the screen. Drop the result into `options$columnDefs` of
-#' `DT::datatable()`, and put `dt_truncate_css()` somewhere in the same UI.
-#'
-#' Every display cell is wrapped in a span that CSS holds to one line with an
-#' ellipsis (a character cap alone cannot promise one line: a short value still
-#' wraps in a narrow column). Cells longer than `chars` are also cut to their
-#' first `chars` characters, so a huge value does not bloat the page. The WHOLE
-#' value rides in the span's `title`, so hovering shows everything.
-#'
-#' Display-only: DataTables calls the renderer with `type` "filter", "sort"
-#' and "type" as well as "display", and those paths return the value untouched,
-#' so search and ordering still see full values. The data behind the table is
-#' unchanged.
-#'
-#' Escaping: this relies on DT's default `escape = TRUE` for the targeted
-#' columns. The data then arrives already HTML-escaped for `&`, `<` and `>`;
-#' the renderer additionally escapes the double quote (which DT leaves alone)
-#' so a value cannot break out of the `title` attribute, and trims a half-cut
-#' entity such as `&am` off the end of the visible text. Never target a column
-#' that is unescaped generated markup.
-#'
 #' JSON-encode a value for use inside inline JavaScript.
 #'
 #' A JSON string or number is also a valid JavaScript literal, and jsonlite
@@ -219,19 +194,160 @@ empty_state <- function(text) {
   as.character(htmltools::htmlEscape(x, attribute = TRUE))
 }
 
+
+# --- Per-row rule delete buttons ----------------------------------------------
+# The Recodes, Normalize and Recategorize tables each carry a Delete / Remove
+# button per rule row. Both halves of that round trip used to be unsafe:
+#
+#   * The button pasted the stored id straight into a quoted JavaScript string
+#     in the one table column DT does not escape. Rule ids come from imported
+#     CSVs and are never rewritten, so a crafted id ran as script.
+#   * The handler then deleted by matching that id string, so a duplicated or
+#     blank id removed every row sharing it, and an NA id matched nothing
+#     under `!=` and left an all-NA row behind, which rode into the export.
+#
+# The payload now names the row POSITION and carries the stored id only as a
+# cross-check, and everything that reaches the markup goes through
+# `.js_value()` and then `.attr_value()`.
+
+#' The JavaScript one Delete button runs.
+#'
+#' Sends `{"row": <1-based row>, "id": <stored id, or null when missing>}` as a
+#' JSON string, which `.rule_delete_target()` parses server-side.
+#'
+#' @param input_id namespaced input id to set.
+#' @param row_idx  1-based row of the rule in the CURRENT rule set.
+#' @param id       the row's stored id, used only to detect a stale click.
+.rule_delete_js <- function(input_id, row_idx, id) {
+  payload <- .js_value(list(row = as.integer(row_idx), id = as.character(id)))
+  sprintf("Shiny.setInputValue(%s, JSON.stringify(%s), {priority: 'event'});",
+          .js_value(input_id), payload)
+}
+
+#' One row's Delete / Remove button, as an HTML string.
+#'
+#' Goes in the LAST column of its table, the only one with escaping turned off.
+#' The handler string is built from JSON-encoded values and then
+#' attribute-escaped whole, so no part of a rule id can end the attribute or
+#' close the script.
+#'
+#' @param label button text ("Delete", or "Remove" on the Normalize tab).
+#' @return one HTML string.
+.rule_delete_button <- function(input_id, row_idx, id, label = "Delete") {
+  sprintf('<button class="btn btn-xs btn-outline-danger" onclick="%s">%s</button>',
+          .attr_value(.rule_delete_js(input_id, row_idx, id)),
+          htmltools::htmlEscape(label))
+}
+
+#' Resolve a Delete payload to exactly ONE row of the current rule set.
+#'
+#' The payload is whatever the browser sent, so it is validated before use: a
+#' client can set any input value it likes. The row must be a single whole
+#' number inside the rule set, and the id it carries must still match the id
+#' stored at that row, which rejects a click on a button drawn before another
+#' tab added or removed a rule.
+#'
+#' Pure (no Shiny), so the three handlers share one implementation and it can
+#' be tested without a session.
+#'
+#' @param payload the raw input value from `.rule_delete_js()`.
+#' @param ids     stored ids of the current rule set, in row order.
+#' @return list(ok = lgl, row = integer or NA, message = chr or NULL). `row` is
+#'   usable only when `ok` is TRUE.
+.rule_delete_target <- function(payload, ids) {
+  bad <- function(msg) list(ok = FALSE, row = NA_integer_, message = msg)
+  unknown <- paste0("That Delete button did not name a rule in this session. ",
+                    "Nothing was deleted.")
+  ids <- as.character(ids)
+  n <- length(ids)
+  if (n == 0) return(bad(unknown))
+  if (is.null(payload) || length(payload) != 1L) return(bad(unknown))
+  payload <- as.character(payload)
+  if (is.na(payload)) return(bad(unknown))
+
+  parsed <- tryCatch(jsonlite::fromJSON(payload), error = function(e) NULL)
+  if (!is.list(parsed)) return(bad(unknown))
+
+  raw_row <- parsed$row
+  if (is.null(raw_row) || length(raw_row) != 1L) return(bad(unknown))
+  row <- suppressWarnings(as.numeric(raw_row))
+  if (is.na(row) || row != floor(row) || row < 1 || row > n) {
+    return(bad(unknown))
+  }
+  row <- as.integer(row)
+
+  # A missing id round-trips as JSON null, which fromJSON() drops entirely.
+  want <- parsed$id
+  want <- if (is.null(want) || length(want) != 1L) NA_character_
+          else as.character(want)
+  if (!identical(want, ids[row])) {
+    return(bad(paste0(
+      "The rule list changed since that button was drawn, so nothing was ",
+      "deleted. Check the table and try again.")))
+  }
+  list(ok = TRUE, row = row, message = NULL)
+}
+
+
+#' DT column definitions that keep long cells to one readable line.
+#'
+#' A table with one long free-text column (a sentence-length review, a long
+#' note) wraps that cell over many lines, so a page of 25 rows is far taller
+#' than the screen. Drop the result into `options$columnDefs` of
+#' `DT::datatable()`, and put `dt_truncate_css()` somewhere in the same UI.
+#'
+#' Every display cell is wrapped in a span that CSS holds to one line with an
+#' ellipsis (a character cap alone cannot promise one line: a short value still
+#' wraps in a narrow column). Cells longer than `chars` are also cut to their
+#' first `chars` characters for the visible text.
+#'
+#' The hover text is capped too, at `title_chars`. It used to carry the WHOLE
+#' value, which made the "a huge value does not bloat the page" claim false: a
+#' page of 25 rows of 6400-character cells shipped every one of those bytes in
+#' a `title` attribute, so the cut saved nothing. `title_chars` is much larger
+#' than `chars`, so hovering still shows far more than the cell, but the page
+#' is now bounded. Only the exported files and the data behind the table hold
+#' the complete value, which `dt_truncate_hint()` says.
+#'
+#' Display-only: DataTables calls the renderer with `type` "filter", "sort"
+#' and "type" as well as "display", and those paths return the value untouched,
+#' so search and ordering still see full values. The data behind the table is
+#' unchanged.
+#'
+#' Escaping: this relies on DT's default `escape = TRUE` for the targeted
+#' columns. The data then arrives already HTML-escaped for `&`, `<` and `>`;
+#' the renderer additionally escapes the double quote (which DT leaves alone)
+#' so a value cannot break out of the `title` attribute, and trims a half-cut
+#' entity such as `&am` off the end of the visible text. Never target a column
+#' that is unescaped generated markup.
+#'
 #' @param chars   Characters shown before cutting. Default 60.
 #' @param targets DataTables column targets: `"_all"` (default) or a vector of
 #'   0-based column indices.
+#' @param title_chars Characters kept in the hover text. Default 1000, which
+#'   is far more than any cell shows and still bounds the page.
 #' @return A list holding one columnDefs entry, ready for `options$columnDefs`.
-dt_truncate_defs <- function(chars = 60, targets = "_all") {
-  if (!is.numeric(chars) || length(chars) != 1L || is.na(chars) || chars < 1) {
+dt_truncate_defs <- function(chars = 60, targets = "_all",
+                             title_chars = 1000) {
+  pos_num <- function(x) {
+    is.numeric(x) && length(x) == 1L && !is.na(x) && x >= 1
+  }
+  if (!pos_num(chars)) {
     stop("dt_truncate_defs(): `chars` must be a single positive number.")
+  }
+  if (!pos_num(title_chars)) {
+    stop("dt_truncate_defs(): `title_chars` must be a single positive number.")
   }
   if (!(identical(targets, "_all") || is.numeric(targets))) {
     stop("dt_truncate_defs(): `targets` must be \"_all\" or 0-based column ",
          "indices.")
   }
   chars <- as.integer(chars)
+  title_chars <- as.integer(title_chars)
+  # `.replace(/&[#a-zA-Z0-9]*$/, '')` drops a half-cut HTML entity off the end
+  # of either cut: the data arrives already escaped, so a cut can land inside
+  # an `&amp;`. Signature is fixed: R/mod_value_table.R's
+  # dt_empty_value_defs() embeds this function verbatim and calls it.
   js <- paste(c(
     "function(data, type, row, meta) {",
     "  if (type !== 'display') { return data; }",
@@ -240,8 +356,11 @@ dt_truncate_defs <- function(chars = 60, targets = "_all") {
     sprintf("  var head = s.length <= %d ? s :", chars),
     sprintf("    s.substr(0, %d).replace(/&[#a-zA-Z0-9]*$/, '') + '\\u2026';",
             chars),
+    sprintf("  var full = s.length <= %d ? s :", title_chars),
+    sprintf("    s.substr(0, %d).replace(/&[#a-zA-Z0-9]*$/, '') + '\\u2026';",
+            title_chars),
     "  return '<span class=\"rs-dt-trunc\" title=\"' +",
-    "         s.replace(/\"/g, '&quot;') +",
+    "         full.replace(/\"/g, '&quot;') +",
     "         '\">' + head + '</span>';",
     "}"), collapse = "\n")
   list(list(targets = targets, render = DT::JS(js)))
@@ -274,8 +393,9 @@ dt_truncate_hint <- function(extra = NULL) {
   shiny::tags$p(
     class = "text-muted small mb-1 rs-dt-trunc-hint",
     "Long values are shortened to one line so more rows fit. ",
-    "Hover a shortened cell to read the full value; sorting, the table ",
-    "search and the exported files always use the complete value.",
+    "Hover a shortened cell to read more of it; a very long value is ",
+    "shortened there too. Sorting, the table search and the exported files ",
+    "always use the complete value.",
     if (!is.null(extra)) shiny::tagList(" ", extra)
   )
 }

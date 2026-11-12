@@ -17,6 +17,14 @@
 
 # validate_recat() classes that make a rule match nothing: a rule carrying
 # any of these is refused by Add instead of being stored.
+# Classes that make Add refuse a rule. recat_add_refusal() names a class it
+# has no bespoke wording for from .RECAT_ISSUE_TITLES, so adding one here (and
+# a title below) is the whole change.
+#
+# PENDING review item 7 (Shiny F3): the out_col collision class that
+# validate_recat() is gaining belongs in this vector and in the titles below.
+# Its name was not settled when this was written, so it is not guessed here;
+# until it is added, an out_col naming an existing column is still accepted.
 .RECAT_REFUSE_CLASSES <- c("invalid_match_type", "invalid_regex",
                            "no_include_terms", "invalid_sibling_pattern")
 
@@ -61,9 +69,36 @@ recat_add_refusal <- function(rule) {
     bits <- c(bits, sprintf("the sibling pattern '%s' is not a valid regular expression",
                             iss$invalid_sibling_pattern$value[1]))
   }
-  if (length(bits) == 0) return(NULL)
-  paste0("Rule not added: ", paste(bits, collapse = "; "),
-         ". As written it would match nothing.")
+  # The four classes above all mean "this rule would match nothing", which is
+  # why the message ends the way it does. A refuse-class validate_recat()
+  # gains later need not mean that (an out_col that collides with an existing
+  # column is the opposite problem), so it is reported on its own terms: the
+  # validator's `detail`, or failing that the class title. Adding the class to
+  # .RECAT_REFUSE_CLASSES, and a title to .RECAT_ISSUE_TITLES, is then the
+  # whole change needed for Add to refuse it.
+  match_nothing <- c("invalid_match_type", "invalid_regex",
+                     "no_include_terms", "invalid_sibling_pattern")
+  other <- character(0)
+  for (nm in setdiff(.RECAT_REFUSE_CLASSES, match_nothing)) {
+    x <- iss[[nm]]
+    if (!is.data.frame(x) || nrow(x) == 0) next
+    detail <- if ("detail" %in% names(x)) as.character(x$detail[1])
+              else NA_character_
+    other <- c(other, if (!is.na(detail) && nzchar(detail)) detail
+                      else tolower(issue_class_title(nm,
+                                                     .RECAT_ISSUE_TITLES)))
+  }
+  if (length(bits) == 0 && length(other) == 0) return(NULL)
+  msg <- "Rule not added: "
+  if (length(bits) > 0) {
+    msg <- paste0(msg, paste(bits, collapse = "; "),
+                  ". As written it would match nothing.")
+    if (length(other) > 0) msg <- paste0(msg, " Also: ")
+  }
+  if (length(other) > 0) {
+    msg <- paste0(msg, paste(other, collapse = "; "), ".")
+  }
+  msg
 }
 
 #' Plain-language list of validate_recat() issues for the session's rules.
@@ -755,12 +790,11 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
       r <- recat_proxy$get()
       shiny::req(nrow(r) > 0)
       show <- r
+      # Row position, not the id: a recat_id read from an imported CSV can be
+      # duplicated, blank or missing. .rule_delete_button() is in
+      # R/ui_helpers.R and escapes the whole handler.
       show$delete <- vapply(seq_len(nrow(show)), function(i) {
-        sprintf(
-          paste0('<button class="btn btn-xs btn-outline-danger" ',
-                 'onclick="Shiny.setInputValue(\'%s\', \'%s\', ',
-                 '{priority: \'event\'})">Delete</button>'),
-          ns("delete_row"), show$recat_id[i])
+        .rule_delete_button(ns("delete_row"), i, show$recat_id[i])
       }, character(1))
       show <- show[, c("out_col", "category", "vars", "include_terms",
                        "exclude_terms", "match_type", "priority", "notes",
@@ -772,9 +806,16 @@ mod_recategorize_server <- function(id, shared_state, recat_proxy,
                     options = list(pageLength = 15, autoWidth = FALSE))
     })
 
+    # Deletes the ONE row the button names; see the Recodes tab for why the id
+    # alone is not enough.
     shiny::observeEvent(input$delete_row, ignoreInit = TRUE, {
       r <- recat_proxy$get()
-      recat_proxy$set(r[r$recat_id != input$delete_row, ])
+      hit <- .rule_delete_target(input$delete_row, r$recat_id)
+      if (!hit$ok) {
+        shiny::showNotification(hit$message, type = "warning", duration = 6)
+        return()
+      }
+      recat_proxy$set(r[-hit$row, , drop = FALSE])
       shiny::showNotification("Rule deleted.", type = "message", duration = 2)
     })
 

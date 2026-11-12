@@ -232,6 +232,42 @@ test_that("values in the report are escaped", {
   expect_match(h, "&lt;img", fixed = TRUE)
 })
 
+test_that("the report explains a rule whose column is not in the data", {
+  # validate_recodes()$missing_column, columns rule_id / variable /
+  # sibling_pattern. Built by hand here: the renderer is pure, so this covers
+  # the report whatever the validator that produces the class does.
+  one <- tibble::tibble(rule_id = "aaaaaaaaaaaa", variable = "town",
+                        sibling_pattern = NA_character_)
+  h <- .html(recode_validation_ui(list(missing_column = one)))
+  expect_match(h, "Column not in the loaded data (1)", fixed = TRUE)
+  expect_match(h, "<code>town</code>", fixed = TRUE)
+  expect_match(h, "<code>aaaaaaaaaaaa</code>", fixed = TRUE)
+  # It says this is normal across datasets, and offers the two ways out,
+  # rather than reading as a corrupt rule.
+  expect_match(h, "does not clear the rule set", fixed = TRUE)
+  expect_match(h, "skipped in the exported script", fixed = TRUE)
+
+  # Plural wording, and a sibling pattern is named when there is one.
+  two <- tibble::tibble(rule_id = c("aaaaaaaaaaaa", "bbbbbbbbbbbb"),
+                        variable = c("town", "drink1"),
+                        sibling_pattern = c(NA_character_, "^drink[0-9]+$"))
+  h <- .html(recode_validation_ui(list(missing_column = two)))
+  expect_match(h, "Column not in the loaded data (2)", fixed = TRUE)
+  expect_match(h, "These 2 rules target a column", fixed = TRUE)
+  expect_match(h, "sibling pattern", fixed = TRUE)
+  expect_match(h, "<code>^drink[0-9]+$</code>", fixed = TRUE)
+})
+
+test_that("a column name from the data cannot inject markup into the report", {
+  nasty <- tibble::tibble(rule_id = "<b>id</b>",
+                          variable = "<img src=x onerror=alert(1)>",
+                          sibling_pattern = "<script>alert(1)</script>")
+  h <- .html(recode_validation_ui(list(missing_column = nasty)))
+  expect_no_match(h, "<img", fixed = TRUE)
+  expect_no_match(h, "<script>", fixed = TRUE)
+  expect_match(h, "&lt;img", fixed = TRUE)
+})
+
 test_that("no issues gives All good, and an unknown class is still shown", {
   expect_match(.html(recode_validation_ui(validate_recodes(
     .rule("city", "exact", "uptown", "Uptown")))), "All good", fixed = TRUE)
@@ -518,4 +554,300 @@ test_that("importing through the module merges by key and accepts bad patterns",
     })
   expect_identical(tail(e$types, 1), "warning")
   expect_match(tail(e$msgs, 1), "1 will not apply", fixed = TRUE)
+})
+
+
+# --- Per-row rule delete: payload, escaping, and the three handlers -----------
+#
+# Two defects meet here (docs/review-2026-10-adversarial.md items 1 and 2):
+# Delete matched the stored id, so a duplicated or blank id removed several
+# rules and an NA id left an all-NA row behind; and the button pasted that id
+# straight into a quoted JavaScript string in the one unescaped DT column.
+
+# A Delete payload exactly as .rule_delete_js() sends it.
+.del_payload <- function(row, id) {
+  as.character(jsonlite::toJSON(
+    list(row = as.integer(row), id = as.character(id)), auto_unbox = TRUE))
+}
+
+# The onclick attribute of a one-button cell, as the BROWSER would see it: the
+# text between the quotes, with entities decoded. `[^"]*` is deliberate: a raw
+# `"` reaching the attribute ends it early, so the match is then truncated and
+# the payload assertion below cannot pass.
+.onclick_of <- function(html) {
+  m <- regmatches(html, regexpr('onclick="[^"]*"', html))
+  if (length(m) != 1L) return(NA_character_)
+  out <- sub('"$', "", sub('^onclick="', "", m))
+  for (p in list(c("&quot;", '"'), c("&#39;", "'"), c("&#x27;", "'"),
+                 c("&lt;", "<"), c("&gt;", ">"), c("&amp;", "&"))) {
+    out <- gsub(p[1], p[2], out, fixed = TRUE)
+  }
+  out
+}
+
+test_that(".rule_delete_target resolves one row and refuses anything else", {
+  ids <- c("aaa", "aaa", NA_character_, "")
+
+  # The clicked row wins even where the id is shared, blank or missing.
+  for (i in seq_along(ids)) {
+    hit <- .rule_delete_target(.del_payload(i, ids[i]), ids)
+    expect_true(hit$ok)
+    expect_identical(hit$row, i)
+  }
+
+  # Anything else the client could send is ignored, with a message.
+  junk <- list(NULL, NA_character_, c("a", "b"), "not json", "", "5",
+               "[1,2]", '{"id":"aaa"}', '{"row":"a","id":"aaa"}',
+               '{"row":2.5,"id":"aaa"}', .del_payload(0, "aaa"),
+               .del_payload(5, "aaa"), .del_payload(-1, "aaa"))
+  for (p in junk) {
+    hit <- .rule_delete_target(p, ids)
+    expect_false(hit$ok)
+    expect_true(is.na(hit$row))
+    expect_true(nzchar(hit$message))
+  }
+
+  # An id that no longer matches the row is a stale click, named as such.
+  stale <- .rule_delete_target(.del_payload(1, "bbb"), ids)
+  expect_false(stale$ok)
+  expect_match(stale$message, "changed since that button was drawn",
+               fixed = TRUE)
+
+  # No rules at all: nothing to delete, and no error.
+  expect_false(.rule_delete_target(.del_payload(1, "aaa"), character(0))$ok)
+})
+
+test_that("a hostile rule id cannot break out of the Delete button (security F8)", {
+  # A `"` in the id used to end the onclick attribute, and the `'` to end the
+  # quoted JS string, so the rest ran as script. Ids come from imported CSVs.
+  hostile <- "x', 'y'), alert(1); //<\"\\end"
+  rules <- dplyr::bind_rows(
+    .rule("city", "exact", "uptown",   "Uptown"),
+    .rule("city", "exact", "downtown", "Downtown"))
+  rules$rule_id[2] <- hostile
+  rv <- shiny::reactiveValues(rules = rules)
+  proxy <- make_rules_proxy(rv)
+
+  shiny::testServer(mod_recode_editor_server,
+    args = list(shared_state = shiny::reactiveValues(data = NULL),
+                rules_proxy = proxy), {
+      # Prime the ignoreInit observer first. shiny:::bindEvent.Observer flips
+      # `initialized` on the observer's FIRST evaluation whatever the value,
+      # and that gate sits before the ignoreNULL check, so without this the
+      # setInputs below would run nothing and the assertions after it would
+      # pass while asserting nothing.
+      session$flushReact()
+      expect_identical(shiny::isolate(rv$rules), rules)
+
+      cell <- shiny::isolate(table_data()$delete[2])
+
+      # Exactly one onclick attribute, and it is COMPLETE: a raw quote from
+      # the id would end it early and cut the call short.
+      js <- .onclick_of(cell)
+      expect_false(is.na(js))
+      expect_match(js, "});$")
+
+      # The payload the browser decodes is the JSON the handler expects, so
+      # the id travels as data inside a JSON string, not as script.
+      want <- .del_payload(2L, hostile)
+      expect_match(js, want, fixed = TRUE)
+      expect_match(cell, "&quot;", fixed = TRUE)
+
+      # End to end: that payload deletes the clicked rule and only that one.
+      session$setInputs(delete_row = want)
+      out <- shiny::isolate(rv$rules)
+      expect_equal(nrow(out), 1L)
+      expect_identical(out$old_value, "uptown")
+    })
+})
+
+test_that("Recodes Delete removes only the clicked rule with duplicate ids (Shiny F1)", {
+  rules <- dplyr::bind_rows(
+    .rule("city", "exact", "uptown",   "Uptown"),
+    .rule("city", "exact", "downtown", "Downtown"),
+    .rule("city", "exact", "midtown",  "Midtown"))
+  # An imported rule file legitimately carries ids like these.
+  rules$rule_id <- rep("dup000000000", 3L)
+  rv <- shiny::reactiveValues(rules = rules)
+  proxy <- make_rules_proxy(rv)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_recode_editor_server,
+    args = list(shared_state = shiny::reactiveValues(data = NULL),
+                rules_proxy = proxy), {
+      # The priming flush must not fire the handler: otherwise every
+      # assertion below could pass while asserting nothing.
+      session$flushReact()
+      expect_identical(shiny::isolate(rv$rules), rules)
+
+      session$setInputs(delete_row = .del_payload(2, "dup000000000"))
+      r <- shiny::isolate(rv$rules)
+      expect_equal(nrow(r), 2L)
+      expect_identical(r$old_value, c("uptown", "midtown"))
+    })
+})
+
+test_that("Recodes Delete does not leave an all-NA row for an NA id (Shiny F1)", {
+  rules <- dplyr::bind_rows(
+    .rule("city", "exact", "uptown",   "Uptown"),
+    .rule("city", "exact", "downtown", "Downtown"),
+    .rule("city", "exact", "midtown",  "Midtown"))
+  rules$rule_id[2] <- NA_character_
+  rv <- shiny::reactiveValues(rules = rules)
+  proxy <- make_rules_proxy(rv)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_recode_editor_server,
+    args = list(shared_state = shiny::reactiveValues(data = NULL),
+                rules_proxy = proxy), {
+      session$flushReact()
+      expect_identical(shiny::isolate(rv$rules), rules)
+
+      # Deleting the FIRST rule must leave the NA-id rule intact, not blank it.
+      session$setInputs(delete_row = .del_payload(1, rules$rule_id[1]))
+      r <- shiny::isolate(rv$rules)
+      expect_equal(nrow(r), 2L)
+      expect_identical(r$old_value, c("downtown", "midtown"))
+      expect_identical(r$variable, c("city", "city"))
+      expect_false(any(is.na(r$old_value)))
+
+      # The NA-id rule can still be deleted, by its own position.
+      session$setInputs(delete_row = .del_payload(1, NA_character_))
+      r <- shiny::isolate(rv$rules)
+      expect_equal(nrow(r), 1L)
+      expect_identical(r$old_value, "midtown")
+    })
+})
+
+test_that("Recodes Delete ignores a client value it did not send (security F12)", {
+  rules <- dplyr::bind_rows(
+    .rule("city", "exact", "uptown",   "Uptown"),
+    .rule("city", "exact", "downtown", "Downtown"))
+  rv <- shiny::reactiveValues(rules = rules)
+  proxy <- make_rules_proxy(rv)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_recode_editor_server,
+    args = list(shared_state = shiny::reactiveValues(data = NULL),
+                rules_proxy = proxy), {
+      session$flushReact()
+      expect_identical(shiny::isolate(rv$rules), rules)
+
+      for (p in list(NA_character_, c("a", "b"), "not json", "9",
+                     .del_payload(99, "x"), .del_payload(1, "wrong-id"))) {
+        session$setInputs(delete_row = p)
+        expect_identical(shiny::isolate(rv$rules), rules)
+      }
+    })
+  expect_equal(length(e$types), 6L)
+  expect_true(all(e$types == "warning"))
+})
+
+test_that("Normalize Remove removes only the clicked rule (Shiny F1)", {
+  norms <- dplyr::bind_rows(
+    .norm("city",   "squish",    FALSE, NA_character_),
+    .norm("drink1", "uppercase", FALSE, NA_character_))
+  norms$norm_id <- rep("dup000000000", 2L)
+  rv <- shiny::reactiveValues(norms = norms)
+  proxy <- make_norms_proxy(rv)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_normalize_server,
+    args = list(shared_state = shiny::reactiveValues(data = .cafe,
+                                                     dataset_name = "cafe"),
+                selected_var_r = shiny::reactive("city"),
+                norms_proxy = proxy), {
+      session$flushReact()
+      expect_identical(shiny::isolate(rv$norms), norms)
+
+      session$setInputs(delete_row = .del_payload(2, "dup000000000"))
+      out <- shiny::isolate(rv$norms)
+      expect_equal(nrow(out), 1L)
+      expect_identical(out$variable, "city")
+
+      # A row index past the end of the set deletes nothing.
+      session$setInputs(delete_row = .del_payload(7, "dup000000000"))
+      expect_equal(nrow(shiny::isolate(rv$norms)), 1L)
+    })
+})
+
+test_that("Recategorize Delete removes only the clicked rule (Shiny F1)", {
+  rules <- dplyr::bind_rows(.recat_rule("espresso"), .recat_rule("latte"))
+  rules$recat_id <- rep("dup000000000", 2L)
+  store <- shiny::reactiveVal(rules)
+  proxy <- list(get = function() store(),
+                add = function(r) store(dplyr::bind_rows(store(), r)),
+                set = function(r) store(r))
+  meta <- tibble::tibble(column = names(.cafe), is_free_text_candidate = TRUE)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_recategorize_server,
+    args = list(shared_state = shiny::reactiveValues(
+                  data = .cafe, meta = meta, dataset_name = "cafe.csv"),
+                recat_proxy = proxy), {
+      session$flushReact()
+      expect_identical(shiny::isolate(store()), rules)
+
+      session$setInputs(delete_row = .del_payload(1, "dup000000000"))
+      out <- shiny::isolate(store())
+      expect_equal(nrow(out), 1L)
+      expect_identical(out$include_terms, "latte")
+    })
+})
+
+test_that("Recategorize Delete corrupts no rule on a hostile client value (Shiny F1)", {
+  # Asserting on CONTENT, not nrow(): the old handler's `recat_id != <NA>`
+  # comparison was all-NA, and row-subsetting a tibble with logical NA keeps
+  # the row COUNT while replacing every rule with an all-NA row. A count check
+  # would pass while the whole set was destroyed.
+  rules <- dplyr::bind_rows(.recat_rule("espresso"), .recat_rule("latte"))
+  store <- shiny::reactiveVal(rules)
+  proxy <- list(get = function() store(),
+                add = function(r) store(dplyr::bind_rows(store(), r)),
+                set = function(r) store(r))
+  meta <- tibble::tibble(column = names(.cafe), is_free_text_candidate = TRUE)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_recategorize_server,
+    args = list(shared_state = shiny::reactiveValues(
+                  data = .cafe, meta = meta, dataset_name = "cafe.csv"),
+                recat_proxy = proxy), {
+      session$flushReact()
+      expect_identical(shiny::isolate(store()), rules)
+
+      for (p in list(NA_character_, c("aaa", "bbb"), character(0), "not json",
+                     .del_payload(3, "x"))) {
+        session$setInputs(delete_row = p)
+        expect_identical(shiny::isolate(store()), rules)
+      }
+    })
+})
+
+test_that("a stored NA recat_id does not poison deleting another rule (Shiny F1)", {
+  # No hostile client needed: with the old id comparison, one NA id anywhere
+  # in the set turned an ordinary click on a DIFFERENT rule into an all-NA row.
+  rules <- dplyr::bind_rows(.recat_rule("espresso"), .recat_rule("latte"),
+                            .recat_rule("mocha"))
+  rules$recat_id[2] <- NA_character_
+  store <- shiny::reactiveVal(rules)
+  proxy <- list(get = function() store(),
+                add = function(r) store(dplyr::bind_rows(store(), r)),
+                set = function(r) store(r))
+  meta <- tibble::tibble(column = names(.cafe), is_free_text_candidate = TRUE)
+  e <- .notes_env()
+  .mock_notes(e)
+  shiny::testServer(mod_recategorize_server,
+    args = list(shared_state = shiny::reactiveValues(
+                  data = .cafe, meta = meta, dataset_name = "cafe.csv"),
+                recat_proxy = proxy), {
+      session$flushReact()
+      expect_identical(shiny::isolate(store()), rules)
+
+      session$setInputs(delete_row = .del_payload(3, rules$recat_id[3]))
+      out <- shiny::isolate(store())
+      expect_equal(nrow(out), 2L)
+      expect_identical(out$include_terms, c("espresso", "latte"))
+      expect_false(any(is.na(out$include_terms)))
+      expect_identical(out$out_col, c("drink_family", "drink_family"))
+    })
 })

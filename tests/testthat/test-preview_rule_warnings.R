@@ -67,6 +67,73 @@ test_that("no warnings renders a quiet all-clear, not a warning box", {
   expect_false(grepl("alert-warning", h, fixed = TRUE))
 })
 
+test_that("the all-clear names every check, including the newer ones", {
+  # The line enumerates what was checked, so it goes stale when a check is
+  # added. These are the claims it has to keep covering.
+  h <- gsub("\\s+", " ", .html(rule_warnings_ui(empty_rule_warnings())))
+  expect_match(h, "every normalization changes something", fixed = TRUE)
+  # recode_no_match, and the shadowing case, which a fully shadowed rule hits.
+  expect_match(h, "matches at least one cell", fixed = TRUE)
+  expect_match(h, "no earlier rule had already claimed", fixed = TRUE)
+  # norm_spec_drift / norm_spec_unstamped.
+  expect_match(h, "written under the current normalization", fixed = TRUE)
+  # A rule whose column is not in the data.
+  expect_match(h, "reaches a column that is in the data", fixed = TRUE)
+  # recat_terms_recoded_away, and a recat rule that matches nothing at all.
+  expect_match(h, "matches at least one row, before and after the recodes",
+               fixed = TRUE)
+})
+
+test_that("a rule for an absent column is reported in the warning box", {
+  # The panel half of review item 6, which is testable now: given such a
+  # warning row, the panel must show it as a warning, not as a note.
+  w <- tibble::tibble(
+    kind = "recode_missing_column", id = "aaaaaaaaaaaa", target = "town",
+    message = paste0("Recode rule for column 'town' did nothing: the loaded ",
+                     "dataset has no such column. Loading a dataset does not ",
+                     "clear the rule set."),
+    n_before = NA_integer_, n_after = NA_integer_, severity = "warning")
+  h <- .html(rule_warnings_ui(w))
+  expect_match(h, "alert-warning", fixed = TRUE)
+  expect_match(h, "1 rule did less than expected", fixed = TRUE)
+  expect_match(h, "has no such column", fixed = TRUE)
+  expect_false(grepl("rs-rule-notes", h, fixed = TRUE))
+})
+
+test_that(".warn_recodes_missing_column reports nothing when there is nothing", {
+  rules <- dplyr::bind_rows(.rule("drink1", "mocha", "Mocha"),
+                            .rule("town", "uptown", "Uptown"))
+  # No data, no rules, and a rule set whose columns are all present.
+  expect_equal(nrow(.warn_recodes_missing_column(rules, NULL)), 0L)
+  expect_equal(nrow(.warn_recodes_missing_column(empty_recodes_tibble(), .df)),
+               0L)
+  expect_equal(nrow(.warn_recodes_missing_column(NULL, .df)), 0L)
+  expect_equal(nrow(.warn_recodes_missing_column(
+    .rule("drink1", "mocha", "Mocha"), .df)), 0L)
+  # Schema-shaped even when empty, so bind_rows() in the module cannot widen
+  # the warnings tibble.
+  expect_named(.warn_recodes_missing_column(rules, NULL),
+               names(empty_rule_warnings()))
+})
+
+# PENDING review item 6, the engine half: validate_recodes() is gaining a
+# `missing_column` class (columns rule_id, variable, sibling_pattern).
+# .warn_recodes_missing_column() already reads it and is a no-op without it,
+# so when that class lands this test belongs here and will pass as written:
+#
+#   test_that("a recode rule for an absent column is reported (engine 3)", {
+#     rules <- dplyr::bind_rows(.rule("drink1", "mocha", "Mocha"),
+#                               .rule("town", "uptown", "Uptown"))
+#     w <- .warn_recodes_missing_column(rules, .df)
+#     expect_equal(nrow(w), 1L)
+#     expect_identical(w$kind, "recode_missing_column")
+#     expect_identical(w$target, "town")
+#     expect_identical(w$severity, "warning")
+#     expect_match(w$message, "no such column", fixed = TRUE)
+#   })
+#
+# It is left as a comment rather than skip()ped so the suite reports no skips.
+
 test_that("each warning is listed in plain language", {
   w <- collect_rule_warnings(
     .df,

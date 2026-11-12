@@ -72,6 +72,67 @@ test_that("a table selection is returned as the variable name", {
     })
 })
 
+test_that("no dataset and no candidates are different empty states (Shiny F11)", {
+  .html <- function(x) paste(as.character(htmltools::renderTags(x)$html),
+                             collapse = " ")
+
+  # No dataset: send the user to the Data tab.
+  shiny::testServer(mod_variable_picker_server,
+    args = list(shared_state = shiny::reactiveValues(
+                  data = NULL, meta = NULL, dataset_name = NULL)), {
+      session$setInputs(free_text_only = TRUE)
+      expect_no_match(paste(as.character(output$tbl), collapse = ""),
+                      "<th>message", fixed = TRUE)
+      h <- .html(output$tbl_empty)
+      expect_match(h, "No dataset loaded", fixed = TRUE)
+      expect_match(h, "Data tab", fixed = TRUE)
+      # A plain note, not a one-column datatable: the table used to render
+      # `tibble(message = ...)`, which DT drew with a literal "message"
+      # header and a sort arrow, reading as an unfinished placeholder.
+      expect_no_match(h, "message", fixed = TRUE)
+      expect_no_match(paste(as.character(output$tbl), collapse = ""),
+                      "message", fixed = TRUE)
+    })
+
+  # A dataset whose columns are all excluded: the filter is hiding them, and
+  # telling the user to load a dataset would send them the wrong way.
+  none <- .meta
+  none$is_free_text_candidate <- rep(FALSE, nrow(none))
+  shiny::testServer(mod_variable_picker_server,
+    args = list(shared_state = .state(none)), {
+      session$setInputs(free_text_only = TRUE)
+
+      # The table itself must carry neither the wrong message nor a literal
+      # "message" column: this was the app's last one-column placeholder
+      # table, and it claimed no dataset was loaded while one was.
+      payload <- paste(as.character(output$tbl), collapse = "")
+      expect_no_match(payload, "<th>message", fixed = TRUE)
+      expect_no_match(payload, "No dataset loaded", fixed = TRUE)
+
+      h <- .html(output$tbl_empty)
+      expect_match(h, "No free-text candidates", fixed = TRUE)
+      expect_match(h, "Free-text candidates only", fixed = TRUE)
+      expect_match(h, "all 5 columns", fixed = TRUE)
+      expect_no_match(h, "No dataset loaded", fixed = TRUE)
+
+      # Unticking the filter shows them, and the note goes away.
+      session$setInputs(free_text_only = FALSE)
+      expect_null(output$tbl_empty)
+      # The real picker table, not a placeholder: DT serves the rows
+      # separately, so assert on the header it built.
+      payload <- paste(as.character(output$tbl), collapse = "")
+      expect_match(payload, "<th>variable", fixed = TRUE)
+      expect_no_match(payload, "<th>message", fixed = TRUE)
+    })
+
+  # With candidates there is no note at all.
+  shiny::testServer(mod_variable_picker_server,
+    args = list(shared_state = .state()), {
+      session$setInputs(free_text_only = TRUE)
+      expect_null(output$tbl_empty)
+    })
+})
+
 test_that("an external variable equal to the selection is not re-pushed", {
   ext <- shiny::reactiveVal(NULL)
   shiny::testServer(mod_variable_picker_server,
