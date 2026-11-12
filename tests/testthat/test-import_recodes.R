@@ -225,3 +225,113 @@ test_that("importing recodes keeps their norm_spec stamp", {
 test_that("the UI builds", {
   expect_no_error(mod_import_recodes_ui("imp"))
 })
+
+
+# --- "Take newer" compares times, not text (Shiny F6) -------------------------
+
+test_that(".parse_stamp reads the formats a rule file can carry", {
+  # The app's own format, and what a hand edit or a spreadsheet produces.
+  expect_equal(.parse_stamp("2026-01-02T10:30:00"),
+               .parse_stamp("2026-01-02 10:30:00"))
+  expect_equal(.parse_stamp("2026-01-02T10:30:00Z"),
+               .parse_stamp("2026-01-02 10:30:00"))
+  expect_equal(.parse_stamp("  2026-01-02 10:30:00  "),
+               .parse_stamp("2026-01-02 10:30:00"))
+  expect_false(is.na(.parse_stamp("2026-01-02 10:30")))
+  expect_false(is.na(.parse_stamp("2026-01-02")))
+
+  # Times order as times.
+  expect_lt(.parse_stamp("2026-01-02T01:00:00"),
+            .parse_stamp("2026-01-02 23:00:00"))
+  expect_lt(.parse_stamp("2026-01-02 23:00:00"),
+            .parse_stamp("2026-01-03T00:00:00"))
+
+  # Anything it cannot read is NA, never an error.
+  for (v in c(NA_character_, "", "   ", "not a date", "02/01/2026",
+              "2026-13-45T99:99:99", "yesterday")) {
+    expect_true(is.na(.parse_stamp(v)))
+  }
+  expect_length(.parse_stamp(character(0)), 0L)
+
+  # Vectorised, mixing formats in one column.
+  got <- .parse_stamp(c("2026-01-02T01:00:00", "2026-01-02 23:00:00", "junk"))
+  expect_length(got, 3L)
+  expect_lt(got[1], got[2])
+  expect_true(is.na(got[3]))
+})
+
+test_that("a space-separated stamp is compared as a time, not as text (Shiny F6)", {
+  # The defect: "T" (0x54) sorts after " " (0x20), so comparing the raw
+  # strings made every space-separated stamp lose to a "T" one on the same
+  # date, whatever the clock said.
+  expect_true(.stamp_is_newer("2026-01-02 23:00:00", "2026-01-02T01:00:00"))
+  expect_false(.stamp_is_newer("2026-01-02 01:00:00", "2026-01-02T23:00:00"))
+  # Equal times are not newer, in either spelling.
+  expect_false(.stamp_is_newer("2026-01-02 10:00:00", "2026-01-02T10:00:00"))
+})
+
+test_that("an unreadable stamp is never newer (Shiny F6)", {
+  for (v in c(NA_character_, "", "not a date", "02/01/2026")) {
+    expect_false(.stamp_is_newer(v, "2026-01-02T01:00:00"))
+  }
+  # A readable incoming stamp still beats an unreadable current one: a known
+  # time beats no time, which is what "newer" already did for a missing stamp.
+  expect_true(.stamp_is_newer("2026-01-02T01:00:00", NA_character_))
+  expect_true(.stamp_is_newer("2026-01-02T01:00:00", "not a date"))
+  # Neither side readable: nothing to prefer, so keep the session's rule.
+  expect_false(.stamp_is_newer("junk", "also junk"))
+})
+
+test_that("merge newer takes the later rule across stamp formats (Shiny F6)", {
+  mine <- .one_rule()
+  mine$updated_at <- "2026-01-02T01:00:00"
+  mine$new_value  <- "MINE"
+  theirs <- mine
+  # Later in the day, written with a space separator (spreadsheet round trip).
+  theirs$updated_at <- "2026-01-02 23:00:00"
+  theirs$new_value  <- "THEIRS"
+
+  out <- merge_incoming_rules(mine, theirs, "rule_id", "newer",
+                              key_fn = recode_key_id)
+  expect_equal(nrow(out), 1L)
+  expect_identical(out$new_value, "THEIRS")
+
+  # The other direction: an earlier incoming rule does not win.
+  theirs$updated_at <- "2026-01-01 23:00:00"
+  out <- merge_incoming_rules(mine, theirs, "rule_id", "newer",
+                              key_fn = recode_key_id)
+  expect_identical(out$new_value, "MINE")
+
+  # An unreadable incoming stamp never wins under "newer".
+  theirs$updated_at <- "whenever"
+  out <- merge_incoming_rules(mine, theirs, "rule_id", "newer",
+                              key_fn = recode_key_id)
+  expect_identical(out$new_value, "MINE")
+  # ... but "Take incoming file" still loads it.
+  out <- merge_incoming_rules(mine, theirs, "rule_id", "theirs",
+                              key_fn = recode_key_id)
+  expect_identical(out$new_value, "THEIRS")
+})
+
+test_that("the import preview reports a stamp it cannot read (Shiny F6)", {
+  mine <- .one_rule()
+  mine$updated_at <- "2026-01-02T01:00:00"
+  theirs <- mine
+  theirs$updated_at <- "whenever"
+
+  sm <- import_recodes_summary(mine, theirs)
+  expect_equal(sm$n_conflicts, 1L)
+  expect_equal(sm$n_unreadable_stamps, 1L)
+  h <- paste(as.character(htmltools::renderTags(
+    import_recodes_preview_ui(sm))$html), collapse = " ")
+  expect_match(h, "cannot read as a time", fixed = TRUE)
+  expect_match(h, "Take incoming file", fixed = TRUE)
+
+  # A readable stamp says nothing about stamps.
+  theirs$updated_at <- "2026-01-03 09:00:00"
+  sm <- import_recodes_summary(mine, theirs)
+  expect_equal(sm$n_unreadable_stamps, 0L)
+  h <- paste(as.character(htmltools::renderTags(
+    import_recodes_preview_ui(sm))$html), collapse = " ")
+  expect_false(grepl("cannot read as a time", h, fixed = TRUE))
+})
