@@ -8,6 +8,31 @@
 # is descriptive and should describe the file as delivered.
 # =============================================================================
 
+#' Is the word cloud drawable on this machine?
+#'
+#' `wordcloud2` is optional at runtime, like `cld2` for language detection:
+#' the word cloud is one panel of one tab and must not decide whether the app
+#' starts. Its UI call used to be unguarded, so a machine without the package
+#' could not build the UI at all and `shiny::runApp()` died with "there is no
+#' package called 'wordcloud2'" (Shiny F8). Whether it belongs in `Imports` or
+#' `Suggests` is a separate, open question: this only stops a missing package
+#' taking the whole app down.
+wordcloud_available <- function() {
+  requireNamespace("wordcloud2", quietly = TRUE)
+}
+
+#' The install hint shown in place of the word cloud. Same shape as the
+#' language-detection hint below it.
+.wordcloud_missing_note <- function() {
+  shiny::div(
+    class = "alert alert-warning", style = "padding:.3em .8em;",
+    "The word cloud needs the ", shiny::tags$code("wordcloud2"),
+    " package, which is not installed. Install it with ",
+    shiny::tags$code('install.packages("wordcloud2")'),
+    " and restart the app. Top words and Top phrases above show the same ",
+    "counts.")
+}
+
 # JSON-encode a value for use inside inline JavaScript. A JSON string is also
 # a valid JavaScript literal, and jsonlite escapes quotes, backslashes and
 # control characters. (Same approach as the Spellcheck tab; kept local so the
@@ -175,7 +200,11 @@ mod_text_analysis_ui <- function(id) {
       shiny::hr(),
 
       shiny::h6("Interactive word cloud"),
-      wordcloud2::wordcloud2Output(ns("wordcloud"), height = "320px"),
+      if (wordcloud_available()) {
+        wordcloud2::wordcloud2Output(ns("wordcloud"), height = "320px")
+      } else {
+        .wordcloud_missing_note()
+      },
       shiny::hr(),
 
       shiny::h6(
@@ -367,22 +396,28 @@ mod_text_analysis_server <- function(id, shared_state, selected_var_r,
         duration = 5)
     })
 
-    output$wordcloud <- wordcloud2::renderWordcloud2({
-      toks <- tokens_r()
-      shiny::validate(shiny::need(!is.null(toks), "No values."))
-      shiny::validate(shiny::need(nrow(toks) > 0, "No tokens matching filters."))
-      df_cloud <- data.frame(
-        word = as.character(toks$token),
-        freq = as.numeric(toks$n),
-        stringsAsFactors = FALSE
-      )
-      wordcloud2::wordcloud2(
-        data = df_cloud,
-        size = 0.6,
-        color = "random-dark",
-        backgroundColor = "white"
-      )
-    })
+    # No output to render when the package is missing: the UI put an install
+    # hint in that slot instead, and naming the renderer would load the
+    # namespace that is not there.
+    if (wordcloud_available()) {
+      output$wordcloud <- wordcloud2::renderWordcloud2({
+        toks <- tokens_r()
+        shiny::validate(shiny::need(!is.null(toks), "No values."))
+        shiny::validate(shiny::need(nrow(toks) > 0,
+                                    "No tokens matching filters."))
+        df_cloud <- data.frame(
+          word = as.character(toks$token),
+          freq = as.numeric(toks$n),
+          stringsAsFactors = FALSE
+        )
+        wordcloud2::wordcloud2(
+          data = df_cloud,
+          size = 0.6,
+          color = "random-dark",
+          backgroundColor = "white"
+        )
+      })
+    }
 
     # --- Language -------------------------------------------------------------
 

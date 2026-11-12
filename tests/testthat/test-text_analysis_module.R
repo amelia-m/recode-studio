@@ -286,6 +286,28 @@ test_that("Language section without cld2: install hint, no tables, no error", {
   })
 })
 
+test_that("the tab builds and runs without wordcloud2 installed (Shiny F8)", {
+  # The word cloud's UI call was unguarded while the cld2 call beside it was
+  # guarded, so a machine without wordcloud2 could not build the UI and
+  # shiny::runApp() died with "there is no package called 'wordcloud2'".
+  real <- wordcloud_available
+  assign("wordcloud_available", function() FALSE, envir = globalenv())
+  withr::defer(assign("wordcloud_available", real, envir = globalenv()))
+
+  ui <- paste(as.character(mod_text_analysis_ui("ta")), collapse = "")
+  expect_match(ui, 'install.packages("wordcloud2")', fixed = TRUE)
+  # No output slot for a cloud that cannot be drawn.
+  expect_false(grepl('id="ta-wordcloud"', ui, fixed = TRUE))
+
+  d <- .tier_dir()
+  shiny::testServer(mod_text_analysis_server, args = .args(d), {
+    .set_defaults(session)
+    # The rest of the tab still works, and nothing threw.
+    expect_true("oatmilk" %in% tokens_r()$token)
+    expect_false(is.null(output$tokens))
+  })
+})
+
 test_that("lang_values_table filters and counts", {
   v <- c("a", "b", "b", "c")
   l <- c("en", NA, NA, "fr")
