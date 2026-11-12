@@ -226,7 +226,8 @@ test_that("validate_recat reports each issue class", {
   v <- validate_recat(rules, df)
   expect_named(v, c("invalid_match_type", "invalid_regex", "no_include_terms",
                     "invalid_sibling_pattern", "duplicate_ids",
-                    "missing_columns", "no_columns"))
+                    "nested_quantifier", "missing_columns", "no_columns",
+                    "out_col_exists"))
   for (nm in names(v)) {
     expect_named(v[[nm]], c("recat_id", "out_col", "category", "value",
                             "detail"))
@@ -399,4 +400,69 @@ test_that("tidyselect matches() resolves a pattern with base grep (TRE)", {
   sel <- names(tidyselect::eval_select(
     rlang::expr(tidyselect::matches(!!pat, ignore.case = FALSE)), df))
   expect_identical(sel, tre)
+})
+
+
+# --- validate_recodes()$missing_column (tests 1c) ----------------------------
+
+test_that("validate_recodes reports a rule whose column is not in the data", {
+  df <- tibble::tibble(city = "lincon", drink1 = "latte")
+  rules <- dplyr::bind_rows(
+    rc_rule("city",  "exact", "lincon"),              # present
+    rc_rule("gone",  "exact", "x"),                   # absent column
+    rc_rule("drink1", "exact", "latte", siblings = TRUE,
+            pattern = "^nothing[0-9]$"),              # pattern matches nothing
+    rc_rule("drink1", "exact", "mocha", siblings = TRUE,
+            pattern = "drink[")                       # bad pattern
+  )
+  v <- validate_recodes(rules, df)
+  expect_named(v$missing_column, c("rule_id", "variable", "sibling_pattern"))
+  expect_identical(v$missing_column$variable, c("gone", "drink1"))
+
+  # A rule skipped for an uncompilable pattern is reported there, once.
+  expect_identical(v$invalid_sibling_pattern$sibling_pattern, "drink[")
+  expect_false(rules$rule_id[4] %in% v$missing_column$rule_id)
+
+  # Without `data` the class is present but empty, like `stale`.
+  empty <- validate_recodes(rules)$missing_column
+  expect_equal(nrow(empty), 0L)
+  expect_named(empty, c("rule_id", "variable", "sibling_pattern"))
+  expect_equal(nrow(validate_recodes(empty_recodes_tibble(),
+                                     df)$missing_column), 0L)
+})
+
+
+# --- validate_recat()$nested_quantifier (security F5, reported only) ---------
+
+test_that("a nested quantifier in a recat regex term is reported", {
+  bad <- validate_recat(rc_recat("q", "(\\w+\\s*)+!", match_type = "regex"))
+  expect_identical(bad$nested_quantifier$recat_id, "q")
+  expect_identical(bad$nested_quantifier$value, "(\\w+\\s*)+!")
+  expect_match(bad$nested_quantifier$detail, "repeated group")
+
+  # Reported only: the term still compiles, so nothing else complains and
+  # the rule is not skipped.
+  expect_equal(nrow(bad$invalid_regex), 0L)
+  expect_true(is.na(.recat_skip_reason(
+    rc_recat("q", "(\\w+\\s*)+!", match_type = "regex"))))
+
+  # An exclude term counts too.
+  exc <- rc_recat("e", "tea", match_type = "regex")
+  exc$exclude_terms <- "(ab+)*"
+  expect_identical(validate_recat(exc)$nested_quantifier$value, "(ab+)*")
+})
+
+test_that("nested-quantifier detection does not fire on ordinary terms", {
+  expect_identical(
+    .recat_nested_quantifier(c("(\\w+\\s*)+", "(a*)*", "(ab+)*", "(x+)+?")),
+    rep(TRUE, 4))
+  expect_identical(
+    .recat_nested_quantifier(c("tea", "a+b", "(abc)", "(a|b)+", "[a-z]+",
+                               "\\d{2,}", NA_character_)),
+    rep(FALSE, 7))
+  expect_identical(.recat_nested_quantifier(character(0)), logical(0))
+
+  # Literal terms are never regexes, so they are never reported.
+  expect_equal(nrow(validate_recat(rc_recat("l", "(a+)+"))$nested_quantifier),
+               0L)
 })

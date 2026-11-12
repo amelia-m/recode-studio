@@ -147,12 +147,17 @@ build_cleaned_dataset <- function(df, rules, recat, normalizations = NULL) {
   cat_res <- apply_recat(rec$df, recat)
   .stop_if_rows_changed(n, cat_res$df, "recategorization")
 
+  # Same helpers, same order, as collect_rule_warnings(): a test pins the two
+  # results equal, so a kind added there must be added here.
+  away     <- warn_recat_terms_recoded_away(nres$df, rec$df, recat)
   warnings <- dplyr::bind_rows(
     empty_rule_warnings(),
     .warn_normalizations(normalizations, nres$summary),
     .warn_recodes_no_match_from_summary(nres$df, rules, rec$summary),
+    .warn_recodes_fully_shadowed(rules, rec$summary),
     .warn_norm_spec_drift(rules, normalizations, names(df)),
-    warn_recat_terms_recoded_away(nres$df, rec$df, recat)
+    away,
+    .warn_recat_no_match(recat, cat_res$summary, exclude_ids = away$id)
   )
 
   list(
@@ -360,8 +365,11 @@ provenance_text <- function(prov) {
 #' generate_recat_R() body, and writes `<dataset_id>_cleaned_reproduced.csv`
 #' next to the input with the bundle's NA encoding.
 #'
-#' @param data_cols Column names of the raw data, used to expand recat sibling
-#'   patterns at generation time.
+#' @param data_cols Column names of the raw data. Used to expand recat sibling
+#'   patterns at generation time, to skip a recode rule whose column is not in
+#'   the data (the app skips it too, and the emitted block used to die on the
+#'   missing column) and to check the recode overlap warning against every
+#'   loaded column rather than only the ones some rule names.
 #' @return A single string.
 generate_clean_script <- function(rules, recat, normalizations, dataset_id,
                                   source_file_name, sheet = NA_character_,
@@ -371,7 +379,7 @@ generate_clean_script <- function(rules, recat, normalizations, dataset_id,
   fname    <- file_base_name(source_file_name)
   if (is.na(fname)) fname <- "your_original_file.csv"
   is_excel <- tolower(tools::file_ext(fname)) %in% c("xlsx", "xls")
-  sheet_arg <- if (is.na(sheet)) "1" else deparse(as.character(sheet))
+  sheet_arg <- if (is.na(sheet)) "1" else .deparse_literal(as.character(sheet))
 
   read_block <- if (is_excel) {
     c("df <- tibble::as_tibble(",
@@ -408,10 +416,10 @@ generate_clean_script <- function(rules, recat, normalizations, dataset_id,
     "library(stringr)",
     "library(tidyr)",
     "",
-    sprintf("input_file  <- %s", deparse(fname)),
+    sprintf("input_file  <- %s", .deparse_literal(fname)),
     sprintf("output_file <- file.path(dirname(input_file), %s)",
-            deparse(sprintf("%s_cleaned_reproduced.csv", dataset_id))),
-    sprintf("expected_sha256 <- %s", deparse(as.character(sha256))),
+            .deparse_literal(sprintf("%s_cleaned_reproduced.csv", dataset_id))),
+    sprintf("expected_sha256 <- %s", .deparse_literal(as.character(sha256))),
     "",
     "if (!file.exists(input_file)) {",
     "  stop(\"Cannot find \", input_file, \". Put it in the working folder \",",
@@ -433,7 +441,8 @@ generate_clean_script <- function(rules, recat, normalizations, dataset_id,
   )
 
   recode_part <- generate_recode_R(rules, dataset_id = dataset_id,
-                                   normalizations = normalizations)
+                                   normalizations = normalizations,
+                                   data_cols = data_cols)
   recat_part  <- generate_recat_R(recat, dataset_id = dataset_id,
                                   data_cols = data_cols)
 

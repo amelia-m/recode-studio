@@ -22,7 +22,7 @@
 #   apply_recodes(df, rules)            single pass, first match wins;
 #                                       returns list(df, summary)
 #   generate_recode_R(rules, dataset_id, source_csv_path = NULL,
-#                     normalizations = NULL)
+#                     normalizations = NULL, data_cols = NULL)
 #                                       emit copyable R script content
 #
 # Column normalizations (whole-column case / whitespace tidying, applied
@@ -167,6 +167,25 @@ regex_compiles <- function(pattern) {
   }, logical(1), USE.NAMES = FALSE)
 }
 
+# Does `pattern` reach the column called `name`? One pattern, one name,
+# always a single TRUE or FALSE, never an error.
+#
+# Base grepl() THROWS rather than returning FALSE on a pattern TRE cannot
+# compile, and length is one way to get there: a pattern of roughly 2,600
+# characters fails with "TRE pattern compilation error 'Out of memory'". A
+# column name that long becomes a pattern that long once a plain rule escapes
+# and anchors it, so the generated script's overlap sweep died on a frame the
+# app had loaded quite happily. Testing every loaded column name widens that
+# exposure, which is why the guard lives here rather than at the call site.
+#
+# A throw means we cannot tell whether the pattern reaches the column, and
+# "no overlap detected" is the same answer regex_compiles() gives for a
+# pattern it cannot compile: report nothing rather than refuse to export.
+.pattern_hits_name <- function(pattern, name) {
+  isTRUE(suppressWarnings(tryCatch(grepl(pattern, name),
+                                   error = function(e) FALSE)))
+}
+
 #' Canonical form of a sibling pattern: blank means "no pattern".
 #'
 #' An empty (or whitespace-only) sibling pattern used to reach EVERY column in
@@ -222,6 +241,42 @@ clean_sibling_pattern <- function(x) {
   }
   intersect(cols, all_cols)
 }
+
+# Code points R's parser REFUSES to read raw from source, even inside a
+# string literal: the bidi embeddings and overrides (U+202A to U+202E) and the
+# isolates (U+2066 to U+2069). Parsing stops with "bidi formatting not
+# allowed, use escapes instead".
+#
+# deparse() does not escape them, so a value holding one (ordinary Arabic or
+# Hebrew pasted out of a word processor carries these routinely) produced a
+# generated script that would not parse AT ALL, while the provenance told the
+# reader to run it.
+.BIDI_CODEPOINTS <- c(0x202a:0x202e, 0x2066:0x2069)
+
+# Rewrite those code points as \uXXXX escapes, which parse back to the exact
+# same string (so the script still reproduces the data byte for byte). Only
+# these nine code points are touched: every other byte is left as it was, or
+# the byte-identical reproduction test would move for unrelated reasons.
+.escape_bidi <- function(txt) {
+  if (length(txt) == 0) return(txt)
+  for (cp in .BIDI_CODEPOINTS) {
+    ch <- intToUtf8(cp)
+    if (any(grepl(ch, txt, fixed = TRUE))) {
+      # fixed = TRUE makes the replacement a LITERAL string: no backslash
+      # processing, so this must be the one backslash we want emitted.
+      # Doubling it here wrote `\\u202e`, which parses as a backslash
+      # followed by "u202e" - a different value, and the recode then matched
+      # nothing while the script still ran.
+      txt <- gsub(ch, sprintf("\\u%04x", cp), txt, fixed = TRUE)
+    }
+  }
+  txt
+}
+
+# deparse() for a value that is about to be emitted as a STRING LITERAL in a
+# generated script. The one place literals are built, so nothing reaches a
+# script with a raw bidi character in it.
+.deparse_literal <- function(x) .escape_bidi(deparse(x))
 
 # Escape every regex metacharacter so the result matches `x` literally.
 # stringr (ICU), not base gsub (TRE): a TRE character class holding `{}`
@@ -409,14 +464,37 @@ cluster_strings <- function(values, frequencies = NULL, threshold = 0.92,
   } else {
     # Metrics already in 0..1 (higher d = less similar): jw, cosine, jaccard.
     # Count metrics (osa, lv, lcs) are normalized by the longer string length.
+    # ONE argument, not two. The two-argument form computed the whole n x n
+    # matrix, including every value against ITSELF, and the diagonal was then
+    # thrown away by `diag(adj) <- FALSE` below. That is pure waste, and it is
+    # also the single worst case: a value compared with itself is the maximal
+    # dynamic-programming workload for an edit distance. Measured here on
+    # R 4.6.1 / stringdist 0.9.17, one 1 MB value with `jw` took 480 s the
+    # old way and 0 s this way, and `osa` died with "Could not allocate
+    # enough memory" rather than returning. Every ordinary pairwise run
+    # roughly halves too.
+    #
+    # The one-argument form returns a `dist`: the lower triangle only, and
+    # zero-length for n <= 1. as.matrix() puts it back into the full
+    # symmetric n x n shape with a zero diagonal, so everything below
+    # (outer(), the threshold, diag(adj) <- FALSE, igraph) is unchanged and
+    # the clustering OUTPUT is identical. Dimnames are dropped so igraph
+    # still gets unnamed vertices.
+    .full_matrix <- function(d, n) {
+      m <- as.matrix(d)
+      dim(m) <- c(n, n)
+      dimnames(m) <- NULL
+      m
+    }
+    n_keys <- length(keys)
     if (algorithm %in% c("jw", "cosine", "jaccard")) {
-      d   <- stringdist::stringdistmatrix(keys, keys, method = algorithm, q = q)
-      sim <- 1 - d
+      d   <- stringdist::stringdistmatrix(keys, method = algorithm, q = q)
+      sim <- 1 - .full_matrix(d, n_keys)
     } else {
-      d    <- stringdist::stringdistmatrix(keys, keys, method = algorithm)
+      d    <- stringdist::stringdistmatrix(keys, method = algorithm)
       lens <- outer(nchar(keys), nchar(keys), pmax)
       lens[lens == 0] <- 1L
-      sim  <- 1 - d / lens
+      sim  <- 1 - .full_matrix(d, n_keys) / lens
     }
     adj <- sim >= threshold
     diag(adj) <- FALSE
@@ -677,11 +755,31 @@ write_recodes <- function(rules, path) {
 
 # --- Merging rule sets --------------------------------------------------------
 
-#' Combine two recode rule sets, `overlay` winning per `rule_id`.
+#' Combine two recode rule sets, `overlay` winning per KEY.
 #'
-#' A rule in `overlay` whose `rule_id` is already in `base` replaces that base
-#' rule IN PLACE, so the base order is preserved. Rules only in `overlay` are
-#' appended, in overlay order.
+#' A rule in `overlay` whose KEY (`recode_key_id()`: variable, match_type,
+#' old_value) is already in `base` replaces that base rule IN PLACE, so the
+#' base order is preserved. Rules only in `overlay` are appended, in overlay
+#' order; a key repeated inside `overlay` itself lands once, at the position
+#' its first row took, carrying its last row's content.
+#'
+#' Why the KEY and not the stored `rule_id`: a stored id goes stale (saved
+#' before a key edit, or written by another tool), and matching on it then
+#' failed to see that two rules were the same rule. A newly created rule for
+#' a key an older stale-id rule already held was APPENDED BEHIND it, and
+#' because rules are first-match-wins the old rule claimed every cell and the
+#' new one never ran. No warning fired either: the shadowed rule matched
+#' cells, so the no-match check could not see it (that gap is the
+#' `recode_fully_shadowed` warning). `(variable, match_type, old_value)` is
+#' the rule set's real unique key, so it is what decides identity here.
+#'
+#' The winner therefore carries the id its own key says it must carry
+#' (`recode_key_id()`), not the stale string it arrived with. NOTE: the IMPORT
+#' path (`merge_incoming_rules()`) keeps whichever id the winner carried and
+#' never rewrites one. The two paths differ on purpose: an import must not
+#' silently renumber someone else's file, while a rule created or edited in
+#' this session has no reason to keep an id that contradicts its own key
+#' (`validate_recodes()$id_mismatch` reports any that still do).
 #'
 #' Why in place: rules are single pass, first match wins, so row order decides
 #' which rule claims a cell when two rules match it. Dropping the old row and
@@ -696,13 +794,33 @@ merge_recode_rules <- function(base, overlay) {
   if (is.null(base)    || !is.data.frame(base))    base    <- empty_recodes_tibble()
   if (is.null(overlay) || !is.data.frame(overlay)) overlay <- empty_recodes_tibble()
   if (nrow(overlay) == 0) return(base)
-  if (nrow(base) == 0)    return(overlay)
-  idx <- match(base$rule_id, overlay$rule_id)
-  hit <- !is.na(idx)
-  out <- base
-  if (any(hit)) out[hit, ] <- overlay[idx[hit], names(base), drop = FALSE]
-  extra <- overlay[!(overlay$rule_id %in% base$rule_id), , drop = FALSE]
-  dplyr::bind_rows(out, extra)
+
+  # With no base rows there is no base order to preserve and no base row to
+  # replace, so the OVERLAY defines the result's shape, exactly as the old
+  # early return did. What the early return also did was hand back `overlay`
+  # untouched, skipping the de-duplication below, so two rows for one key both
+  # survived and the second could never run. The rows go through the loop now.
+  out      <- if (nrow(base) == 0) overlay[0, , drop = FALSE] else base
+  out_keys <- recode_key_id(out)
+  for (i in seq_len(nrow(overlay))) {
+    row <- overlay[i, , drop = FALSE]
+    key <- recode_key_id(row)
+    if (length(key) != 1 || is.na(key)) key <- NA_character_
+    else row$rule_id <- key
+    j <- if (is.na(key)) NA_integer_ else match(key, out_keys)
+    if (is.na(j)) {
+      out      <- dplyr::bind_rows(out, row)
+      out_keys <- c(out_keys, key)
+    } else {
+      # Only the columns both frames carry, so an overlay missing one of
+      # base's columns cannot break the assign. norm_spec is taken from the
+      # overlay as given: stamping happens in the rules proxy's add(), never
+      # here.
+      shared <- intersect(names(out), names(row))
+      out[j, shared] <- row[, shared, drop = FALSE]
+    }
+  }
+  out
 }
 
 
@@ -804,6 +922,16 @@ recode_key_id <- function(rules) {
 #'                       value with the corrected word. Not changed here.
 #'                       cols: rule_id, variable, old_value, new_value, notes,
 #'                       old_words, new_words
+#'   missing_column     : (needs `data`) the rule resolves to no column of
+#'                       `data`, so it does nothing: a plain rule naming a
+#'                       column that is not there, or a sibling pattern no
+#'                       column matches. Its siblings validate_normalizations()
+#'                       and validate_recat() both report this, and it is how
+#'                       the UI can say WHY a rule did nothing instead of
+#'                       leaving the user to guess. A rule skipped for an
+#'                       uncompilable sibling pattern is left to
+#'                       `invalid_sibling_pattern` and not repeated here.
+#'                       cols: rule_id, variable, sibling_pattern
 #'   stale              : rule whose old_value is no longer in any target column
 #'                       (computed only if `data` is provided)
 validate_recodes <- function(rules, data = NULL) {
@@ -863,6 +991,21 @@ validate_recodes <- function(rules, data = NULL) {
   } else {
     issues$rule_chains <- tibble::tibble(variable = character(0),
                                          ambiguous = character(0))
+  }
+
+  # Rules that reach no column of the data at all. A rule already reported as
+  # invalid_sibling_pattern is skipped for that reason and is not listed twice.
+  if (!is.null(data) && nrow(rules) > 0) {
+    miss <- vapply(seq_len(nrow(rules)), function(i) {
+      if (isTRUE(bad_sib[i])) return(FALSE)
+      length(.recode_cols(data, rules[i, ])) == 0L
+    }, logical(1))
+    issues$missing_column <- rules[miss, c("rule_id", "variable",
+                                           "sibling_pattern"), drop = FALSE]
+  } else {
+    issues$missing_column <- tibble::tibble(rule_id = character(0),
+                                            variable = character(0),
+                                            sibling_pattern = character(0))
   }
 
   if (!is.null(data) && nrow(rules) > 0) {
@@ -979,8 +1122,22 @@ apply_recodes <- function(df, rules) {
 #'   compare against columns the normalization blocks have already rewritten,
 #'   exactly as the app does. Carrying them in this one file keeps the script
 #'   the whole cleaning rather than half of it.
+#' @param data_cols Column names of the data the rules are meant for, or NULL.
+#'   Following `generate_recat_R()`'s precedent. Two things need them, and
+#'   with NULL both fall back to what the rule table alone can say:
+#'   - the overlap WARNING tests every LOADED column name, not only the names
+#'     some rule happens to give. Two sibling patterns can share a column no
+#'     rule names, and the script then runs two blocks over that column in
+#'     sequence while `apply_recodes()` stays single pass, so the two
+#'     disagreed with no warning at all.
+#'   - a rule whose target is not a column of the data gets no block, only a
+#'     `# SKIPPED:` comment, exactly as a rule with an uncompilable sibling
+#'     pattern already does. `apply_recodes()` skips such a rule
+#'     (`.recode_cols()` resolves to nothing), so without this the script
+#'     emitted a `mutate()` naming a column that does not exist and died on
+#'     the data the app had just cleaned.
 generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
-                              normalizations = NULL) {
+                              normalizations = NULL, data_cols = NULL) {
   norm_blocks <- .normalize_blocks(normalizations)
   header <- c(
     "# =============================================================================",
@@ -1027,8 +1184,23 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
       # A sibling pattern that does not compile reaches no column in the app
       # (.recode_cols_from_names()), so its rules get no block here either,
       # only a comment saying they were skipped.
-      .skip = !.plain & !regex_compiles(effective_pattern)
+      .skip_reason = ifelse(!.plain & !regex_compiles(effective_pattern),
+                            "pattern", NA_character_)
     )
+
+  # The other way a rule reaches no column in the app: its target is not in
+  # the data at all. Only decidable with `data_cols`. Same treatment as an
+  # uncompilable pattern: a comment, no block, so the script does what the
+  # app did instead of naming a column that is not there.
+  if (!is.null(data_cols)) {
+    dc <- as.character(data_cols)
+    absent <- vapply(seq_len(nrow(rules)), function(i) {
+      if (!is.na(rules$.skip_reason[i])) return(FALSE)
+      length(.recode_cols_from_names(dc, rules[i, ])) == 0L
+    }, logical(1))
+    rules$.skip_reason[absent] <- "missing"
+  }
+  rules$.skip <- !is.na(rules$.skip_reason)
 
   # One group per target pattern, emitted in the order the patterns first
   # appear in the rule table (deterministic, and it reads in rule order). Every
@@ -1043,9 +1215,16 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
   # sequence rather than in one pass - say so rather than diverging silently
   # from apply_recodes().
   live_patterns <- unique(rules$effective_pattern[!rules$.skip])
-  overlapping <- unique(rules$variable[vapply(rules$variable, function(v) {
-    sum(vapply(live_patterns, function(p) isTRUE(grepl(p, v)), logical(1))) > 1L
-  }, logical(1))])
+  # Which column names to test. Every LOADED column when we know them: a
+  # column no rule names can still be reached by two sibling patterns, and
+  # that is exactly the case that used to diverge in silence. Without
+  # `data_cols` we can only test the names the rules give, as before.
+  sweep_cols <- unique(as.character(
+    if (!is.null(data_cols)) data_cols else rules$variable))
+  overlapping <- sweep_cols[vapply(sweep_cols, function(v) {
+    sum(vapply(live_patterns, function(p) .pattern_hits_name(p, v),
+               logical(1))) > 1L
+  }, logical(1))]
   if (length(overlapping) > 0) {
     header <- c(header,
       "# WARNING: these columns are targeted by more than one rule pattern, so",
@@ -1060,13 +1239,32 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
     pattern <- g$effective_pattern[1]
 
     if (g$.skip[1]) {
-      blocks <- c(blocks,
-        sprintf(paste0("# SKIPPED: %d rule%s for the sibling pattern %s. The ",
-                       "pattern is not a"),
-                nrow(g), if (nrow(g) == 1) "" else "s",
-                gsub("[\r\n]", " ", paste(deparse(pattern), collapse = ""))),
-        "# valid regular expression, so Recode Studio applies none of them",
-        "# either. Fix the pattern in the Recodes table and export again.",
+      n_txt   <- sprintf("%d rule%s", nrow(g), if (nrow(g) == 1) "" else "s")
+      lit     <- function(x) gsub("[\r\n]", " ",
+                                  paste(deparse(as.character(x)),
+                                        collapse = ""))
+      is_fam  <- !any(g$.plain)
+      why <- if (identical(g$.skip_reason[1], "missing")) {
+        if (is_fam) {
+          c(sprintf("# SKIPPED: %s for the sibling pattern %s. No column in",
+                    n_txt, lit(pattern)),
+            "# this data matches it, so Recode Studio applied none of them",
+            "# either. Check the pattern in the Recodes table, or remove the",
+            "# rules if they no longer apply.")
+        } else {
+          c(sprintf("# SKIPPED: %s for the column %s. That column is not in",
+                    n_txt, lit(g$variable[g$.plain][1])),
+            "# this data, so Recode Studio applied none of them either.",
+            "# Check the column name in the Recodes table, or remove the",
+            "# rules if they no longer apply.")
+        }
+      } else {
+        c(sprintf(paste0("# SKIPPED: %s for the sibling pattern %s. The ",
+                         "pattern is not a"), n_txt, lit(pattern)),
+          "# valid regular expression, so Recode Studio applies none of them",
+          "# either. Fix the pattern in the Recodes table and export again.")
+      }
+      blocks <- c(blocks, why,
         paste0("#   rule_id: ", paste(g$rule_id, collapse = ", ")),
         "")
       next
@@ -1078,7 +1276,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
         r  <- g[i, ]
         mt <- as.character(r$match_type)
         rhs <- if (identical(as.character(r$action), "delete")) "NA_character_"
-               else deparse(as.character(r$new_value))
+               else .deparse_literal(as.character(r$new_value))
         cmt <- if (!is.na(r$notes) && nzchar(r$notes))
                  paste0("  # ", gsub("[\r\n]", " ", r$notes)) else ""
         # An arm that matches nothing is a FULL-LENGTH FALSE: a bare scalar
@@ -1101,7 +1299,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
           # app and the script use ONE regex engine (TRE). str_detect() (ICU)
           # used to disagree on patterns like `\p{Lu}` or `a{,2}`. grepl()
           # is FALSE on a missing cell, as in the app. Replaces the whole cell.
-          sprintf("grepl(%s, %s)", deparse(as.character(r$old_value)),
+          sprintf("grepl(%s, %s)", .deparse_literal(as.character(r$old_value)),
                   col_token)
         } else {
           # Normalize BOTH sides identically for the case-insensitive types.
@@ -1115,7 +1313,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
             exact_ci   = tolower(as.character(r$old_value)),
             trimmed_ci = stringr::str_squish(tolower(as.character(r$old_value))),
             as.character(r$old_value))
-          sprintf("%s == %s", col_expr, deparse(target))
+          sprintf("%s == %s", col_expr, .deparse_literal(target))
         }
         arms <- c(arms, sprintf("    %s ~ %s,%s", lhs, rhs, cmt))
       }
@@ -1152,7 +1350,7 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
         # but apply_recodes() resolves the pattern with case-sensitive grep().
         # Without it the script also recoded e.g. `Drink3` for "^drink[0-9]+$".
         sprintf("  mutate(across(matches(%s, ignore.case = FALSE), function(.x) {",
-                deparse(as.character(pattern))),
+                .deparse_literal(as.character(pattern))),
         "    case_when(",
         make_arms(".x"),
         "      .default = .x",
@@ -1781,7 +1979,7 @@ stamp_recode_norm_spec <- function(rules, normalizations, data_cols = NULL) {
         "df <- df |>",
         sprintf(paste0("  mutate(across(matches(%s, ignore.case = FALSE), ",
                        "function(.x) %s))%s"),
-                deparse(as.character(sp)),
+                .deparse_literal(as.character(sp)),
                 .normalize_expr(".x", ops), cmt),
         "")
     } else {

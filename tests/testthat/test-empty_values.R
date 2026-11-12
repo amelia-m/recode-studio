@@ -194,7 +194,11 @@ test_that("the empty-value label is constant, escaped markup keyed on ''", {
   js <- as.character(defs[[1]]$render)
   expect_true(grepl("type === 'display' && data === ''", js, fixed = TRUE))
   expect_true(grepl("rs-empty-value", js, fixed = TRUE))
-  expect_true(grepl(EMPTY_VALUE_LABEL, js, fixed = TRUE))
+  # The LITERAL label, not EMPTY_VALUE_LABEL: `js` is built by interpolating
+  # that constant, so comparing the two could not fail. Blanking the label
+  # passed the whole suite.
+  expect_identical(EMPTY_VALUE_LABEL, "(empty)")
+  expect_true(grepl("(empty)", js, fixed = TRUE))
   # The truncation renderer handles every other value.
   expect_true(grepl("rs-dt-trunc", js, fixed = TRUE))
   expect_false(grepl("rs-dt-trunc",
@@ -203,11 +207,10 @@ test_that("the empty-value label is constant, escaped markup keyed on ''", {
   # The tooltip explains the label, so a real "(empty)" value (shown as plain
   # text, not in the outlined italic label) is distinguishable.
   expect_match(EMPTY_VALUE_TITLE, "holds no text", fixed = TRUE)
-  # Neither table unescapes its dataset columns.
-  for (f in c("mod_value_table.R", "mod_recode_editor.R")) {
-    src <- readLines(file.path("..", "..", "R", f), encoding = "UTF-8")
-    expect_false(any(grepl("escape\\s*=\\s*FALSE", src)), info = f)
-  }
+  # The "no bare escape = FALSE" check used to be repeated here as a grep
+  # over two module sources. It is gone: test-escape_guard.R makes the same
+  # check over EVERY app source and reads it from parse tokens, so it also
+  # catches the split-line form this regex missed.
 })
 
 test_that("Browse values lists '' and mints a rule with old_value ''", {
