@@ -227,6 +227,33 @@ recode_validation_ui <- function(issues) {
         "rule to its own column only."),
       items = lapply(seq_len(nrow(x)), function(i) shiny::tags$li(
         code(x$variable[i]), ": pattern ", code(x$sibling_pattern[i])))),
+    # Reported by validate_recodes() when a rule's target column is not in the
+    # loaded data: columns rule_id, variable, sibling_pattern. A rule set
+    # outlives the dataset (nothing clears it when a different file is
+    # loaded), so this is the ordinary consequence of loading a second file,
+    # not a corrupt rule. It is a report, never a block: the downloads keep
+    # working and say the same thing.
+    missing_column = function(x) .validation_section(
+      "Column not in the loaded data", "yellow", nrow(x),
+      intro = paste0(
+        if (one(nrow(x))) "This rule targets a column"
+        else sprintf("These %d rules target a column", nrow(x)),
+        " the loaded dataset does not have, so ",
+        if (one(nrow(x))) "it changes" else "they change",
+        " nothing here and ",
+        if (one(nrow(x))) "is" else "are",
+        " skipped in the exported script too. That is normal if the rules ",
+        "were written against a different file: loading a dataset does not ",
+        "clear the rule set. Delete ",
+        if (one(nrow(x))) "it" else "them",
+        ", or load the dataset ",
+        if (one(nrow(x))) "it was" else "they were",
+        " written for."),
+      items = lapply(seq_len(nrow(x)), function(i) shiny::tags$li(
+        code(x$variable[i]),
+        if (!is.na(x$sibling_pattern[i]))
+          shiny::tagList(" (sibling pattern ", code(x$sibling_pattern[i]), ")"),
+        ": rule ", code(x$rule_id[i])))),
     id_mismatch = function(x) .validation_section(
       "Rule id does not match the rule", "yellow", nrow(x),
       intro = paste0(

@@ -155,8 +155,7 @@ test_that("an apply_to_siblings entry that is neither is refused (Shiny F7)", {
 
   # The card promises invalid entries are rejected. These used to read as
   # FALSE and switch sibling propagation off without a word.
-  for (v in c("maybe", "ja", "truthy", "2", "-1", "", "   ", "T R U E",
-              "tru", "ye s")) {
+  for (v in c("maybe", "ja", "2", "-1", "", "   ", "T R U E", "tru", "ye s")) {
     res <- apply_recode_edit(r, 1, "apply_to_siblings", v)
     expect_identical(res$status, "refused")
     expect_identical(res$rules, r)

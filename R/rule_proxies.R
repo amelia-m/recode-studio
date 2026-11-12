@@ -59,6 +59,16 @@ merge_recat_rules <- function(base, overlay) {
 #'   names, used to resolve a sibling rule's columns for the stamp. When NULL
 #'   or it returns NULL, `recode_norm_specs()` falls back to the rule's own
 #'   variable plus the columns the normalizations name.
+#' What counts as a collision is `merge_recode_rules()`'s decision, not this
+#' proxy's, and it is the rule KEY (variable, match_type, old_value), not the
+#' stored `rule_id`. That matters because a stored id can be stale: once a
+#' rule with a stale id is in the set, a newly minted rule for the same key
+#' would be appended BEHIND it and never run, since recodes are
+#' first-match-wins by row order, and no warning would fire because the new
+#' rule matched cells but changed none. Import already compared by key
+#' (`merge_incoming_rules(key_fn = recode_key_id)`); add() gets the same
+#' comparison from the shared merge, so the two paths cannot drift apart.
+#'
 #' @return list(get = reactive, add = fn, set = fn).
 make_rules_proxy <- function(rv, norms_r = NULL, data_cols_r = NULL) {
   current <- function(f) {

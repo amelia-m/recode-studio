@@ -232,6 +232,42 @@ test_that("values in the report are escaped", {
   expect_match(h, "&lt;img", fixed = TRUE)
 })
 
+test_that("the report explains a rule whose column is not in the data", {
+  # validate_recodes()$missing_column, columns rule_id / variable /
+  # sibling_pattern. Built by hand here: the renderer is pure, so this covers
+  # the report whatever the validator that produces the class does.
+  one <- tibble::tibble(rule_id = "aaaaaaaaaaaa", variable = "town",
+                        sibling_pattern = NA_character_)
+  h <- .html(recode_validation_ui(list(missing_column = one)))
+  expect_match(h, "Column not in the loaded data (1)", fixed = TRUE)
+  expect_match(h, "<code>town</code>", fixed = TRUE)
+  expect_match(h, "<code>aaaaaaaaaaaa</code>", fixed = TRUE)
+  # It says this is normal across datasets, and offers the two ways out,
+  # rather than reading as a corrupt rule.
+  expect_match(h, "does not clear the rule set", fixed = TRUE)
+  expect_match(h, "skipped in the exported script", fixed = TRUE)
+
+  # Plural wording, and a sibling pattern is named when there is one.
+  two <- tibble::tibble(rule_id = c("aaaaaaaaaaaa", "bbbbbbbbbbbb"),
+                        variable = c("town", "drink1"),
+                        sibling_pattern = c(NA_character_, "^drink[0-9]+$"))
+  h <- .html(recode_validation_ui(list(missing_column = two)))
+  expect_match(h, "Column not in the loaded data (2)", fixed = TRUE)
+  expect_match(h, "These 2 rules target a column", fixed = TRUE)
+  expect_match(h, "sibling pattern", fixed = TRUE)
+  expect_match(h, "<code>^drink[0-9]+$</code>", fixed = TRUE)
+})
+
+test_that("a column name from the data cannot inject markup into the report", {
+  nasty <- tibble::tibble(rule_id = "<b>id</b>",
+                          variable = "<img src=x onerror=alert(1)>",
+                          sibling_pattern = "<script>alert(1)</script>")
+  h <- .html(recode_validation_ui(list(missing_column = nasty)))
+  expect_no_match(h, "<img", fixed = TRUE)
+  expect_no_match(h, "<script>", fixed = TRUE)
+  expect_match(h, "&lt;img", fixed = TRUE)
+})
+
 test_that("no issues gives All good, and an unknown class is still shown", {
   expect_match(.html(recode_validation_ui(validate_recodes(
     .rule("city", "exact", "uptown", "Uptown")))), "All good", fixed = TRUE)

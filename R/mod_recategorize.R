@@ -17,6 +17,14 @@
 
 # validate_recat() classes that make a rule match nothing: a rule carrying
 # any of these is refused by Add instead of being stored.
+# Classes that make Add refuse a rule. recat_add_refusal() names a class it
+# has no bespoke wording for from .RECAT_ISSUE_TITLES, so adding one here (and
+# a title below) is the whole change.
+#
+# PENDING review item 7 (Shiny F3): the out_col collision class that
+# validate_recat() is gaining belongs in this vector and in the titles below.
+# Its name was not settled when this was written, so it is not guessed here;
+# until it is added, an out_col naming an existing column is still accepted.
 .RECAT_REFUSE_CLASSES <- c("invalid_match_type", "invalid_regex",
                            "no_include_terms", "invalid_sibling_pattern")
 
@@ -61,9 +69,36 @@ recat_add_refusal <- function(rule) {
     bits <- c(bits, sprintf("the sibling pattern '%s' is not a valid regular expression",
                             iss$invalid_sibling_pattern$value[1]))
   }
-  if (length(bits) == 0) return(NULL)
-  paste0("Rule not added: ", paste(bits, collapse = "; "),
-         ". As written it would match nothing.")
+  # The four classes above all mean "this rule would match nothing", which is
+  # why the message ends the way it does. A refuse-class validate_recat()
+  # gains later need not mean that (an out_col that collides with an existing
+  # column is the opposite problem), so it is reported on its own terms: the
+  # validator's `detail`, or failing that the class title. Adding the class to
+  # .RECAT_REFUSE_CLASSES, and a title to .RECAT_ISSUE_TITLES, is then the
+  # whole change needed for Add to refuse it.
+  .MATCH_NOTHING <- c("invalid_match_type", "invalid_regex",
+                      "no_include_terms", "invalid_sibling_pattern")
+  other <- character(0)
+  for (nm in setdiff(.RECAT_REFUSE_CLASSES, .MATCH_NOTHING)) {
+    x <- iss[[nm]]
+    if (!is.data.frame(x) || nrow(x) == 0) next
+    detail <- if ("detail" %in% names(x)) as.character(x$detail[1])
+              else NA_character_
+    other <- c(other, if (!is.na(detail) && nzchar(detail)) detail
+                      else tolower(issue_class_title(nm,
+                                                     .RECAT_ISSUE_TITLES)))
+  }
+  if (length(bits) == 0 && length(other) == 0) return(NULL)
+  msg <- "Rule not added: "
+  if (length(bits) > 0) {
+    msg <- paste0(msg, paste(bits, collapse = "; "),
+                  ". As written it would match nothing.")
+    if (length(other) > 0) msg <- paste0(msg, " Also: ")
+  }
+  if (length(other) > 0) {
+    msg <- paste0(msg, paste(other, collapse = "; "), ".")
+  }
+  msg
 }
 
 #' Plain-language list of validate_recat() issues for the session's rules.
