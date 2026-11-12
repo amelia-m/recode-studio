@@ -696,11 +696,31 @@ write_recodes <- function(rules, path) {
 
 # --- Merging rule sets --------------------------------------------------------
 
-#' Combine two recode rule sets, `overlay` winning per `rule_id`.
+#' Combine two recode rule sets, `overlay` winning per KEY.
 #'
-#' A rule in `overlay` whose `rule_id` is already in `base` replaces that base
-#' rule IN PLACE, so the base order is preserved. Rules only in `overlay` are
-#' appended, in overlay order.
+#' A rule in `overlay` whose KEY (`recode_key_id()`: variable, match_type,
+#' old_value) is already in `base` replaces that base rule IN PLACE, so the
+#' base order is preserved. Rules only in `overlay` are appended, in overlay
+#' order; a key repeated inside `overlay` itself lands once, at the position
+#' its first row took, carrying its last row's content.
+#'
+#' Why the KEY and not the stored `rule_id`: a stored id goes stale (saved
+#' before a key edit, or written by another tool), and matching on it then
+#' failed to see that two rules were the same rule. A newly created rule for
+#' a key an older stale-id rule already held was APPENDED BEHIND it, and
+#' because rules are first-match-wins the old rule claimed every cell and the
+#' new one never ran. No warning fired either: the shadowed rule matched
+#' cells, so the no-match check could not see it (that gap is the
+#' `recode_fully_shadowed` warning). `(variable, match_type, old_value)` is
+#' the rule set's real unique key, so it is what decides identity here.
+#'
+#' The winner therefore carries the id its own key says it must carry
+#' (`recode_key_id()`), not the stale string it arrived with. NOTE: the IMPORT
+#' path (`merge_incoming_rules()`) keeps whichever id the winner carried and
+#' never rewrites one. The two paths differ on purpose: an import must not
+#' silently renumber someone else's file, while a rule created or edited in
+#' this session has no reason to keep an id that contradicts its own key
+#' (`validate_recodes()$id_mismatch` reports any that still do).
 #'
 #' Why in place: rules are single pass, first match wins, so row order decides
 #' which rule claims a cell when two rules match it. Dropping the old row and
@@ -715,13 +735,33 @@ merge_recode_rules <- function(base, overlay) {
   if (is.null(base)    || !is.data.frame(base))    base    <- empty_recodes_tibble()
   if (is.null(overlay) || !is.data.frame(overlay)) overlay <- empty_recodes_tibble()
   if (nrow(overlay) == 0) return(base)
-  if (nrow(base) == 0)    return(overlay)
-  idx <- match(base$rule_id, overlay$rule_id)
-  hit <- !is.na(idx)
-  out <- base
-  if (any(hit)) out[hit, ] <- overlay[idx[hit], names(base), drop = FALSE]
-  extra <- overlay[!(overlay$rule_id %in% base$rule_id), , drop = FALSE]
-  dplyr::bind_rows(out, extra)
+
+  # With no base rows there is no base order to preserve and no base row to
+  # replace, so the OVERLAY defines the result's shape, exactly as the old
+  # early return did. What the early return also did was hand back `overlay`
+  # untouched, skipping the de-duplication below, so two rows for one key both
+  # survived and the second could never run. The rows go through the loop now.
+  out      <- if (nrow(base) == 0) overlay[0, , drop = FALSE] else base
+  out_keys <- recode_key_id(out)
+  for (i in seq_len(nrow(overlay))) {
+    row <- overlay[i, , drop = FALSE]
+    key <- recode_key_id(row)
+    if (length(key) != 1 || is.na(key)) key <- NA_character_
+    else row$rule_id <- key
+    j <- if (is.na(key)) NA_integer_ else match(key, out_keys)
+    if (is.na(j)) {
+      out      <- dplyr::bind_rows(out, row)
+      out_keys <- c(out_keys, key)
+    } else {
+      # Only the columns both frames carry, so an overlay missing one of
+      # base's columns cannot break the assign. norm_spec is taken from the
+      # overlay as given: stamping happens in the rules proxy's add(), never
+      # here.
+      shared <- intersect(names(out), names(row))
+      out[j, shared] <- row[, shared, drop = FALSE]
+    }
+  }
+  out
 }
 
 
