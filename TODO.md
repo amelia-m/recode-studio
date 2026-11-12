@@ -313,7 +313,8 @@ and whether Excel rewrites `updated_at` on a round trip.
 - **A bidi character in a COLUMN NAME still breaks the generated script.** The
   bidi escaping added on 2026-11-12 covers string literals only. A column name
   is emitted as a backticked token and R refuses escapes there: `` `a<U+202E>1` ``
-  gives "\uxxxx sequences not supported inside backticks". Fixing it means
+  gives a parse error saying unicode escape sequences are not supported
+  inside backticks. Fixing it means
   emitting `df[["name"]]` instead of a backticked token, which changes the
   shape of every generated block and would move the bundle's byte-identical
   test. Sites: `.r_col_token()` in `string_helpers.R`, and the backticked
