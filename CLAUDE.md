@@ -1034,8 +1034,11 @@ which silently broke non-renv installs and CI dep resolution. `digest`
 (SHA-256 of the loaded file) and `zip` (the bundle) are direct dependencies.
 So is `cld2` (language detection), declared in Imports and pinned, but the app
 must keep working without it: every call goes through
-`lang_detection_available()`. `writexl` is NOT a dependency: every export is
-CSV, R or text.
+`lang_detection_available()`. `withr` and `tidyselect` are used by the tests
+only (33 `withr::` calls, and one test that resolves a `matches()` selection)
+and are declared under `Suggests`; they arrived transitively for months, which
+is the same gap `ggplot2` and `htmltools` had. `writexl` is NOT a dependency:
+every export is CSV, R or text.
 
 ## Environment
 

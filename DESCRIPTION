@@ -40,6 +40,8 @@ Imports:
 Suggests:
     testthat (>= 3.0.0),
     knitr,
-    rmarkdown
+    rmarkdown,
+    withr,
+    tidyselect
 VignetteBuilder: knitr
 Config/testthat/edition: 3
