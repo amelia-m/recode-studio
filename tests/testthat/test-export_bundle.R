@@ -591,9 +591,6 @@ test_that("the download handler content builds a zip with every entry", {
     })
 })
 
-test_that("no em dashes in the bundle code or its UI text", {
-  for (f in c("export_bundle.R", "mod_preview_export.R")) {
-    src <- readLines(file.path("..", "..", "R", f), encoding = "UTF-8")
-    expect_false(any(grepl(.em_dash, src, fixed = TRUE)), info = f)
-  }
-})
+# The em dash check over these two sources used to live here as a grep. It is
+# gone: test-em_dash_guard.R makes the same check over every project text
+# file, which is strictly more than these two.
