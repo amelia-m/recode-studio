@@ -360,8 +360,11 @@ provenance_text <- function(prov) {
 #' generate_recat_R() body, and writes `<dataset_id>_cleaned_reproduced.csv`
 #' next to the input with the bundle's NA encoding.
 #'
-#' @param data_cols Column names of the raw data, used to expand recat sibling
-#'   patterns at generation time.
+#' @param data_cols Column names of the raw data. Used to expand recat sibling
+#'   patterns at generation time, to skip a recode rule whose column is not in
+#'   the data (the app skips it too, and the emitted block used to die on the
+#'   missing column) and to check the recode overlap warning against every
+#'   loaded column rather than only the ones some rule names.
 #' @return A single string.
 generate_clean_script <- function(rules, recat, normalizations, dataset_id,
                                   source_file_name, sheet = NA_character_,
@@ -433,7 +436,8 @@ generate_clean_script <- function(rules, recat, normalizations, dataset_id,
   )
 
   recode_part <- generate_recode_R(rules, dataset_id = dataset_id,
-                                   normalizations = normalizations)
+                                   normalizations = normalizations,
+                                   data_cols = data_cols)
   recat_part  <- generate_recat_R(recat, dataset_id = dataset_id,
                                   data_cols = data_cols)
 

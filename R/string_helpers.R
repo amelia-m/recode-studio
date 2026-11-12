@@ -22,7 +22,7 @@
 #   apply_recodes(df, rules)            single pass, first match wins;
 #                                       returns list(df, summary)
 #   generate_recode_R(rules, dataset_id, source_csv_path = NULL,
-#                     normalizations = NULL)
+#                     normalizations = NULL, data_cols = NULL)
 #                                       emit copyable R script content
 #
 # Column normalizations (whole-column case / whitespace tidying, applied
@@ -165,6 +165,25 @@ regex_compiles <- function(pattern) {
     isTRUE(suppressWarnings(tryCatch({ grepl(p, "probe"); TRUE },
                                      error = function(e) FALSE)))
   }, logical(1), USE.NAMES = FALSE)
+}
+
+# Does `pattern` reach the column called `name`? One pattern, one name,
+# always a single TRUE or FALSE, never an error.
+#
+# Base grepl() THROWS rather than returning FALSE on a pattern TRE cannot
+# compile, and length is one way to get there: a pattern of roughly 2,600
+# characters fails with "TRE pattern compilation error 'Out of memory'". A
+# column name that long becomes a pattern that long once a plain rule escapes
+# and anchors it, so the generated script's overlap sweep died on a frame the
+# app had loaded quite happily. Testing every loaded column name widens that
+# exposure, which is why the guard lives here rather than at the call site.
+#
+# A throw means we cannot tell whether the pattern reaches the column, and
+# "no overlap detected" is the same answer regex_compiles() gives for a
+# pattern it cannot compile: report nothing rather than refuse to export.
+.pattern_hits_name <- function(pattern, name) {
+  isTRUE(suppressWarnings(tryCatch(grepl(pattern, name),
+                                   error = function(e) FALSE)))
 }
 
 #' Canonical form of a sibling pattern: blank means "no pattern".
@@ -979,8 +998,22 @@ apply_recodes <- function(df, rules) {
 #'   compare against columns the normalization blocks have already rewritten,
 #'   exactly as the app does. Carrying them in this one file keeps the script
 #'   the whole cleaning rather than half of it.
+#' @param data_cols Column names of the data the rules are meant for, or NULL.
+#'   Following `generate_recat_R()`'s precedent. Two things need them, and
+#'   with NULL both fall back to what the rule table alone can say:
+#'   - the overlap WARNING tests every LOADED column name, not only the names
+#'     some rule happens to give. Two sibling patterns can share a column no
+#'     rule names, and the script then runs two blocks over that column in
+#'     sequence while `apply_recodes()` stays single pass, so the two
+#'     disagreed with no warning at all.
+#'   - a rule whose target is not a column of the data gets no block, only a
+#'     `# SKIPPED:` comment, exactly as a rule with an uncompilable sibling
+#'     pattern already does. `apply_recodes()` skips such a rule
+#'     (`.recode_cols()` resolves to nothing), so without this the script
+#'     emitted a `mutate()` naming a column that does not exist and died on
+#'     the data the app had just cleaned.
 generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
-                              normalizations = NULL) {
+                              normalizations = NULL, data_cols = NULL) {
   norm_blocks <- .normalize_blocks(normalizations)
   header <- c(
     "# =============================================================================",
@@ -1027,8 +1060,23 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
       # A sibling pattern that does not compile reaches no column in the app
       # (.recode_cols_from_names()), so its rules get no block here either,
       # only a comment saying they were skipped.
-      .skip = !.plain & !regex_compiles(effective_pattern)
+      .skip_reason = ifelse(!.plain & !regex_compiles(effective_pattern),
+                            "pattern", NA_character_)
     )
+
+  # The other way a rule reaches no column in the app: its target is not in
+  # the data at all. Only decidable with `data_cols`. Same treatment as an
+  # uncompilable pattern: a comment, no block, so the script does what the
+  # app did instead of naming a column that is not there.
+  if (!is.null(data_cols)) {
+    dc <- as.character(data_cols)
+    absent <- vapply(seq_len(nrow(rules)), function(i) {
+      if (!is.na(rules$.skip_reason[i])) return(FALSE)
+      length(.recode_cols_from_names(dc, rules[i, ])) == 0L
+    }, logical(1))
+    rules$.skip_reason[absent] <- "missing"
+  }
+  rules$.skip <- !is.na(rules$.skip_reason)
 
   # One group per target pattern, emitted in the order the patterns first
   # appear in the rule table (deterministic, and it reads in rule order). Every
@@ -1043,9 +1091,16 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
   # sequence rather than in one pass - say so rather than diverging silently
   # from apply_recodes().
   live_patterns <- unique(rules$effective_pattern[!rules$.skip])
-  overlapping <- unique(rules$variable[vapply(rules$variable, function(v) {
-    sum(vapply(live_patterns, function(p) isTRUE(grepl(p, v)), logical(1))) > 1L
-  }, logical(1))])
+  # Which column names to test. Every LOADED column when we know them: a
+  # column no rule names can still be reached by two sibling patterns, and
+  # that is exactly the case that used to diverge in silence. Without
+  # `data_cols` we can only test the names the rules give, as before.
+  sweep_cols <- unique(as.character(
+    if (!is.null(data_cols)) data_cols else rules$variable))
+  overlapping <- sweep_cols[vapply(sweep_cols, function(v) {
+    sum(vapply(live_patterns, function(p) .pattern_hits_name(p, v),
+               logical(1))) > 1L
+  }, logical(1))]
   if (length(overlapping) > 0) {
     header <- c(header,
       "# WARNING: these columns are targeted by more than one rule pattern, so",
@@ -1060,13 +1115,32 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
     pattern <- g$effective_pattern[1]
 
     if (g$.skip[1]) {
-      blocks <- c(blocks,
-        sprintf(paste0("# SKIPPED: %d rule%s for the sibling pattern %s. The ",
-                       "pattern is not a"),
-                nrow(g), if (nrow(g) == 1) "" else "s",
-                gsub("[\r\n]", " ", paste(deparse(pattern), collapse = ""))),
-        "# valid regular expression, so Recode Studio applies none of them",
-        "# either. Fix the pattern in the Recodes table and export again.",
+      n_txt   <- sprintf("%d rule%s", nrow(g), if (nrow(g) == 1) "" else "s")
+      lit     <- function(x) gsub("[\r\n]", " ",
+                                  paste(deparse(as.character(x)),
+                                        collapse = ""))
+      is_fam  <- !any(g$.plain)
+      why <- if (identical(g$.skip_reason[1], "missing")) {
+        if (is_fam) {
+          c(sprintf("# SKIPPED: %s for the sibling pattern %s. No column in",
+                    n_txt, lit(pattern)),
+            "# this data matches it, so Recode Studio applied none of them",
+            "# either. Check the pattern in the Recodes table, or remove the",
+            "# rules if they no longer apply.")
+        } else {
+          c(sprintf("# SKIPPED: %s for the column %s. That column is not in",
+                    n_txt, lit(g$variable[g$.plain][1])),
+            "# this data, so Recode Studio applied none of them either.",
+            "# Check the column name in the Recodes table, or remove the",
+            "# rules if they no longer apply.")
+        }
+      } else {
+        c(sprintf(paste0("# SKIPPED: %s for the sibling pattern %s. The ",
+                         "pattern is not a"), n_txt, lit(pattern)),
+          "# valid regular expression, so Recode Studio applies none of them",
+          "# either. Fix the pattern in the Recodes table and export again.")
+      }
+      blocks <- c(blocks, why,
         paste0("#   rule_id: ", paste(g$rule_id, collapse = ", ")),
         "")
       next
