@@ -353,18 +353,37 @@ test_that("summary reflects first-match-wins (later rule matches fewer rows)", {
 })
 
 
-# --- Pre-existing out_col value preserved ------------------------------------
+# --- An out_col that already exists is left entirely alone -------------------
 
-test_that("a pre-existing non-NA out_col value is never overwritten", {
+test_that("an out_col naming an existing column is skipped, not filled (engine 5)", {
   df <- demo_df()
   df$drink_family <- c("Manual override", NA, NA, NA, NA, NA)
+  before <- df$drink_family
   rules <- mk_rule("drink_family", "Milk-based",
                    vars = c("drink1", "drink2"),
                    include_terms = c("cappuccino", "latte"),
                    priority = 10L)
-  out <- expect_recat_agree(df, rules, "drink_family")
-  # row1 would match but keeps its manual value; row4 ("decaf latte") matches.
-  expect_equal(out, c("Manual override", NA, NA, "Milk-based", NA, NA))
+  res <- apply_recat(df, rules)
+
+  # This test used to assert that row 4 ("decaf latte") GAINED "Milk-based",
+  # i.e. that the empty cells of an existing column were filled. That is the
+  # defect: recat derives a NEW column and never writes to a source one, so
+  # the column is now left exactly as it was and the collision is reported.
+  expect_equal(res$df$drink_family, before)
+  expect_identical(res$collisions, "drink_family")
+  expect_equal(nrow(res$summary), 0L)
+  expect_identical(setdiff(names(res$df), names(df)), character(0))
+
+  # Reported, with the rule's own id, so the user can find it.
+  iss <- validate_recat(rules, df)
+  expect_identical(iss$out_col_exists$recat_id, rules$recat_id)
+  expect_match(iss$out_col_exists$detail, "already has a column")
+
+  # The generated script must agree, or the bundle's reproduced CSV would
+  # stop matching its cleaned CSV.
+  code <- generate_recat_R(rules, "d", data_cols = names(df))
+  expect_match(code, "# SKIPPED")
+  expect_false(grepl("Milk-based", code, fixed = TRUE))
 })
 
 
@@ -590,4 +609,46 @@ test_that("the bundled worked examples behave as documented on example_messy.csv
   expect_equal(flag[grep("Slow service this afternoon", df$review)],
                "Needs follow-up")
   expect_true(sum(!is.na(flag)) >= 8)
+})
+
+
+# --- priority read as text (engine 6) ----------------------------------------
+
+test_that("a character priority orders numerically, not lexicographically", {
+  df <- tibble::tibble(drink1 = "latte", drink2 = NA_character_)
+  chr <- dplyr::bind_rows(
+    mk_rule("fam", "TENTH", vars = "drink1", include_terms = "latte",
+            priority = 10L),
+    mk_rule("fam", "NINTH", vars = "drink1", include_terms = "latte",
+            priority = 9L))
+  chr$priority <- as.character(chr$priority)
+  expect_type(chr$priority, "character")
+
+  # Lexicographically "10" sorts before "9", so the rule the author put last
+  # used to run first and claim the row.
+  expect_equal(apply_recat(df, chr)$df$fam, "NINTH")
+
+  num <- chr
+  num$priority <- as.integer(num$priority)
+  expect_equal(apply_recat(df, num)$df$fam, apply_recat(df, chr)$df$fam)
+})
+
+test_that(".conform_recat_schema types the schema and keeps extras", {
+  raw <- tibble::tibble(out_col = "fam", category = "K", vars = "v",
+                        include_terms = "t", priority = "3",
+                        sibling_pattern = "   ", extra = 1L)
+  out <- .conform_recat_schema(raw)
+  expect_identical(names(out), c(names(empty_recat_tibble()), "extra"))
+  expect_type(out$priority, "integer")
+  expect_equal(out$priority, 3L)
+  # A missing schema column arrives as NA, and a blank pattern as NA.
+  expect_true(is.na(out$recat_id))
+  expect_true(is.na(out$sibling_pattern))
+  # A fractional priority is kept rather than truncated.
+  raw$priority <- "2.5"
+  expect_equal(.conform_recat_schema(raw)$priority, 2.5)
+  # Unparseable text becomes NA, which apply_recat() already orders last.
+  raw$priority <- "soon"
+  expect_true(is.na(.conform_recat_schema(raw)$priority))
+  expect_equal(nrow(.conform_recat_schema(empty_recat_tibble())), 0L)
 })
