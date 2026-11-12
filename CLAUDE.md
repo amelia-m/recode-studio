@@ -248,8 +248,12 @@ that.
   can be stale (saved before a key edit, or by another tool), so the recodes
   import passes `key_fn = recode_key_id` to `merge_incoming_rules()`, and
   `import_recodes_summary()` counts conflicts the same way (including how many
-  carry a different id on each side). The winner keeps the id it carries; ids
-  are never rewritten (Validate's `id_mismatch` lists them). An incoming
+  carry a different id on each side). **On the import path the winner keeps
+  the id it carries and ids are never rewritten** (Validate's `id_mismatch`
+  lists them). The add path differs on purpose: `merge_recode_rules()` also
+  collides by key now, and there the winner adopts its RECOMPUTED id, because
+  a rule arriving from the editor or a tab should not inherit a stale id that
+  would make a later add miss it. An incoming
   sibling rule whose pattern does not compile is accepted and listed as "will
   not apply". Normalizations import still merges on `norm_id`.
 
@@ -276,7 +280,7 @@ options, which only change how values are grouped and never rewrite data.
 ### Generated R shape
 
 `generate_recode_R(rules, dataset_id, source_csv_path = NULL, normalizations =
-NULL)` emits the normalization blocks FIRST (one `mutate()` per rule, or
+NULL, data_cols = NULL)` emits the normalization blocks FIRST (one `mutate()` per rule, or
 `mutate(across(matches(<pattern>, ignore.case = FALSE), ...))` for a family),
 then **one `dplyr::case_when()` block per `effective_pattern`**; all match
 types share the block. The emitted SHAPE follows the pattern, not the sibling
@@ -302,6 +306,24 @@ the generator emits a `# SKIPPED: ...` comment naming the pattern and rule
 ids, matching the app, where such a rule reaches no column. The overlap check
 ignores skipped patterns. Normalization blocks and recat arms do the same
 (`# SKIPPED` comment instead of code).
+
+**`data_cols`, the loaded column names, is what keeps the script honest about
+the data in front of it.** Pass it and the generator does two more things:
+the overlap WARNING is tested against those names rather than against the
+columns some rule happens to mention, so two sibling patterns meeting on a
+third column are reported instead of diverging silently; and a rule naming a
+column the data does not have gets a `# SKIPPED` comment instead of a block,
+because the app skips such a rule too and emitting it made the bundle's own
+script die on `object 'x' not found`. A recat rule whose `out_col` is already
+a column is skipped the same way. With `data_cols = NULL` the generator
+behaves exactly as it did before the argument existed. Both call sites pass
+it: Preview & export and the bundle.
+
+Bidi formatting characters (U+202A to U+202E, U+2066 to U+2069) are emitted as
+`\uXXXX` escapes inside string literals, because R's parser refuses them raw
+and ordinary Arabic or Hebrew pasted from a word processor carries them. A
+column NAME still cannot carry one: it is emitted as a backticked token and R
+refuses escapes inside backticks (open item in `TODO.md`).
 
 Arm LHS by match type (**both sides are normalized identically**):
 
@@ -367,8 +389,17 @@ Plain-language reports, never changes. Kinds: `normalize_no_target`,
 shadowed rule is not reported), `norm_spec_drift` (stamp differs from the
 current normalization), `norm_spec_unstamped` (NA stamp on a column that is now
 normalized), `recat_terms_recoded_away` (a recat rule matches fewer rows after
-the recodes). A `recode_no_match` for a rule with an invalid sibling pattern
-says the rule was skipped for that reason. `collect_rule_warnings()` applies
+the recodes), `recode_fully_shadowed` (every cell the rule matched was already
+claimed by an earlier rule, which `recode_no_match` cannot see because the rule
+DID match) and `recat_no_match` (a recat rule matching no row at all).
+A `recode_no_match` for a rule with an invalid sibling pattern
+says the rule was skipped for that reason. `recat_no_match` does NOT repeat a
+rule that `recat_terms_recoded_away` already covers: `collect_rule_warnings()`
+passes it the ids it has already reported, so the user sees the informative
+warning rather than both. A partly shadowed rule and a rule that matches but
+changes nothing are deliberately not reported as shadowed; Preview & export's
+`cells_matched` / `cells_changed` / `cells_shadowed` counts cover those.
+`collect_rule_warnings()` applies
 each step once; Preview & export and `build_cleaned_dataset()` assemble the
 same result from intermediates they already hold (a test pins the equality).
 
@@ -421,6 +452,16 @@ A row matches when, across the rule's resolved columns, **ANY** column contains
 rule-wide). Zero include terms matches nothing (blanket-rule guard). Rules
 sharing an `out_col` run in ascending `priority` (NA last, then row order);
 first match wins; assigned cells are never overwritten; unmatched stay NA.
+`priority` is coerced to integer inside `apply_recat()`, because a character
+column would order lexicographically and put "10" before "9"; `read_recat()`
+conforms the schema the way its siblings do.
+
+**An `out_col` naming a column the data already has is SKIPPED, not filled.**
+Writing into it would rewrite source cells, which is the one thing this rule
+type promises never to do, and the old behaviour filled that column's NA cells
+while provenance reported no column added. `apply_recat()` reports such a rule
+in a third return element, `$collisions`, the generated script skips it with a
+`# SKIPPED` comment, and the Recategorize tab refuses it at Add.
 
 Schema: `recat_id`, `out_col`, `category`, `vars` (`;`-joined),
 `sibling_pattern`, `include_terms` (`;`-joined), `exclude_terms` (`;`-joined),
@@ -446,10 +487,17 @@ private mirrors of `clean_sibling_pattern()` / `regex_compiles()`
 `validate_recat(rules, data = NULL)` classes, each a tibble of `recat_id`,
 `out_col`, `category`, `value`, `detail`: `invalid_match_type`,
 `invalid_regex` (ICU), `no_include_terms`, `invalid_sibling_pattern`,
-`duplicate_ids`, and with `data`: `missing_columns`, `no_columns`. The
-Recategorize tab shows them in `recat_issues_ui()`, and Add refuses a rule
-carrying any of the first four (`recat_add_refusal()`, `.RECAT_REFUSE_CLASSES`),
-since as written it would match nothing.
+`duplicate_ids`, `nested_quantifier`, and with `data`: `missing_columns`,
+`no_columns`, `out_col_exists`. The Recategorize tab shows them in
+`recat_issues_ui()`, and Add refuses a rule carrying any of
+`.RECAT_REFUSE_CLASSES` (`recat_add_refusal()`): the first four because as
+written the rule would match nothing, and `out_col_exists` for the opposite
+reason, that it would match and write where it must not.
+`nested_quantifier` is deliberately NOT a refusal: it reports a term whose
+quantified group is quantified again (`(...+)+`, `(...*)*`, `(...+)*`), which
+is how a 41-character value took 303 seconds in ICU, but such a term still
+works. Bounding it needs a dependency decision (open item in `TODO.md`), so
+for now the class reports and changes no result.
 
 ### match_type semantics
 
@@ -506,7 +554,12 @@ All validators report and never change a rule.
   `recode_key_id()`; ids are NOT rewritten), `spellcheck_lost_words` (notes
   start with "Spellcheck" and `new_value` has fewer words than `old_value`:
   made by the old Spellcheck that replaced the whole value with the word),
-  `blank_new_value`, `rule_chains`, and with `data`: `stale`.
+  `blank_new_value`, `rule_chains`, and with `data`: `stale` and
+  `missing_column` (the rule names a column the loaded data does not have, so
+  it reaches nothing and the generated script skips it). The Recodes Validate
+  report and the Preview & export warnings panel both read `missing_column`
+  from this one class, so they cannot disagree; nothing gates the download, and
+  nothing clears `rv$rules` when a dataset loads.
 - `validate_normalizations(rules, data = NULL)`: `no_ops`, `invalid_ops`,
   `conflicting_case`, `duplicate_targets`, `invalid_sibling_pattern`, and with
   `data`: `missing_column`, `overlapping_targets`.
@@ -558,8 +611,39 @@ Every cell edit goes through the pure `apply_recode_edit()`, which returns
   with a `help_line()` pointing to key collision, n-gram fingerprint, soundex
   and metaphone, which are linear and never capped. Measured once in September
   2026 on the development laptop, not re-measured since: 1000 values about 1 s
-  (edit-distance) to 2.5 s (cosine/jaccard); 2000 about 3 s to 8 s. The cap
-  counts VALUES, so long values can cost far more than these figures suggest.
+  (edit-distance) to 2.5 s (cosine/jaccard); 2000 about 3 s to 8 s.
+- **A second cap counts CHARACTERS, because the value cap cannot see length.**
+  `PAIRWISE_CLUSTER_CHAR_CAP = 40000` total characters, applied after the value
+  cap and only to the edit distances (`CLUSTER_EDIT_DISTANCE_ALGORITHMS`:
+  `osa`, `lv`, `lcs`), keeping the most frequent values that fit and always at
+  least one. Measured 2026-11-12: 20 values of 6400 characters took 217 s with
+  `osa` and 1.8 s with `jw`, and at one shape `osa` 24.9 s against `cosine`
+  0.09 s and `soundex` 0.02 s, so a flat budget across all six pairwise
+  algorithms would throttle the cheap ones by a factor of 30 to 400 for no
+  measured reason. **The 40000 is PROVISIONAL**, a judgement read off those
+  measurements (the documented supported workload is 6,000 to 18,000
+  characters), and confirming it is an open item. `cluster_cap_values()`
+  returns `kept`, `reason` (`"values"` or `"characters"`) and `chars_total`;
+  `cluster_cap_note()` branches on `reason` and both branches end with
+  `CLUSTER_LINEAR_HINT`, so the pointer sentence cannot drift between the
+  three notes that use it. The budget measures BYTES (`allowNA = TRUE`), an
+  upper bound on characters: `nchar()` in characters THROWS on a value that is
+  not valid UTF-8, so counting characters would add a crash path on hostile
+  input.
+- **The Reference Taxonomy Matcher bounds both sides on the same budget**
+  (`taxonomy_cap_input()`, with its own `tax_cap_note`). Its call site had no
+  cap at all, and 20 values against 20 targets at 6400 characters took 229.66 s
+  with `osa`. The built-in lists are safe only because their terms are short.
+  Its value COUNT is deliberately not capped: it reports on a whole column, and
+  1000 values against the 51-term list measured 0.17 s.
+- `cluster_strings()` computes only the lower triangle. It used to ask
+  `stringdistmatrix()` for the full n x n matrix and then throw the diagonal
+  away, which made one 300,000-character value cost 23.7 s (and raised an
+  uncaught memory error under `osa`, `lv` and `lcs`) for a self-comparison that
+  was discarded. Partitions are unchanged and every pairwise run is roughly
+  halved; a test pins the output equality. Known, pre-existing, NOT fixed: a
+  value shorter than `q` makes `cosine` (and sometimes `jaccard`) return NA
+  similarities and igraph then refuses the adjacency matrix.
 - At most `MAX_CLUSTER_CARDS = 50` cards, largest first, with a "Showing N of
   M" line. The server takes `debounce_ms`, `pairwise_cap`, `max_cards`
   arguments so tests can use small values.
@@ -586,9 +670,11 @@ Every cell edit goes through the pure `apply_recode_edit()`, which returns
   refuses switching it to `regex`.
 - en_US only, no fallback (hunspell's "default" IS en_US, so the old retry
   loaded the same file). `.build_hunspell()` takes a `loader` (default
-  `.hunspell_loader()`) so tests can inject a failure. After one failure the
-  tab says spellcheck is unavailable and makes no further attempt this
-  session.
+  `.hunspell_loader()`) so tests can inject a failure. After a failure the tab
+  says spellcheck is unavailable and makes no further attempt FOR THAT
+  DICTIONARY SELECTION (`dict_failed_for`). It used to latch for the whole
+  session, so one bad discipline file killed the tab until restart and
+  deselecting it did not recover.
 
 ### Text analysis (`R/mod_text_analysis.R`)
 
@@ -604,6 +690,13 @@ writes is the stopword tier files.
   `build_meta()` adds `lang_share_en` (share of up to `LANG_SAMPLE_N = 200`
   sampled values detected as English) for free-text candidates; it is
   reported only and never affects the candidate flag.
+- **Word cloud:** `wordcloud2` is gated at runtime by `wordcloud_available()`,
+  exactly as `cld2` is by `lang_detection_available()`, and the panel shows an
+  install hint pointing at Top words and Top phrases for the same counts. The
+  UI call used to be unguarded while `cld2` beside it was guarded, so a missing
+  package stopped the whole app from starting rather than one panel. The
+  `Imports` versus `Suggests` question is therefore now purely a declaration
+  question, with no app-start consequence either way.
 - **Stopwords:** `top_tokens()` / `top_ngrams()` take a `stopwords` argument
   (default `EN_STOPWORDS`); the tab passes `active_stopwords()` for the ticked
   tiers, and the word cloud reuses the same token table. Stopwords are removed
@@ -718,6 +811,28 @@ writes is the stopword tier files.
   (`.js_value()`), build the handler, then attribute-escape the WHOLE
   attribute (`.attr_value()`); the browser decodes entities before the JS is
   parsed. See `.render_action_cell()` in `mod_spellcheck_view.R`.
+- **NEVER delete a rule by matching its stored id.** Ids come from imported
+  CSVs and can be duplicated, blank or NA, and they are never rewritten, so
+  `r$id != input$delete_row` destroys rules nobody clicked: an NA id made the
+  comparison all-NA, and tibble row-subsetting with a logical NA returned NA
+  ROWS, leaving the rule COUNT UNCHANGED while replacing every rule with an
+  all-NA row that then rode into the export. A client-sent vector recycled and
+  let the caller pick rows positionally. The delete button payload is now
+  `{"row": <1-based row>, "id": <stored id or null>}`, built by
+  `.rule_delete_js()` / `.rule_delete_button()` and read by
+  `.rule_delete_target()` in `R/ui_helpers.R`, which validates it (one element,
+  a whole number inside `seq_len(nrow(r))`, and the id still matching that row)
+  before deleting that ONE row. All three rule tables use it. A test asserting
+  only `nrow()` would have passed against the bug.
+- **`ignoreInit = TRUE` spends its init on the first evaluation, whatever the
+  value.** `shiny:::bindEvent.Observer` flips `initialized` before it checks
+  `ignoreNULL`, so the NULL an input holds before the client sends anything is
+  enough. In `testServer` that makes the FIRST `setInputs` on such an input do
+  nothing, silently: a new test whose first `setInputs` is the delete input
+  asserts nothing at all and passes. Any earlier `setInputs`, on any input, or
+  a bare `session$flushReact()`, primes it. Eight observers in the app use the
+  flag. Make every new test of one fail first, on purpose, against the unfixed
+  code.
 - **Assigning an identical value to a `reactiveValues` entry does not
   invalidate.** The old `rules_proxy$set(r)` "revert" after a refused edit
   never redrew, so the typed value stayed on screen. Revert with
@@ -808,6 +923,23 @@ the user must `git add`/commit it to share with the team). `medical.txt`,
 `seed_terms.txt` is intentionally empty: this is a general tool, no assumed
 vocabulary.
 
+**An upload never overwrites.** It takes the first free name
+(`medical.txt`, then `medical_2.txt`, ...) and the success notification says
+which file was written, because uploading a file named `medical.txt` used to
+replace the bundled one and report success: four tracked files were exposed.
+Any directory part in the uploaded name is stripped, and a name with no letters
+or digits falls back to `imported`.
+
+**An upload is validated before anything is written**
+(`.check_dict_upload()`): empty, holding NUL bytes, or not valid UTF-8 is
+refused with a plain-language reason. A binary file renamed `.txt` used to kill
+Spellcheck for the whole session behind a raw encoding error.
+`.read_dict_terms()` is also total now: a directory, a missing path, NA,
+`character(0)`, a read error and lines that are not valid UTF-8 all yield no
+terms rather than throwing. Consequence worth knowing: a latin-1 word list is
+now refused rather than silently mangled, so such a file must be re-saved as
+UTF-8.
+
 ## Stopwords
 
 Mirrors the dictionary tiers, for the Text analysis tab only. A token is a
@@ -839,27 +971,27 @@ Run a single file with
 
 | file | covers | assertions |
 |---|---|---|
-| `test-string_helpers.R` | schema, normalize_value, cluster (incl. fingerprint / n-gram fingerprint), taxonomy matching, CSV round-trip + conform-on-read, merge in place, `.rule_hits` truth table (incl. `""` per match type, empty regex), validate (regex/enum/stale), apply (siblings/delete/regex/NA), codegen incl. `ignore.case = FALSE`, `grepl()` regex arms, escaped plain-rule patterns, backticked names, `rep_len(FALSE, ...)` arms, **both agreement tests** (incl. awkward column names), rule-order independence | 293 |
-| `test-spellcheck_view.R` | action-cell escaping (`.js_value()` / `.attr_value()`) with awkward characters round-tripping to the created rule, action column last, `.spell_drop_blank()` and the all-blank empty state, `spell_replace_token()` (other words, punctuation, every occurrence, whole words only, case mirroring, quote marks, no-op), shared tokenizer, `exact` rules leave other casings alone, no hunspell fallback and no retry | 235 |
-| `test-normalizations.R` | normalization ops, id, apply, preview, validate, CSV IO (incl. 13-column recodes files), `norm_spec` stamp (on rules proxy `add()` only), codegen, norms proxy upsert, Normalize tab | 175 |
-| `test-export_bundle.R` | pipeline order, row-count stop, `source_file_meta`, provenance (incl. severity, notes marked), files written, empty-cell NA round-trip, **script reproduces a byte-identical CSV** (incl. awkward column names), bundle script skips unusable rules like the app, SHA-256 warning, `zip::zip`, download wiring | 164 |
-| `test-rule_checks.R` | `regex_compiles()`, `clean_sibling_pattern()` (and recat's private mirrors agreeing), bad sibling patterns reported and skipped for recodes / normalizations / recat in app and script, blank pattern means own column, recat match type reading and app/script agreement, bad recat regex terms, `validate_recat()`, `id_mismatch`, `recode_key_id()`, `spellcheck_lost_words`, warning vs note severity, tidyselect `matches()` uses base `grep()` (TRE) | 163 |
-| `test-recat_helpers.R` | recat match/apply/priority/codegen/IO + the three worked examples end-to-end against the bundled CSV | 148 |
-| `test-cluster_target.R` | `cluster_target_decision()`, exclusion pair-building, single-table cluster cards, `testServer` wiring for the Apply refusal, blank dropping (clusters and taxonomy matcher), pairwise cap + note, card cap, debounce, session cache | 141 |
-| `test-ui_rule_checks.R` | `issue_class_title()`, Normalize panel and tab with invalid / unknown classes and refused typed patterns, cleared pattern stored as NA, `recode_validation_ui()` (new classes, plurals, escaping, unknown class), editor sibling-pattern and Spellcheck-to-regex refusals, `recat_add_refusal()` / `recat_issues_ui()`, import merge by key and `import_recodes_summary()` | 112 |
-| `test-rule_warnings.R` | every warning kind, `collect_rule_warnings()` | 82 |
+| `test-string_helpers.R` | schema, normalize_value, cluster (incl. fingerprint / n-gram fingerprint, and that dropping the self-comparison leaves partitions unchanged), taxonomy matching, CSV round-trip + conform-on-read, merge BY KEY in place, `.rule_hits` truth table (incl. `""` per match type, empty regex) and its no-NA invariant, validate (regex/enum/stale/missing_column), apply (siblings/delete/regex/NA), codegen incl. `ignore.case = FALSE`, `grepl()` regex arms, escaped plain-rule patterns, backticked names, `rep_len(FALSE, ...)` arms, `data_cols` overlap + skip, bidi escaping, **both agreement tests** (incl. awkward column names, embedded newline, 20k value, right-to-left text, capture group), rule-order independence | 373 |
+| `test-spellcheck_view.R` | action-cell escaping (`.js_value()` / `.attr_value()`) with awkward characters round-tripping to the created rule, generated-markup column last (read off the rendered table), `.spell_drop_blank()` and the all-blank empty state, `spell_replace_token()` (other words, punctuation, every occurrence, whole words only, case mirroring, quote marks, no-op), shared tokenizer, `exact` rules leave other casings alone, no hunspell fallback, no retry for the same dictionary selection and recovery when it changes | 235 |
+| `test-ui_rule_checks.R` | `issue_class_title()`, Normalize panel and tab with invalid / unknown classes and refused typed patterns, cleared pattern stored as NA, `recode_validation_ui()` (new classes, plurals, escaping, unknown class), editor sibling-pattern and Spellcheck-to-regex refusals, `recat_add_refusal()` / `recat_issues_ui()`, import merge by key and `import_recodes_summary()`, **the delete payload**: only the clicked row goes, duplicated / blank / NA ids leave the others intact, a hostile client value changes nothing, a hostile id cannot break out of the inline handler | 218 |
+| `test-cluster_target.R` | `cluster_target_decision()`, exclusion pair-building, single-table cluster cards, `testServer` wiring for the Apply refusal, blank dropping (clusters and taxonomy matcher), pairwise value cap + note, **character cap** for the edit distances and the taxonomy matcher's own cap, byte-based budget on invalid UTF-8, card cap, debounce, session cache | 208 |
+| `test-rule_checks.R` | `regex_compiles()`, `clean_sibling_pattern()` (and recat's private mirrors agreeing), bad sibling patterns reported and skipped for recodes / normalizations / recat in app and script, blank pattern means own column, recat match type reading and app/script agreement, bad recat regex terms, nested quantifiers reported, `validate_recat()` (incl. `out_col_exists`), `id_mismatch`, `recode_key_id()`, `spellcheck_lost_words`, warning vs note severity, tidyselect `matches()` uses base `grep()` (TRE) | 182 |
+| `test-export_bundle.R` | pipeline order, row-count stop, `source_file_meta`, provenance (incl. severity, notes marked), files written, empty-cell NA round-trip, **script reproduces a byte-identical CSV** (incl. awkward column names), bundle script skips unusable rules like the app, including a rule for a column the data lacks, SHA-256 warning, `zip::zip`, download wiring | 176 |
+| `test-normalizations.R` | normalization ops, id, apply, preview, validate, CSV IO (incl. 13-column recodes files), `norm_spec` stamp (on rules proxy `add()` only), codegen, norms proxy upsert, Normalize tab incl. its delete payload | 175 |
+| `test-recat_helpers.R` | recat match/apply/priority (incl. coercion)/codegen/IO, schema conform, an `out_col` that already exists skipped in app and script and reported as a collision, plus the three worked examples end-to-end against the bundled CSV | 163 |
+| `test-recode_editor.R` | `apply_recode_edit()`: `rule_id` recomputed on key edits, clash refusal naming the other rule, enum refusal, locked columns, `norm_spec` untouched, position kept, every spelling of yes/no for `apply_to_siblings` and refusal of anything else; `testServer` wiring | 129 |
+| `test-rule_warnings.R` | every warning kind incl. `recode_fully_shadowed` and `recat_no_match`, that `recat_no_match` does not repeat `recat_terms_recoded_away`, `collect_rule_warnings()` | 109 |
+| `test-import_recodes.R` | import schema guard (provenance alias rename, optional `norm_spec`, refusals), in-place `merge_incoming_rules()`, take-newer decided by parsed time with an unreadable stamp never newer, normalizations import | 100 |
+| `test-text_analysis_module.R` | + Stop button escaping, tier selection feeding Top words / phrases / cloud, + Stop targets and failed writes, Language section (breakdown, non-English filter, escaping, install hint without cld2), `lang_values_table()`, the word cloud panel's install hint without wordcloud2 | 70 |
 | `test-data_loader.R` | metadata + classifiers (`build_meta`, `column_group`, `suggest_sibling_pattern` incl. metachar escaping, date/numeric/id detection, `read_dataset`), `lang_share_en` (candidates only, NA without cld2) + example-dataset regression | 67 |
-| `test-text_analysis_module.R` | "+ Stop" button escaping, tier selection feeding Top words / phrases / cloud, "+ Stop" targets and failed writes, Language section (breakdown, non-English filter, escaping, install hint without cld2), `lang_values_table()` | 66 |
-| `test-empty_values.R` | `value_frequency_table()` keeps `""` and drops NA, `""` matching per match type, empty-value agreement between app and script per match type, validate, `""` vs `<NA>` CSV round-trip, the "(empty)" label, Browse values minting a `""` rule | 65 |
-| `test-import_recodes.R` | import schema guard (`source_quarter` rename, optional `norm_spec`, refusals), in-place `merge_incoming_rules()`, normalizations import | 59 |
+| `test-empty_values.R` | `value_frequency_table()` keeps `""` and drops NA, `""` matching per match type, empty-value agreement between app and script per match type, validate, `""` vs `<NA>` CSV round-trip, the (empty) label asserted literally, Browse values minting a `""` rule | 64 |
+| `test-spellcheck_dict.R` | `.read_dict_terms()` strips `.dic` artifacts and is total (directory, missing path, NA, invalid UTF-8); `.copy_file_verified()` and the import handler, incl. silent and loud write failures, a name that never overwrites an existing dictionary, and refusal of an empty, NUL-holding or non-UTF-8 upload | 62 |
+| `test-preview_rule_warnings.R` | did-less-than-expected panel and its server wiring, notes block apart from warnings, missing / unknown severity counts as warning, the all-clear sentence naming every check that runs | 61 |
 | `test-recategorize_module.R` | Recategorize preview on the recoded frame, picker seeding, "Out of date" marker and what does and does not trigger it | 58 |
 | `test-text_helpers.R` | sentences, length classification, tokens, n-grams, KWIC, custom `stopwords` argument, `detect_languages()` / `language_summary()` (incl. no cld2) | 53 |
 | `test-stopword_helpers.R` | tier paths, `.read_stopword_terms()` cleaning, `active_stopwords()` merge and EN_STOPWORDS fallback, `add_stopword()` (idempotent, tier, newline, refusals, loud and silent write failures, non-ASCII), committed base tier equals EN_STOPWORDS, user tier gitignored | 47 |
-| `test-preview_rule_warnings.R` | "did less than expected" panel and its server wiring, notes block apart from warnings, missing / unknown severity counts as warning | 46 |
-| `test-recode_editor.R` | `apply_recode_edit()`: `rule_id` recomputed on key edits, clash refusal naming the other rule, enum refusal, locked columns, `norm_spec` untouched, position kept; `testServer` wiring | 46 |
-| `test-dt_truncate.R` | `dt_truncate_defs()` / css / hint | 40 |
-| `test-spellcheck_dict.R` | `.read_dict_terms()` strips `.dic` artifacts; `.copy_file_verified()` and the import handler, incl. silent and loud write failures | 40 |
-| `test-variable_picker.R` | banner choices, `current_var` two-way sync without ping-pong, filter lifted for a hidden column | 29 |
+| `test-dt_truncate.R` | `dt_truncate_defs()` / css / hint, and the capped hover title | 46 |
+| `test-variable_picker.R` | banner choices, `current_var` two-way sync without ping-pong, filter lifted for a hidden column, the two empty states told apart | 44 |
 | `test-preview_export.R` | `preview_diff_table()` counts, incl. rules with no data loaded | 26 |
 | `test-guide_helpers.R` | help layer: accessibility attributes, collapsed by default, escaping | 24 |
 | `test-app_wiring.R` | rules / recat proxies: `add()` merges in place and conforms partial rows, `set()` replaces | 16 |
@@ -867,7 +999,7 @@ Run a single file with
 | `test-em_dash_guard.R` | no em dash or em dash entity in any project text file (skips `renv/`, `ext/`, `inst/extdata/`) | 6 |
 | `test-all-files-parse.R` | every R file in the project parses | 2 |
 
-2214 total (27 files).
+2725 total (27 files), measured 2026-11-12 after the October defect fixes.
 
 Tests `source()` the R files they need by relative path. Pure files are always
 safe; the `mod_*.R` files that tests source (cluster view, data input, import,

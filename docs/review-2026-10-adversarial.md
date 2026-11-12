@@ -12,6 +12,38 @@ which is gitignored. This file is the durable record. Nothing below is fixed.
 Verdict from three of the four lenses independently: do not merge before the
 data-loss and silent-wrong-output items are fixed.
 
+## Status, 2026-11-12
+
+Fourteen of the eighteen are fixed, by three agents working in parallel on
+separate branches, integrated and verified together:
+`FAIL 0 | WARN 0 | SKIP 0 | PASS 2725` in 27 files, up from 2214.
+
+- **Fixed:** 1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15, 16, and 8 for string
+  literals.
+- **Reported but not bounded:** 10. `validate_recat()$nested_quantifier` now
+  names a term whose quantified group is quantified again, which is the shape
+  that took 303 seconds. An actual timeout needs a dependency decision.
+- **Still open, each waiting on a decision in `TODO.md`:** 9 (spreadsheet
+  formulas versus the byte-identical promise) and 18 (the literal `<NA>`
+  sentinel), both now pinned by tests that describe current behaviour and say
+  they pin a known defect.
+- **Still open, no decision needed, nobody assigned:** 17 (duplicate column
+  names). Measured since: the app recodes the first column of that name and
+  says nothing, while the generated script errors. Both sides are now pinned
+  by a test titled as a known defect.
+- **Also fixed, outside the eighteen:** the overlap sweep crashing on a column
+  name of about 2,531 characters; a character `priority` ordering
+  lexicographically; `cluster_strings()` spending up to 480 seconds on a
+  self-comparison it discarded; and the `recode_fully_shadowed` warning that
+  item 4 asked for.
+
+Defects found during that work and NOT fixed are in `TODO.md`: a latin-1 file
+cannot be loaded at all, `read_dataset()` marks invalid bytes as UTF-8, a
+second Excel upload is handed the first workbook's sheet name, stringdist hangs
+in C on invalid UTF-8, `cluster_strings()` fails on a value shorter than `q`,
+a bidi character in a column name still breaks the script, and
+`merge_recat_rules()` still matches the stored id.
+
 ## Fix first
 
 1. **Delete removes rules you did not click** (Shiny F1). The Recodes tab
@@ -77,8 +109,11 @@ data-loss and silent-wrong-output items are fixed.
     recover, and the user sees a raw UTF-8 error. Fix: validate before copying,
     make the reader total, clear the latch on selection change.
 13. **"Take newer" compares timestamps as text** (Shiny F6), the default
-    conflict choice, so a stamp separated by a space beats every `T`-separated
-    stamp of the same date. Fix: parse both sides; unparseable is never newer.
+    conflict choice. Fix: parse both sides; unparseable is never newer.
+    **This item stated the direction backwards**, corrected by measurement
+    2026-11-12: a space-separated stamp LOSES to a `T`-separated one of the
+    same date (a stamp 22 hours newer was discarded), and junk text such as
+    "whenever" WINS against a real stamp.
 14. **`apply_to_siblings` edits accept anything** (Shiny F7). `yes` or `True `
     silently switch sibling propagation off, though the card says invalid
     entries are rejected.
@@ -113,6 +148,19 @@ the Spellcheck escaping tests are the strongest parts of the suite.
   regex capture group.
 - A latin-1 encoded value makes `.rule_hits()` throw rather than return a
   logical; whether `read_dataset()` can produce one is unchecked.
+
+**Closed 2026-11-12**, all but one: the tautological assertion now asserts the
+literal label (and was shown to fail when the label is blanked); the
+`.rule_hits()` no-NA invariant has a test over 5 value vectors against 9
+`old_value`s and 7 match types, shown to fail on a mutant whose `trimmed_ci`
+branch returns an NA; all six source-text assertions are gone, one of them
+replaced behaviourally because it was the only check that the generated-markup
+column stays last; and the untested behaviours now have agreement tests, with
+duplicate column names and a literal `<NA>` pinned as known defects rather
+than as agreements that do not hold. The latin-1 question is answered in
+`TODO.md`: `read_dataset()` does produce such a value, but the app cannot load
+the file at all, which is itself a defect. Still open: **`MAX_CLUSTER_CARDS` is
+unpinned**, which is the cap-pin decision.
 
 ## Decisions needed from the owner
 
