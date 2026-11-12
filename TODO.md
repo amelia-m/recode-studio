@@ -11,16 +11,12 @@ scripts beside it. It deliberately does NOT cover question 9.
 
 ## Waiting on Amelia
 
-1. **Merge and push, once the defects are fixed.** Amelia, 2026-11-12: "fix
-   first, don't merge until the defects are done." Three branches of October
-   work are committed and unpushed or unmerged: `shared-defect-fixes`,
-   `text-tools` and `upstream-followups` (tip `2e94179` on the remote), plus
-   local commits on `neutral-wording`. `main` is at `ee408d1`. Fast-forwarding
-   `main` to the tip of the chain would bring all of them, and the fix branch
-   `fix-review-defects` sits on top. Merging and pushing both still need her
-   yes at that point, and which of the no-decision defects count as "done"
-   enough to merge is hers to call: the seven decision items below will still
-   be open.
+1. ~~**Merge and push, once the defects are fixed.**~~ DONE 2026-11-12.
+   Amelia, 2026-11-12: "merge & push what's done unless it should wait on the
+   other 4?" It did not need to wait: all four remaining items are
+   pre-existing on `main` as well, so merging removed fourteen defects and
+   made none of the four worse. `fix-review-defects` was merged into `main`
+   with `--no-ff` and pushed. The four decision items below stay open.
 3. **`cld2` and `wordcloud2`: `Imports` or `Suggests`?** The code and tests
    treat both as optional (`lang_detection_available()`, and
    `skip_if_not_installed()` in the tests), but `cld2` is declared under
@@ -104,14 +100,10 @@ scripts beside it. It deliberately does NOT cover question 9.
     it, so a stale preview can read as current. `CLAUDE.md` documents the
     snapshot behaviour deliberately, so widening it is a product call: should
     the preview also invalidate on a rule-set or dataset change?
-16. **One sentence classifying this repository for unattended work.** The
-    global rules let agents build and change code without check-ins in a
-    personal repository, and allow the same in a work-adjacent project only
-    where the project profile records Amelia classifying it low risk for
-    unattended work, quoted with the date. This repo is public, domain-neutral
-    and holds no work data, but it was spun out of a work pipeline, so an agent
-    cannot settle which category it is. One sentence from Amelia would go into
-    `.agents/project-profile.md` verbatim.
+16. ~~**One sentence classifying this repository for unattended work.**~~
+    ANSWERED 2026-11-12 and recorded verbatim in `.agents/project-profile.md`:
+    low risk, no nonpublic data and no secrets, unattended agent work allowed,
+    and naive plus adversarial code review is routine rather than on request.
 17. **This repository has no `.gitattributes`.** `git commit` warns "LF will be
     replaced by CRLF" on this machine, where `core.autocrlf=true` is global, so
     the working tree can hold mixed endings and byte-level comparisons (the
@@ -376,17 +368,14 @@ and whether Excel rewrites `updated_at` on a round trip.
   work it admits today, so it stays conservative rather than becoming tight.
   The check: re-run `_scratch/fixes/c/measure_after_cap.R` and
   `measure_by_algorithm.R` on the integrated branch.
-- **`_scratch/fixes/c/shadow-lib` holds 104 directory junctions** into that
+- ~~**`_scratch/fixes/c/shadow-lib` holds 104 directory junctions**~~ into that
   worktree's renv library, created to reproduce a missing `wordcloud2` without
-  uninstalling anything. Nothing tracked, and both Git Bash `rm -rf` and
-  PowerShell 7 `Remove-Item -Recurse` unlink rather than follow, but a
-  recursive delete with older tooling could in principle follow a junction
-  into the library, and that library's package files are themselves links into
-  the shared renv cache. Remove the links only, not their targets:
-  `foreach ($d in Get-ChildItem _scratch/fixes/c/shadow-lib -Directory) {
-  [System.IO.Directory]::Delete($d.FullName, $false) }`. Not done, because it
-  is a delete. Rebuild it when needed with
-  `Rscript _scratch/fixes/c/make_shadow_lib.R wordcloud2`.
+  uninstalling anything. REMOVED 2026-11-12 with Amelia's yes, links only
+  (`[System.IO.Directory]::Delete($d.FullName, $false)` over the 104, all of
+  which were confirmed reparse points first); the project library still holds
+  its 105 packages with `wordcloud2` among them. Rebuild it when needed with
+  `Rscript _scratch/fixes/c/make_shadow_lib.R wordcloud2`, which is still in
+  that worktree.
 - A UTF-8 BOM in a dictionary file is not handled: the first term would keep
   the BOM and never match a token. Pre-existing, and whether it causes a
   visible problem was not checked. The check: write a BOM-prefixed word list
