@@ -137,25 +137,110 @@ See [docs/review-2026-10-adversarial.md](docs/review-2026-10-adversarial.md)
 for all 18 with reproductions. Items 4, 5, 6 and 9 of that document's
 "Decisions needed" list are questions 4 to 7 above.
 
-Unresolved hypotheses recorded there: per-cluster input ids outliving their
-cluster; an arbitrary `delete_row` value from the client dropping the wrong
-rows; multi-sheet Excel upload ordering; whether Excel rewrites `updated_at`
-on a round trip; and whether a priming `flushReact()` before the first
-`setInputs` on an `ignoreInit` observer is only a test-harness artifact.
+Four of the five hypotheses recorded there were settled by running them on
+2026-11-12, with probes under `_scratch/claims/`:
+
+- **An arbitrary `delete_row` from the client: CONFIRMED for Recategorize,
+  REFUTED for Normalize.** Worse than predicted. `mod_recategorize` compares
+  with `!=`, so `NA_character_` leaves the rule COUNT UNCHANGED while replacing
+  every rule with an all-NA row, and a two-element vector recycles and lets the
+  client pick rows positionally. `mod_normalize` already uses `%in%` and was
+  clean on every hostile input. A stored rule with an NA `recat_id` poisons an
+  ordinary Delete click on a different rule, which needs no hostile client,
+  though it is only reachable programmatically today.
+- **Multi-sheet Excel upload ordering: CONFIRMED, and worse than a spurious
+  failure.** See the new defects below.
+- **The priming `flushReact()`: CONFIRMED as an artifact, and a real one.**
+  `shiny:::bindEvent.Observer` flips `initialized` on the observer's first
+  evaluation whatever the value is, and that gate sits before the `ignoreNULL`
+  check, so a bare flush spends the init without running any handler body.
+  The existing suite is NOT affected: any earlier `setInputs` on any input
+  primes the observer, and every current test does one first. The hazard is a
+  NEW test whose first `setInputs` is the `ignoreInit` input, which would
+  silently assert nothing. The browser half is inferred from `serviceApp()`'s
+  source, not observed; settling it needs a browser or `shinytest2`.
+- **A latin-1 value reaching `.rule_hits()`: REFUTED for the app, CONFIRMED for
+  the pure helpers.** See the new defects below.
+
+Still unresolved: per-cluster input ids outliving their cluster (question 8),
+and whether Excel rewrites `updated_at` on a round trip.
+
+### New defects confirmed 2026-11-12, none fixed
+
+- **A latin-1 or invalid-UTF-8 file cannot be loaded at all.** `build_meta()`
+  throws out of `nchar()` and the user sees "Load failed: In index: 1. Caused
+  by error in nchar(): invalid multibyte string, element 1". No encoding option
+  and no usable message. The load is rejected cleanly, so no bad data enters,
+  but neither does any data.
+- **`read_dataset()` returns strings marked `UTF-8` whose bytes are not valid
+  UTF-8** (`validUTF8()` FALSE). The marking is the defect, not just the bytes.
+  Every downstream `tolower()` then throws, which takes out `exact_ci` and
+  `trimmed_ci`, and `trimmed_ci` is the default; `apply_recodes()` aborts
+  entirely. Unreachable through the app only because the defect above stops the
+  file loading first. A `validUTF8()` guard before `tolower()` would stop a
+  pure helper aborting.
+- **A second Excel upload is loaded with the FIRST workbook's sheet name, and
+  the old dataset silently stays loaded.** `mod_data_input.R` reads
+  `input$sheet` from a `selectInput` built inside `renderUI`, which has not
+  rebuilt when the new `input$file` observer runs, so readxl is handed a sheet
+  that does not exist in the new file. `load_df()` assigns `shared_state` only
+  after a successful read, so every tab keeps showing the previous dataset
+  behind a "Sheet not found" notification. Measured end to end with two
+  workbooks whose sheet names do not overlap; the same file loads fine when
+  uploaded first. Fix direction: ignore `input$sheet` in the `input$file`
+  observer and let the picker's own observer re-load, or clear the sheet input
+  when a new file arrives. Nobody is fixing this today: it is in
+  `mod_data_input.R`, the only module that writes `shared_state`, and it was
+  not in any fix agent's scope.
+- **Invalid UTF-8 makes `jw`, `cosine`, `jaccard` and `soundex` hang
+  indefinitely inside stringdist's C code**, and `setTimeLimit()` cannot
+  interrupt them (four processes killed after 15+ minutes). `fingerprint`,
+  `ngram_fingerprint` and `metaphone` raise a clean error because they are
+  R-level. `osa`, `lv` and `lcs` were not checked for this case. Only
+  reachable through the pure helpers today. A `validUTF8()` guard in
+  `cluster_strings()` would turn the hang into a reportable error.
+- **`cluster_strings()` spends up to 480 s computing a self-comparison it then
+  discards.** `stringdistmatrix(keys, keys, ...)` builds the full n x n matrix
+  and the next lines throw the diagonal away. One value of 1 MB takes 480.15 s
+  with `jw` and raises an uncaught memory error with `osa`, `lv` and `lcs`,
+  while the one-argument lower-triangle form takes 0.00 s. Handed to the
+  engine fix agent on 2026-11-12 with the measurements; if its report does not
+  carry it, it is still open.
 
 ## Deferred by agents, carried here
 
-- Excel is the only remaining path by which an empty-string recode rule can
-  fire, and it was never tested: writing a one-cell `.xlsx` needs a package
-  that is not a dependency. The check is to write a workbook holding one empty
-  cell and one space-only cell, read it with `read_dataset()` and print what
-  came back.
+- **Settled 2026-11-12, and the premise was wrong.** Excel was NOT the only
+  remaining path by which an empty-string recode rule can fire, and it is not a
+  path at all: a workbook with a missing cell, an empty inline string and a
+  single space all load as NA, measured with a hand-rolled `.xlsx` (zip of XML
+  parts via `zip::zip()`, no package installed). The live path is Unicode
+  whitespace: neither reader trims a non-breaking space, en space or
+  ideographic space, so such a cell survives the load as a one-character value,
+  a `trim` or `squish` normalization turns it into `""`, and Browse values then
+  offers the "(empty)" row to mint a rule from. Measured end to end. The
+  empty-string work is live, not dead code. Zero-width space and word joiner
+  are not whitespace to ICU and survive as ordinary values.
 - The `.xlsx` branch of `generate_clean_script()` was never exercised, and it
   inherits the machine fact that `readxl` fails on a path containing spaces.
-- Whether `mod_recategorize` can ever supply a character `priority` (the CSV
-  path types it as integer, so the exposure is API-level only).
-- Whether a latin-1 encoded value can reach `.rule_hits()` through the app; it
-  throws rather than returning a logical when it does.
+- **Settled 2026-11-12: `mod_recategorize` cannot supply a character
+  `priority`.** It wraps the input in `as.integer()`, `read_recat()` declares
+  `col_integer()`, and the empty tibble types it integer, so every writer
+  agrees and the exposure is API-level only. The hazard itself is real
+  (`ifelse(is.na(priority), Inf, priority)` returns character when the column
+  is character, so `order()` sorts "10" before "9"), but the app and the
+  generated script use the identical expression, so they would be wrong
+  TOGETHER: the app/script agreement invariant is not at risk, only the
+  priority semantics. One minor finding: a non-numeric entry becomes
+  `NA_integer_` silently, and NA sorts last.
+- UTF-16 and BOM-prefixed files were not checked. `read_dataset()` pins
+  `encoding = "UTF-8"`, so they probably fail like the latin-1 case, but
+  nobody ran it. The check is a probe writing a UTF-16LE CSV and reading it.
+- Whether the cluster hang on invalid UTF-8 also affects `osa`, `lv` and `lcs`
+  was not checked; their budget went to the length ladder.
+- Whether the security reviewer's "20 values of 6400 characters took 164
+  seconds" used an edit-distance algorithm specifically. Corroborated for edit
+  distance generally and refuted for `jw` at 1.28 s; their report does not name
+  the algorithm.
 - Observer accumulation over long sessions (repeated re-renders of cluster
   cards and spellcheck action cells) was never measured.
 - A value with two misspellings can only ever be half-corrected on Spellcheck,
