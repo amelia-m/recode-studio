@@ -419,7 +419,7 @@ test_that("validate_recodes reports a rule whose column is not in the data", {
   expect_named(v$missing_column, c("rule_id", "variable", "sibling_pattern"))
   expect_identical(v$missing_column$variable, c("gone", "drink1"))
 
-  # A rule skipped for an uncompilable pattern is reported there, once.
+  # A rule skipped for a pattern that does not compile is reported once.
   expect_identical(v$invalid_sibling_pattern$sibling_pattern, "drink[")
   expect_false(rules$rule_id[4] %in% v$missing_column$rule_id)
 

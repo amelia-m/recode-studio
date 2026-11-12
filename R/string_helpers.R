@@ -929,7 +929,8 @@ recode_key_id <- function(rules) {
 #'                       and validate_recat() both report this, and it is how
 #'                       the UI can say WHY a rule did nothing instead of
 #'                       leaving the user to guess. A rule skipped for an
-#'                       uncompilable sibling pattern is left to
+#'                       sibling pattern that does not
+#'                       compile is left to
 #'                       `invalid_sibling_pattern` and not repeated here.
 #'                       cols: rule_id, variable, sibling_pattern
 #'   stale              : rule whose old_value is no longer in any target column
@@ -1131,7 +1132,7 @@ apply_recodes <- function(df, rules) {
 #'     sequence while `apply_recodes()` stays single pass, so the two
 #'     disagreed with no warning at all.
 #'   - a rule whose target is not a column of the data gets no block, only a
-#'     `# SKIPPED:` comment, exactly as a rule with an uncompilable sibling
+#'     `# SKIPPED:` comment, exactly as a rule whose sibling
 #'     pattern already does. `apply_recodes()` skips such a rule
 #'     (`.recode_cols()` resolves to nothing), so without this the script
 #'     emitted a `mutate()` naming a column that does not exist and died on
@@ -1190,7 +1191,8 @@ generate_recode_R <- function(rules, dataset_id, source_csv_path = NULL,
 
   # The other way a rule reaches no column in the app: its target is not in
   # the data at all. Only decidable with `data_cols`. Same treatment as an
-  # uncompilable pattern: a comment, no block, so the script does what the
+  # a pattern that does not compile: a comment, no block, so the script
+  # does what the
   # app did instead of naming a column that is not there.
   if (!is.null(data_cols)) {
     dc <- as.character(data_cols)

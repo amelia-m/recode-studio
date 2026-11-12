@@ -58,3 +58,10 @@ seatle
 springfeld
 sugr
 uptwn
+
+# Fixtures added with the October defect fixes: a misspelt city and state for
+# the taxonomy and sibling-pattern tests, and a nonsense token the Spellcheck
+# tests need hunspell to reject.
+lincon
+Nebrska
+zzbadzz
