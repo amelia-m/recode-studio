@@ -147,12 +147,17 @@ build_cleaned_dataset <- function(df, rules, recat, normalizations = NULL) {
   cat_res <- apply_recat(rec$df, recat)
   .stop_if_rows_changed(n, cat_res$df, "recategorization")
 
+  # Same helpers, same order, as collect_rule_warnings(): a test pins the two
+  # results equal, so a kind added there must be added here.
+  away     <- warn_recat_terms_recoded_away(nres$df, rec$df, recat)
   warnings <- dplyr::bind_rows(
     empty_rule_warnings(),
     .warn_normalizations(normalizations, nres$summary),
     .warn_recodes_no_match_from_summary(nres$df, rules, rec$summary),
+    .warn_recodes_fully_shadowed(rules, rec$summary),
     .warn_norm_spec_drift(rules, normalizations, names(df)),
-    warn_recat_terms_recoded_away(nres$df, rec$df, recat)
+    away,
+    .warn_recat_no_match(recat, cat_res$summary, exclude_ids = away$id)
   )
 
   list(
