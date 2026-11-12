@@ -299,8 +299,15 @@ empty_state <- function(text) {
 #' Every display cell is wrapped in a span that CSS holds to one line with an
 #' ellipsis (a character cap alone cannot promise one line: a short value still
 #' wraps in a narrow column). Cells longer than `chars` are also cut to their
-#' first `chars` characters, so a huge value does not bloat the page. The WHOLE
-#' value rides in the span's `title`, so hovering shows everything.
+#' first `chars` characters for the visible text.
+#'
+#' The hover text is capped too, at `title_chars`. It used to carry the WHOLE
+#' value, which made the "a huge value does not bloat the page" claim false: a
+#' page of 25 rows of 6400-character cells shipped every one of those bytes in
+#' a `title` attribute, so the cut saved nothing. `title_chars` is much larger
+#' than `chars`, so hovering still shows far more than the cell, but the page
+#' is now bounded. Only the exported files and the data behind the table hold
+#' the complete value, which `dt_truncate_hint()` says.
 #'
 #' Display-only: DataTables calls the renderer with `type` "filter", "sort"
 #' and "type" as well as "display", and those paths return the value untouched,
@@ -317,16 +324,30 @@ empty_state <- function(text) {
 #' @param chars   Characters shown before cutting. Default 60.
 #' @param targets DataTables column targets: `"_all"` (default) or a vector of
 #'   0-based column indices.
+#' @param title_chars Characters kept in the hover text. Default 1000, which
+#'   is far more than any cell shows and still bounds the page.
 #' @return A list holding one columnDefs entry, ready for `options$columnDefs`.
-dt_truncate_defs <- function(chars = 60, targets = "_all") {
-  if (!is.numeric(chars) || length(chars) != 1L || is.na(chars) || chars < 1) {
+dt_truncate_defs <- function(chars = 60, targets = "_all",
+                             title_chars = 1000) {
+  pos_num <- function(x) {
+    is.numeric(x) && length(x) == 1L && !is.na(x) && x >= 1
+  }
+  if (!pos_num(chars)) {
     stop("dt_truncate_defs(): `chars` must be a single positive number.")
+  }
+  if (!pos_num(title_chars)) {
+    stop("dt_truncate_defs(): `title_chars` must be a single positive number.")
   }
   if (!(identical(targets, "_all") || is.numeric(targets))) {
     stop("dt_truncate_defs(): `targets` must be \"_all\" or 0-based column ",
          "indices.")
   }
   chars <- as.integer(chars)
+  title_chars <- as.integer(title_chars)
+  # `.replace(/&[#a-zA-Z0-9]*$/, '')` drops a half-cut HTML entity off the end
+  # of either cut: the data arrives already escaped, so a cut can land inside
+  # an `&amp;`. Signature is fixed: R/mod_value_table.R's
+  # dt_empty_value_defs() embeds this function verbatim and calls it.
   js <- paste(c(
     "function(data, type, row, meta) {",
     "  if (type !== 'display') { return data; }",
@@ -335,8 +356,11 @@ dt_truncate_defs <- function(chars = 60, targets = "_all") {
     sprintf("  var head = s.length <= %d ? s :", chars),
     sprintf("    s.substr(0, %d).replace(/&[#a-zA-Z0-9]*$/, '') + '\\u2026';",
             chars),
+    sprintf("  var full = s.length <= %d ? s :", title_chars),
+    sprintf("    s.substr(0, %d).replace(/&[#a-zA-Z0-9]*$/, '') + '\\u2026';",
+            title_chars),
     "  return '<span class=\"rs-dt-trunc\" title=\"' +",
-    "         s.replace(/\"/g, '&quot;') +",
+    "         full.replace(/\"/g, '&quot;') +",
     "         '\">' + head + '</span>';",
     "}"), collapse = "\n")
   list(list(targets = targets, render = DT::JS(js)))
@@ -369,8 +393,9 @@ dt_truncate_hint <- function(extra = NULL) {
   shiny::tags$p(
     class = "text-muted small mb-1 rs-dt-trunc-hint",
     "Long values are shortened to one line so more rows fit. ",
-    "Hover a shortened cell to read the full value; sorting, the table ",
-    "search and the exported files always use the complete value.",
+    "Hover a shortened cell to read more of it; a very long value is ",
+    "shortened there too. Sorting, the table search and the exported files ",
+    "always use the complete value.",
     if (!is.null(extra)) shiny::tagList(" ", extra)
   )
 }
