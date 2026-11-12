@@ -328,19 +328,9 @@ mod_spellcheck_view_ui <- function(id) {
   )
 }
 
-# JSON-encode a value for use inside inline JavaScript. A JSON string or
-# number is also a valid JavaScript literal, and jsonlite escapes quotes,
-# backslashes and control characters.
-.js_value <- function(x) {
-  as.character(jsonlite::toJSON(x, auto_unbox = TRUE))
-}
-
-# Escape a whole attribute value. The browser decodes the entities before the
-# JavaScript is parsed, so the script sees exactly what was built here, and a
-# `"` in the data can no longer end the attribute.
-.attr_value <- function(x) {
-  as.character(htmltools::htmlEscape(x, attribute = TRUE))
-}
+# `.js_value()` and `.attr_value()` live in R/ui_helpers.R: the Recodes,
+# Normalize and Recategorize action cells need them too, and two definitions
+# would make precedence depend on app.R's source order.
 
 # The JavaScript a suggestion badge runs: sends {"row":..,"val":..} as a JSON
 # string, which .apply_pick() parses with jsonlite::fromJSON().

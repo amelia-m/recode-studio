@@ -200,6 +200,25 @@ empty_state <- function(text) {
 #' entity such as `&am` off the end of the visible text. Never target a column
 #' that is unescaped generated markup.
 #'
+#' JSON-encode a value for use inside inline JavaScript.
+#'
+#' A JSON string or number is also a valid JavaScript literal, and jsonlite
+#' escapes quotes, backslashes and control characters. Never build an inline
+#' handler by interpolating data into `'%s'`: escaping only the single quote
+#' leaves `"`, `<` and `\` free to break out (see the Gotchas in CLAUDE.md).
+.js_value <- function(x) {
+  as.character(jsonlite::toJSON(x, auto_unbox = TRUE))
+}
+
+#' Escape a whole attribute value.
+#'
+#' The browser decodes the entities before the JavaScript is parsed, so the
+#' script sees exactly what was built here, and a `"` in the data can no longer
+#' end the attribute. Use it on the finished handler string, not on the pieces.
+.attr_value <- function(x) {
+  as.character(htmltools::htmlEscape(x, attribute = TRUE))
+}
+
 #' @param chars   Characters shown before cutting. Default 60.
 #' @param targets DataTables column targets: `"_all"` (default) or a vector of
 #'   0-based column indices.
